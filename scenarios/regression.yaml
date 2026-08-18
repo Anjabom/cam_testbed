@@ -5,7 +5,7 @@ contract: contracts/white_camera.yaml
 video: track_a      # ★논리 이름★ — 실제 경로는 local.yaml 의 videos: 에 있다
 
 # lockstep: 프레임 1개 = 처리 1회. 머신 속도와 무관하게 같은 결과가 나온다.
-#   실차는 30fps 입력에 6.5Hz 처리라 프레임을 버리지만, 그 드롭 패턴은
+#   실차는 30fps 입력에 6.5Hz 처리라 프레임을 버리지만, 그 유실 패턴은
 #   머신마다 달라서 회귀 비교에 쓸 수 없다. 타이밍 재현은 realtime 시나리오에서 한다.
 mode: lockstep
 start: 780          # 좌우 차선이 모두 보이는 구간 (앞부분은 트랙 밖을 본다)
@@ -53,7 +53,7 @@ checks:
      why: "θ 가 프레임 간 8도씩 튀면 IMU 보정에 못 쓴다"}
   - {signal: cte_rear_m, stat: p95_abs_diff, max: 0.35,
      why: "camera_judgment 의 jump_max_m 과 같은 뜻"}
-  # ★가장 중요한 체크★ — 인지가 좋아도 하류가 안 쓰면 주행은 그대로다.
+  # ★가장 중요한 체크★ — 인지가 좋아도 받는 쪽이 안 쓰면 주행은 그대로다.
   - {stat: "contribution:gps_imu_heading", min: 0.30,
      why: "GPS/IMU 헤딩 보정에 실제로 반영되는 프레임 비율"}
   - {stat: "contribution:judgment_gate", min: 0.50,

@@ -4,7 +4,7 @@
 
 재생 모드 세 가지:
   realtime  실차 타이밍 재현. 영상 fps × rate 로 밀고, 노드가 못 따라오면
-            BEST_EFFORT depth=1 구독이 프레임을 버린다 → 실차와 같은 드롭 패턴.
+            BEST_EFFORT depth=1 구독이 프레임을 버린다 → 실차와 같은 유실 패턴.
   lockstep  ★재현성 최우선★. 한 프레임 밀고 sync_topic 이 올 때까지 기다린다.
             모든 프레임이 정확히 한 번씩 처리되므로 머신 속도와 무관하게
             같은 결과가 나온다. 알고리즘/게이트 회귀 비교는 이 모드로 한다.
@@ -126,7 +126,7 @@ class Player(Node):
         self._sync_sub = None
         self.sync_topic = args.sync_topic or None
 
-        # aux 스텁 (상류 노드 대역)
+        # aux 스텁 (보내는 쪽 노드 대역)
         self._aux = []
         for spec in aux_specs:
             from rosidl_runtime_py.utilities import get_message
@@ -195,7 +195,7 @@ def main(argv=None):
     ap.add_argument("--sync-retries", type=int, default=2,
                     help="lockstep: 응답 없을 때 같은 프레임 재투입 횟수")
     ap.add_argument("--sync-settle-ms", type=float, default=20.0,
-                    help="lockstep: 동기 수신 후 하류 노드 출력이 "
+                    help="lockstep: 동기 수신 후 받는 쪽 노드 출력이 "
                          "같은 프레임으로 기록되도록 주는 여유")
     ap.add_argument("--warmup-s", type=float, default=0.0,
                     help="첫 프레임 전 대기 (모델 로딩 여유)")
@@ -313,7 +313,7 @@ def main(argv=None):
             sim_t += dt
 
             if lockstep:
-                # 하류 노드(judgment)가 이 프레임의 결과를 낼 때까지 조금 더 돈다.
+                # 받는 쪽 노드(judgment)가 이 프레임의 결과를 낼 때까지 조금 더 돈다.
                 # 안 그러면 /lane_metrics 가 다음 프레임 번호로 기록된다.
                 s_end = time.time() + args.sync_settle_ms / 1000.0
                 while time.time() < s_end and rclpy.ok():

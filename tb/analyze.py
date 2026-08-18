@@ -167,7 +167,7 @@ def summarize(rows, contract, meta=None):
     span = max(frames) - min(frames) + 1
     s["frame_first"], s["frame_last"] = min(frames), max(frames)
     s["frames_pushed"] = meta.get("frames_pushed", span)
-    # 의도적으로 버린 워밍업 행은 드롭이 아니다
+    # 의도적으로 버린 워밍업 행은 유실이 아니다
     expected = max(1, s["frames_pushed"] - int(meta.get("discard_first", 0)))
     s["frames_expected"] = expected
     s["drop_rate"] = max(0.0, 1.0 - len(rows) / expected)
@@ -638,7 +638,7 @@ def report_run(summary, checks, drift, contract):
     a(f"- 영상: `{m.get('video', '?')}`  섭동: `{m.get('perturb', 'none')}`  "
       f"모드: `{m.get('mode', '?')}`")
     a(f"- 투입 프레임 {summary.get('frames_pushed', '?')} → "
-      f"출력 행 {summary.get('rows', 0)} (드롭 {_f(summary.get('drop_rate'), 3)})")
+      f"출력 행 {summary.get('rows', 0)} (유실 {_f(summary.get('drop_rate'), 3)})")
     if "latency_p95_ms" in summary:
         a(f"- 지연: p50 {_f(summary['latency_p50_ms'], 1)} ms / "
           f"p95 {_f(summary['latency_p95_ms'], 1)} ms / "

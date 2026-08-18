@@ -110,7 +110,7 @@ class Contract:
         self.hold_signals = list(data.get("hold_signals") or [])
         # 뷰어가 띄울 디버그 이미지 토픽 (있으면 눈으로 보며 디버깅 가능)
         self.debug_topics = list(data.get("debug_topics") or [])
-        # 이 신호를 실제로 쓰는 하류 노드들과 그 게이트
+        # 이 신호를 실제로 쓰는 받는 쪽 노드들과 그 게이트
         self.consumers = list(data.get("consumers") or [])
 
     def _resolve_ws(self, raw):

@@ -287,7 +287,7 @@ def t_expr():
 
 
 def t_funnel():
-    """소비자 게이트 통과율 — 단계별 탈락과 병목 지목이 맞는가."""
+    """받는 쪽 게이트 통과율 — 단계별 탈락과 병목 지목이 맞는가."""
     from . import analyze as A
     from .contract import Contract
     c = Contract({
@@ -317,8 +317,8 @@ def t_funnel():
        all(a["cum_rate"] >= b["cum_rate"]
            for a, b in zip(f["stages"], f["stages"][1:])), True)
 
-    # 소비자 선언이 없으면 조용히 빈 결과
-    eq("소비자 없음", A.funnel(rows, Contract({"name": "t"}, "mem")), [])
+    # 받는 쪽 선언이 없으면 조용히 빈 결과
+    eq("받는 쪽 없음", A.funnel(rows, Contract({"name": "t"}, "mem")), [])
 
 
 def t_geometry():

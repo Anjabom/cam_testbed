@@ -100,7 +100,7 @@ _HINT = [
     (("conf_raw", "conf"),
      "차선 검출 신뢰도를 매기는 부분 — 검출 실패 프레임이 여기서 걸린다"),
     (("drop_rate", "latency"),
-     "프레임당 처리 시간. lockstep 에서 드롭이 나면 동기 자체가 깨진 것"),
+     "프레임당 처리 시간. lockstep 에서 유실이 나면 동기 자체가 깨진 것"),
 ]
 
 
@@ -271,7 +271,7 @@ def render(run_dir, prev_dir=None, note=""):
       f"max {_f(s.get('latency_max_ms'), 1)} ms")
     a(f"- 유효 행 {s.get('valid_rows', 0)}/{s.get('rows', 0)} "
       f"({(s.get('valid_rate') or 0) * 100:.1f}%) · "
-      f"드롭률 {_f(s.get('drop_rate'), 3)}")
+      f"유실률 {_f(s.get('drop_rate'), 3)}")
     odd = [d for d in sj.get("drift", [])
            if d.get("status") != "ok" and not d.get("optional")]
     if odd:

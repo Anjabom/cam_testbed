@@ -1005,7 +1005,7 @@ def serve(host="127.0.0.1", port=8770, open_browser=False):
     srv = ThreadingHTTPServer((host, port), Handler)
     url = f"http://{host}:{port}"
     print(f"테스트베드 웹 뷰어 → {url}")
-    print(f"  런 {len(list_runs())}개 · 베이스라인 {len(list_baselines())}개")
+    print(f"  실행 {len(list_runs())}개 · 베이스라인 {len(list_baselines())}개")
     print("  Ctrl-C 로 종료")
     if open_browser:
         threading.Timer(0.6, lambda: os.system(f"xdg-open {url} >/dev/null 2>&1 &")).start()
