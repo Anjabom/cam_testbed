@@ -115,6 +115,9 @@ python3 -m tb.run feedback <런> --vs <이전 런> # 결과 → 코드 개선 �
 상태유지·시퀀스 비교처럼 **여기가 틀리면 모든 판정이 틀리는** 부분만 본다.
 계약 문법을 손볼 때 먼저 돌린다.
 
+처음 쓰는 머신이라면 `cp` 한 줄로 끝나지 않는다 — 계약의 `workspace:` 와 베이스라인까지
+손봐야 한다. 이식 절차 전체는 **§11.5**.
+
 `reanalyze` 가 중요하다. 워크스페이스의 메시지 배치가 바뀌어 계약의 `path:` 를 고쳤을 때,
 **과거 런들을 새 계약으로 다시 해석**할 수 있다. `raw.jsonl` 에 원본 메시지가 그대로
 남아 있기 때문이다. 즉 계약이 바뀌어도 **베이스라인을 버리지 않아도 된다.**
@@ -793,6 +796,259 @@ python3 -m tb.run baseline <런디렉토리> --name regression
 `WIDTH_BAD` 가 54% 프레임에서 뜬다 — 코드 버그가 아니라 영상과 파라미터의 불일치다.
 새 영상에서는 `lane_width_m`·`width_min_m`·`width_max_m` 를 실제 트랙에 맞춰야
 `conf_eff` 가 살아난다.
+
+---
+
+## 11.5 새 노트북으로 옮기기
+
+**테스트베드는 위치 독립적이다.** `tb/`·`web/` 전체에서 코드가 아는 절대 경로는
+자기 자신(`ROOT`)뿐이고, 대상은 계약의 `workspace:` 한 줄로만 들어온다.
+그래서 옮길 때 고칠 곳은 **코드가 아니라 3개의 데이터 파일**이다.
+
+저장소: `https://github.com/Anjabom/cam_testbed` (private)
+
+### 무엇이 따라가고 무엇이 안 따라가는가
+
+| | 내용 | 왜 |
+|---|---|---|
+| **따라간다** | `tb/` · `web/` · `contracts/` · `scenarios/` · `cases/` · `baselines/` · `fastdds_profile.xml` · `.flake8` | 머신과 무관한 로직·설정 |
+| **안 따라간다** | `local.yaml` | ★머신마다 다른 경로가 모인 곳★ — 따라가면 새 머신에서 전부 틀린 경로가 된다 |
+| **안 따라간다** | `runs/` (132 MB) | 실행 결과. 영상·JSONL 이라 저장소를 부풀리기만 한다 |
+| **안 따라간다** | `__pycache__/` · `*.pyc` | 빌드 산출물 |
+
+`.gitignore` 가 이 셋을 막는다. 저장소 실물은 **38개 파일 · 728 KB** 로, 클론이 즉시 끝난다.
+
+`local.yaml.example` 은 따라간다 — 새 머신에서 이걸 복사해 고치는 것이 시작점이다.
+
+### 0단계 — 새 노트북에 있어야 하는 것
+
+| 필요한 것 | 확인 | 없으면 |
+|---|---|---|
+| ROS 2 (Humble 기준) | `echo $ROS_DISTRO` | 대상 노드를 띄울 수 없다 |
+| `rclpy` · `cv2` · `numpy` · `yaml` · `cv_bridge` | `python3 -c "import rclpy, cv2, numpy, yaml"` | `doctor` 가 잡아 준다 |
+| `ffmpeg` | `ffmpeg -version` | 영상이 `cv2/mp4v` 로 찍혀 **오류도 없이 검은 화면**이 된다 (§10) |
+| 대상 워크스페이스 소스 | — | 계약이 가리킬 곳이 없다 |
+
+웹앱(`web/`)은 **서버·프런트 모두 추가 의존성이 없다** — `web/server.py` 의 최상위 import 는
+전부 표준 라이브러리이고, 프런트엔드도 프레임워크를 쓰지 않는다. 다만 프레임 추출·썸네일
+기능은 `cv2` 를 함수 안에서 늦게 부르므로, 위 표의 `cv2` 는 어차피 필요하다.
+
+### 1단계 — 클론
+
+저장소가 private 이므로 인증이 필요하다. `gh` 가 가장 간단하고, **sudo 없이** 설치된다:
+
+```bash
+# gh 설치 (sudo 불필요 — 공식 바이너리를 홈에 둔다)
+#   apt 의 gh 는 낡았고(22.04 는 2.4.0) 설치에 sudo 가 필요하다.
+#   릴리스 자산 이름에 버전이 박혀 있으므로 태그를 먼저 조회한다.
+mkdir -p ~/.local/bin && cd /tmp
+V=$(curl -sS https://api.github.com/repos/cli/cli/releases/latest \
+      | grep -oP '"tag_name":\s*"v\K[^"]+')
+curl -sSL -o gh.tar.gz \
+  "https://github.com/cli/cli/releases/download/v${V}/gh_${V}_linux_amd64.tar.gz"
+tar -xzf gh.tar.gz && cp gh_*/bin/gh ~/.local/bin/ && export PATH="$HOME/.local/bin:$PATH"
+gh --version
+
+gh auth login --hostname github.com --git-protocol https --web
+gh auth setup-git          # 이후 일반 git push/fetch 도 인증된다
+```
+
+> ★SSH 가 아니라 HTTPS 를 쓴다★ — 이 계정의 기존 SSH 키가 특정 저장소 전용
+> **deploy key** 인 경우가 있어 SSH 로 가면 새 저장소에서 인증이 실패한다.
+> `ssh -T git@github.com` 이 `Hi <계정>/<저장소>!` 로 답하면 그게 deploy key 다
+> (계정 키라면 `Hi <계정>!` 로만 답한다).
+
+```bash
+git clone https://github.com/Anjabom/cam_testbed.git ~/cam_testbed
+cd ~/cam_testbed
+```
+
+`~/cam_testbed` 가 아닌 곳에 둬도 된다. 테스트베드는 자기 위치를 `__file__` 로 알아낸다.
+
+### 2단계 — 대상 워크스페이스를 빌드한다
+
+계약은 `<workspace>/install/setup.bash` 를 source 해서 `ros2 run` 으로 노드를 띄운다.
+**빌드가 안 돼 있으면 그 파일이 없어 아무것도 안 뜬다.**
+
+```bash
+cd ~/white_cam_ws
+colcon build --symlink-install
+```
+
+`--symlink-install` 로 빌드해 두면 이후 **소스를 고쳐도 재빌드 없이 다음 런에 바로 반영된다.**
+
+### 3단계 — `local.yaml` 을 이 머신 것으로 쓴다
+
+```bash
+cd ~/cam_testbed
+cp local.yaml.example local.yaml
+```
+
+예시 파일에는 **이전 머신의 경로가 그대로 들어 있다.** 머신을 타는 것은 `videos:` 와
+`params:` 뿐이다 — `default_contract:` 는 저장소 기준 상대경로라 손대지 않아도 된다:
+
+```yaml
+default_contract: contracts/white_camera.yaml   # 상대경로 — 그대로 둔다
+
+videos:                          # ★논리 이름 → 이 머신의 실제 경로★
+  track_a: /경로/track_record.mp4  #  시나리오는 이름만 알고 경로는 모른다
+
+params:
+  perception:
+    lane_weights_roi: /경로/best.pt   # 실차는 TensorRT .engine 이지만
+    tl_weights_roi:   /경로/best.pt   # GPU/TRT 버전이 다르면 안 열린다 → .pt
+    device: cuda                      # ★GPU 가 없으면 cpu★
+```
+
+논리 이름을 안 쓰고 시나리오에 절대경로를 박으면 다음 머신에서 또 고쳐야 한다.
+`videos:` 에 없는 이름은 경로로 그대로 해석되지만(일회성 실행용), `doctor` 가 경고한다.
+
+**웹앱에서 해도 된다** — 실행 화면 아래 `워크스페이스 · 영상 등록`. 파일을 직접 고치는 것과
+같은 결과이고 `local.yaml` 의 **주석이 보존된다**(줄 단위로 갈아 끼운다).
+
+### 4단계 — 계약의 `workspace:` 를 고친다
+
+```yaml
+# contracts/white_camera.yaml
+workspace: /home/<새계정>/white_cam_ws     # ★절대 경로★
+```
+
+테스트베드가 워크스페이스 **밖**에 있으므로 반드시 명시해야 한다. 생략하면 계약 파일의
+조상 중 `install/setup.bash` 를 가진 첫 디렉터리를 찾는데, 밖에 있으면 찾지 못한다.
+빠뜨리면 `doctor` 가 "절대 경로로 적어야 한다"고 알려 준다.
+
+### 5단계 — 점검
+
+```bash
+source /opt/ros/humble/setup.bash
+cd ~/cam_testbed
+python3 -m tb.selftest                                        # ROS·영상 불필요, 17개 항목
+python3 -m tb.run doctor --scenario scenarios/regression.yaml
+```
+
+`doctor` 가 위 1~4단계를 전부 대신 확인해 준다. 통과하면 이렇게 나온다:
+
+```
+── 테스트베드 ──
+  ✅ ROS_DISTRO  humble
+  ✅ ros2 실행 가능
+  ✅ cv2 / rclpy import
+  ✅ Fast DDS 프로파일  1080p 무손실 전송용 — 없으면 프레임 ~5% 유실
+  ✅ 영상 코덱  ffmpeg/H.264 — mp4v 뿐이면 웹앱에서 재생 불가
+── 계약 ──
+  ✅ 계약 파일  /home/…/contracts/white_camera.yaml
+     `white_camera` v1 · 노드 2 · 관찰토픽 8 · 신호 27
+── 대상 워크스페이스 ──
+  ✅ 워크스페이스  /home/…/white_cam_ws
+  ✅ setup.bash  /home/…/white_cam_ws/install/setup.bash
+  ✅ 실행파일 white perception
+  ✅ 실행파일 white camera_judgment
+── 시나리오 ──
+  ✅ 영상  'track_a' → /home/…/track_record.mp4
+  ✅ perception.lane_weights_roi  /home/…/best.pt
+
+판정: OK
+```
+
+`실행파일` 항목은 대상 워크스페이스를 source 한 뒤 `ros2 pkg executables` 를 실제로
+실행해 대조한 결과다 — **계약에 적은 package/executable 이 진짜 있는지**까지 확인한다.
+
+### 6단계 — 첫 런과 기준 재등록
+
+```bash
+python3 -m tb.run run --scenario scenarios/regression.yaml
+python3 -m tb.run baseline <런디렉토리명> --name regression
+```
+
+### ★가장 중요한 함정 — 베이스라인은 머신을 넘지 못한다★
+
+`baselines/regression.csv` 는 저장소에 따라가지만, **그대로 쓰면 안 된다.**
+그 숫자는 **이전 머신의 GPU·드라이버·`device` 설정으로 YOLO 를 돌린 결과**다.
+추론 백엔드가 달라지면(다른 GPU, 또는 `cuda`→`cpu`) 세그멘테이션 출력이 미세하게
+달라지고, `regression.yaml` 의 `compare_tol` 은 그 차이를 잡아내도록 빡빡하게 잡혀 있다:
+
+```yaml
+compare_tol:
+  _default: 1.0e-6      # 기본은 완전 일치 요구
+  theta_deg:    0.20
+  flags:        0.0     # ★플래그는 한 프레임도 달라지면 안 된다★
+```
+
+그래서 **새 머신에서 처음 도는 회귀는 DIFF 로 뜨는 것이 정상이다.** 코드 회귀가 아니라
+환경이 바뀐 것이므로, 첫 런을 그 머신의 기준으로 새로 등록하고 거기서부터 비교한다.
+
+> `lockstep` 모드는 CPU 속도와 무관하게 같은 결과를 보장하지만, 그건 **타이밍** 이야기다.
+> 추론 백엔드가 바뀌는 것까지 흡수하지는 못한다.
+
+베이스라인에는 출처(영상·구간·파라미터·워크스페이스·`code_fingerprint`)가 함께 저장되고,
+조건이 다르면 비교 리포트 맨 위에 경고가 박힌다 — 모르고 지나칠 일은 없다.
+
+### 절대 경로가 박힌 곳은 3군데뿐이다
+
+옮긴 뒤 `grep` 으로 직접 확인할 수 있다:
+
+```bash
+grep -rn "/home/" --include=*.yaml --include=*.json --include=*.py . | grep -v ^./runs/
+```
+
+| 위치 | 무엇 | 조치 |
+|---|---|---|
+| `contracts/*.yaml` 의 `workspace:` | 대상 워크스페이스 | **수정 필수** (4단계) |
+| `local.yaml` | 영상·가중치 경로 | **새로 작성** (3단계) |
+| `baselines/*.json` | 기준을 뜰 때의 조건 기록 | 기록용 메타데이터 — 실행에 영향 없음 |
+
+나머지 히트는 전부 **주석·독스트링 예시·입력창 placeholder** 다
+(`tb/run.py` 의 사용 예, `scenarios/regression.yaml` 의 실차 기본값 메모, `web/app.js` 의 placeholder).
+`local.yaml` 은 갓 클론한 직후에는 아직 없으므로 히트에 안 잡힌다 — 3단계에서 만들고 나면 잡힌다.
+
+### 새 노트북에서 ★새 워크스페이스★ 를 붙일 때
+
+위 절차에 §11 을 얹으면 된다. 테스트베드는 복사하지 않고 **계약만 하나 더 만든다.**
+
+```bash
+# 1~2단계는 동일 (클론 + 새 워크스페이스 colcon build)
+
+# 3. 대상 시스템을 평소처럼 띄워 놓고 계약 초안을 뽑는다
+ros2 launch <새패키지> whatever.launch.py        # 다른 터미널
+python3 -m tb.discover --name other_ws \
+    --workspace /home/<계정>/other_ws \
+    --out contracts/other_ws.yaml --seconds 8
+
+# 4. 초안의 TODO 를 채운다 (§11 의 표 참고: nodes / image_topic / sync_topic / hold)
+# 5. 시나리오를 하나 만들고 점검
+python3 -m tb.run doctor --contract contracts/other_ws.yaml
+python3 -m tb.run run   --scenario scenarios/other_reg.yaml
+```
+
+계약·시나리오·베이스라인이 전부 이름으로 갈리므로 **워크스페이스끼리 서로의 회귀 판정을
+건드리지 않는다.** `local.yaml` 의 `default_contract:` 로 평소 쓰는 것을 정해 둔다.
+
+### 자주 걸리는 것
+
+| 증상 | 원인 | 조치 |
+|---|---|---|
+| `setup.bash 없음` | 대상을 빌드하지 않았다 | 2단계 `colcon build` |
+| `실행파일 … ❌` | 계약의 package/executable 이름이 틀렸거나 빌드에서 빠졌다 | 계약 수정 또는 재빌드 |
+| `영상 ❌` | `local.yaml` 의 `videos:` 경로가 이 머신에 없다 | 3단계 |
+| 웹앱에서 영상이 검은 화면 | `ffmpeg` 이 없어 `cv2/mp4v` 로 찍혔다 | `sudo apt install ffmpeg` 후 재실행 |
+| 첫 회귀가 전부 DIFF | 추론 백엔드가 달라졌다 | 정상. 그 머신 기준을 새로 등록 |
+| `WIDTH_BAD` 가 절반 넘게 뜬다 | 영상의 트랙 규격과 `lane_width_m` 불일치 | §11 「새 영상을 찍었을 때」 |
+| YOLO 가 `.engine` 을 못 연다 | TensorRT/GPU 버전이 다르다 | `local.yaml` 에서 `.pt` 로 덮어쓴다 |
+
+### 되돌려 보내기
+
+새 노트북에서 고친 것을 다시 올릴 때 `local.yaml` 과 `runs/` 는 `.gitignore` 가 알아서 막는다:
+
+```bash
+git add -A && git commit -m "…" && git push
+```
+
+`git` 신원이 없다는 경고가 나오면:
+
+```bash
+git config --global user.name  "Anjabom"
+git config --global user.email "vk1124x@gmail.com"
+```
 
 ---
 
