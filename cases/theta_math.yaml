@@ -1,0 +1,106 @@
+# 신호 주입 케이스 — gps_imu 통합에 쓰이는 값의 ★변환 수학★ 검증
+#
+# 입력은 /lane/state 의 폴리핏 계수(BEV 좌표계, x = a·y² + b·y + c, y 는 아래가 +).
+# 이름은 계약의 signals 가 배열 위치를 알려주므로 그대로 쓴다.
+#
+# ★기댓값은 대상 코드에서 베껴 온 것이 아니라 기하로 유도한 것이다.★
+#   중심선 xc(y) = (xL(y) + xR(y)) / 2
+#   근점  y_near = bev_h × bottom_ratio    = 480 × 0.92 = 441.6
+#   전방점 y_look = bev_h × lookahead_ratio = 480 × 0.45 = 216.0
+#   θ 는 두 점을 잇는 직선(시컨트)의 각 → θ = atan( a·(y_near+y_look) + b )
+#   cte_near = (xc(y_near) − bev_w/2) × px2m,  발행 시 부호 반전(우측+ 규약)
+#   width    = (xR(y_near) − xL(y_near)) × px2m
+#   px2m = 0.006, bev_w = 640 (중심 320)
+
+cases:
+  # ── 1. 영점 ─────────────────────────────────────────────────────
+  - name: 직선_중앙정렬
+    desc: >
+      좌 x=120, 우 x=520 인 수직 차선. 중심선 x=320 = bev_w/2 이므로
+      차량이 정중앙이고 기울어지지 않았다 → cte=0, θ=0.
+      폭 = (520−120)×0.006 = 2.4 m.
+    input: {fit_cL: 120, fit_cR: 520, conf: 1.0, half_width_px: 200}
+    expect: {cte_near_m: 0.0, cte_rear_m: 0.0, theta_deg: 0.0, lane_width_m: 2.4}
+    tol: {_default: 0.001}
+
+  # ── 2. 횡오차 (부호와 스케일) ────────────────────────────────────
+  - name: 직선_중심선이_우로_50px
+    desc: >
+      차선 전체를 오른쪽으로 50px 밀었다 → 중심선 370, 차량은 상대적으로
+      차선 왼쪽에 있다. 50px × 0.006 = 0.3 m.
+      발행값은 GPS 규약(우측+)에 맞춰 부호가 반전되므로 −0.3.
+      ★이 케이스가 실패하면 부호 규약이 뒤집힌 것이다★
+    input: {fit_cL: 170, fit_cR: 570, conf: 1.0, half_width_px: 200}
+    expect: {cte_near_m: -0.3, theta_deg: 0.0, lane_width_m: 2.4}
+    tol: {_default: 0.002}
+
+  - name: 직선_중심선이_좌로_50px
+    desc: 위와 반대. 발행 cte_near = +0.3 이어야 한다.
+    input: {fit_cL: 70, fit_cR: 470, conf: 1.0, half_width_px: 200}
+    expect: {cte_near_m: 0.3, theta_deg: 0.0, lane_width_m: 2.4}
+    tol: {_default: 0.002}
+
+  # ── 3. 헤딩오차 (gps_imu 가 실제로 쓰는 유일한 값) ───────────────
+  - name: 기울기_10도
+    desc: >
+      좌우 차선 모두 기울기 b = tan(10°) = 0.176327.
+      직선이므로 시컨트 = 접선 → θ = atan(b) = 10.0°.
+      ★gps_imu 는 이 값 하나만 쓴다 — 여기가 틀리면 헤딩 보정이 통째로 틀린다★
+    input: {fit_bL: 0.176327, fit_cL: 120, fit_bR: 0.176327, fit_cR: 520,
+            conf: 1.0, half_width_px: 200}
+    expect: {theta_deg: 10.0}
+    tol: {theta_deg: 0.05}
+
+  - name: 기울기_음5도
+    desc: b = −tan(5°) = −0.087489 → θ = −5.0°. 부호 대칭 확인.
+    input: {fit_bL: -0.087489, fit_cL: 120, fit_bR: -0.087489, fit_cR: 520,
+            conf: 1.0, half_width_px: 200}
+    expect: {theta_deg: -5.0}
+    tol: {theta_deg: 0.05}
+
+  # ── 4. 곡선 — 시컨트 근사의 계통오차 ────────────────────────────
+  - name: 곡선_a0.0005_시컨트오차
+    desc: >
+      a = 0.0005, b = 0 인 곡선.
+      시컨트 θ = atan(0.0005 × (441.6+216.0)) = atan(0.3288) = 18.21°
+      접선   θ = atan(0.0005 × 2×441.6)       = atan(0.4416) = 23.83°
+      ★둘이 5.6° 다르다★ — 현재 구현은 시컨트이므로 18.21° 가 나와야 한다.
+      이 값이 나오면 "구현대로 동작"이지만, IMU 헤딩 보정에 쓰기에 맞는 값인지는
+      별개 문제다(핸드오프 P0-2). 곡선에서 카메라 보정은 자이로 게이트로 어차피 막힌다.
+    input: {fit_aL: 0.0005, fit_cL: 120, fit_aR: 0.0005, fit_cR: 520,
+            conf: 1.0, half_width_px: 200}
+    expect: {theta_deg: 18.21}
+    tol: {theta_deg: 0.1}
+
+  # ── 5. 폭 게이트 (기여를 가장 많이 깎는 관문) ────────────────────
+  - name: 폭_1.3m_모형트랙
+    desc: >
+      cR−cL = 216.7px → width = 1.3 m. 기본 허용 범위(1.8~4.5 m) 밖이므로
+      WIDTH_BAD(비트 2)가 서고 conf_eff 가 0 으로 눌려야 한다.
+      ★실제 영상에서 프레임의 54% 가 이 상태다★
+    input: {fit_cL: 211.65, fit_cR: 428.35, conf: 1.0, half_width_px: 108}
+    expect: {lane_width_m: 1.3, conf_eff: 0.0, flags: 2.0}
+    tol: {lane_width_m: 0.005, conf_eff: 0.001, flags: 0.001}
+
+  - name: 폭_2.4m_정상
+    desc: 폭이 범위 안이면 flags=0, conf_eff 는 입력 conf 를 그대로 통과.
+    input: {fit_cL: 120, fit_cR: 520, conf: 0.8, half_width_px: 200}
+    expect: {lane_width_m: 2.4, conf_eff: 0.8, flags: 0.0}
+    tol: {_default: 0.005}
+
+  # ── 6. 단독차선 — 반폭 추정 경로 ────────────────────────────────
+  - name: 단독차선_좌측만
+    desc: >
+      우 차선 계수가 전부 0 이면 좌측 단독으로 판정된다(SINGLE, 비트 16).
+      좌 차선 x=120 에서 반폭 200px 만큼 오른쪽으로 밀어 중심선 320 → cte=0.
+      ★단독차선은 반폭 추정 오차가 그대로 cte 편향이 된다 — 핸드오프 P1-1★
+    input: {fit_cL: 120, conf: 0.5, half_width_px: 200}
+    expect: {cte_near_m: 0.0, theta_deg: 0.0, flags: 16.0}
+    tol: {cte_near_m: 0.002, theta_deg: 0.01, flags: 0.001}
+
+  # ── 7. 미검출 ───────────────────────────────────────────────────
+  - name: 차선없음
+    desc: 계수가 전부 0 이면 NO_LANE(비트 1), 값은 0, conf_eff 도 0.
+    input: {conf: 0.0, half_width_px: 0}
+    expect: {cte_near_m: 0.0, theta_deg: 0.0, flags: 1.0, conf_eff: 0.0}
+    tol: {_default: 0.001}

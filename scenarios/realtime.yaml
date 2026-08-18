@@ -1,0 +1,22 @@
+# 실차 타이밍 재현 시나리오 — 30fps 로 밀어 넣고 드롭/지연을 잰다.
+#   회귀 비교용이 아니다(머신마다 드롭 패턴이 달라서 값이 재현되지 않는다).
+#   처리율·지연·게이트 반응(신호등 hold 시간 등)을 보는 용도.
+name: realtime
+contract: contracts/white_camera.yaml
+
+video: track_a
+mode: realtime
+rate: 1.0
+limit: 0
+warmup_s: 8.0
+discard_first: 10
+
+params:
+  perception: {show_window: false, record_video: false, enable_undistort: true}
+
+variants:
+  - {name: base, perturb: none}
+
+checks:
+  - {stat: latency_p95_ms, max: 400, why: "지연이 크면 IMU 헤딩 보정에 못 쓴다"}
+  - {stat: drop_rate, max: 0.90, why: "30fps 입력 대비 처리율 — 0.78이면 6.5Hz"}

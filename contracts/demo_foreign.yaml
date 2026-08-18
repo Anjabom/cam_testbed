@@ -1,0 +1,29 @@
+# 다른 워크스페이스 붙이기 예시 — 이 워크스페이스(white)와 아무 관계가 없다.
+# tb.discover 로 초안을 뽑고 이름만 손본 결과다.
+version: 1
+name: demo_foreign
+workspace: /tmp/does_not_matter     # attach 모드라 노드를 안 띄운다
+attach: true                        # 이미 돌고 있는 시스템에 붙어 관찰만
+
+nodes: []
+
+stimulus:
+  image_topic: ""                   # 빈 값 = 영상 자극 없음, 기록만 한다
+sync_topic: /nav/state
+
+observe: [/nav/state, /nav/mode, /cmd_vel, /dist]
+
+signals:
+  pos_x:     { topic: /nav/state, path: ["data[0]"] }
+  heading:   { topic: /nav/state, path: ["data[1]"] }
+  quality:   { topic: /nav/state, path: ["data[2]"] }
+  seq:       { topic: /nav/state, path: ["data[3]"] }
+  mode:      { topic: /nav/mode,  path: [data] }
+  speed:     { topic: /cmd_vel,   path: ["linear.x"] }
+  steer:     { topic: /cmd_vel,   path: ["angular.z"] }
+  dist:      { topic: /dist,      path: [data] }
+
+compare_signals: [pos_x, heading, quality, speed, steer, dist]
+compare_categorical: []
+compare_sequence: [mode]
+hold_signals: [mode, speed, steer]

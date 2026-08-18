@@ -1,0 +1,296 @@
+# ══════════════════════════════════════════════════════════════════════════
+#  계약(contract) — 테스트베드가 워크스페이스를 아는 ★유일한★ 통로
+# ══════════════════════════════════════════════════════════════════════════
+#  테스트베드 코드(tb/*.py)에는 white 패키지의 토픽명·필드 배치·노드명이
+#  단 한 글자도 들어 있지 않다. 전부 이 파일에만 있다.
+#  워크스페이스가 바뀌면 ★이 파일만★ 고친다.
+#
+#  path 는 리스트를 쓸 수 있고 앞에서부터 처음 맞는 것을 쓴다.
+#  덕분에 구/신 메시지 포맷을 동시에 지원한다 — 예를 들어 /lane_metrics 가
+#  Float32MultiArray 에서 커스텀 msg 로 바뀌어도 아래처럼 두 줄을 두면
+#  마이그레이션 기간 내내 baseline 비교가 끊기지 않는다:
+#      path: ["data[2]", theta_lane_deg]
+#  어느 쪽이 실제로 맞았는지는 `tb doctor` 와 run 리포트가 알려준다.
+# ══════════════════════════════════════════════════════════════════════════
+version: 1
+name: white_camera
+
+# ── 0. 대상 워크스페이스 ───────────────────────────────────────────────
+#   테스트베드는 이 워크스페이스 ★밖★에 있어도 된다. 여기 적힌 곳의
+#   install/setup.bash 를 source 해서 노드를 띄운다.
+#   상대 경로는 이 계약 파일 위치 기준. 생략하면 계약 파일의 조상 중
+#   install/setup.bash 를 가진 첫 디렉터리를 자동으로 쓴다.
+#   → 다른 워크스페이스를 붙이려면 계약 파일을 하나 더 만들고 여기만 바꾸면 된다.
+workspace: /home/anjabom/white_cam_ws
+# 추가로 source 할 오버레이가 있으면:
+# ros_setup:
+#   - /home/anjabom/other_ws/install/setup.bash
+
+# attach: true  → 노드를 띄우지 않고 이미 돌고 있는 시스템에 붙어 관찰만 한다
+#                 (실차에서 그대로 기록만 뜨고 싶을 때)
+
+# ── 1. 테스트 대상 노드 ────────────────────────────────────────────────
+#   import 하지 않는다. `ros2 run <package> <executable>` 로 띄우고
+#   DDS 로만 대화한다 → 노드 내부가 어떻게 바뀌든 테스트베드는 무관.
+nodes:
+  - id: perception
+    package: white
+    executable: perception
+    node_name: perception_node
+    params:                       # 테스트 환경에서 반드시 꺼야 하는 것들
+      show_window: false          # 헤드리스
+      record_video: false         # 실차 녹화 비활성 (~/records 오염 방지)
+
+  - id: camera_judgment
+    package: white
+    executable: camera_judgment
+    node_name: camera_judgment
+    params: {}
+
+# ── 2. 자극(stimulus) — 영상을 어디로 밀어넣는가 ───────────────────────
+stimulus:
+  image_topic: /image_raw
+  # 상류 노드가 없어서 비는 입력을 테스트베드가 대신 채워 준다.
+  # 없으면 camera_judgment 의 신호등 게이트(cb_cmd)가 아예 실행되지 않는다.
+  aux:
+    - topic: /cmd_vel_drive
+      type: geometry_msgs/msg/Twist
+      rate_hz: 20.0
+      fields: { "linear.x": 2.0, "angular.z": 0.0 }
+
+# ── 3. 동기 신호 — "이 프레임 처리가 끝났다"는 표시 ────────────────────
+#   lockstep 재생에서 다음 프레임을 언제 밀지 결정한다.
+sync_topic: /lane/state
+
+# ── 3.5 디버그 영상 — 뷰어(`--watch`)가 띄울 이미지 토픽 ────────────────
+#   perception 이 원본+BEV 를 가로로 붙여 발행한다. 여기 적으면
+#   `tb.run run --watch` 로 돌아가는 걸 보면서 space/n 으로 세워 볼 수 있고,
+#   `--record-debug` 로 mp4 를 남겨 나중에 볼 수도 있다.
+#   ※ 이 토픽은 관찰(기록) 대상이 아니다 — 이미지는 JSONL 에 담지 않는다.
+debug_topics:
+  - /lane/debug
+
+# ── 3.6 캘리브레이션 — `tb.calibrate` 가 영상으로 맞출 수 있는 것들 ────
+#   kind 만 알면 되고 파라미터 이름은 전부 여기 있다 → 도구는 워크스페이스를 모른다.
+#     quad     원본 영상 위의 4점 (TL,TR,BR,BL) → 평면 리스트 파라미터
+#     rect     원본 영상 위의 사각형 → x0,y0,x1,y1 네 파라미터
+#     scale    BEV 에서 잰 픽셀거리 + 실측 길이 → m/px
+#     length_m BEV 에서 잰 실측 길이 [m]
+calibration:
+  # ★perception 이 소스에 박아 둔 어안 보정 모델과 같은 값이어야 한다★
+  #   (파라미터가 아니라 하드코딩이라 여기 옮겨 적을 수밖에 없다.
+  #    노드 쪽이 바뀌면 여기도 바꿀 것 — `tb.calibrate --verify` 가 대조해 준다)
+  undistort:
+    size:  [1920, 1080]
+    K:     [956.30137, 962.44368, 979.72871, 531.00886]   # fx fy cx cy
+    D:     [-0.276622, 0.050981, 0.000303, -0.001998, 0.0]
+    alpha: 0.0
+    param: enable_undistort        # 이 파라미터가 false 면 보정을 건너뛴다
+  bev: {w: 640, h: 480}
+
+  # `tb.calibrate --verify <런>` 이 "내가 그리는 BEV == 노드가 만드는 BEV" 를
+  # 대조할 때 쓴다. 디버그 이미지의 어느 부분이 BEV 인지만 알려 주면 된다.
+  verify:
+    video: lane_debug.mp4        # 런 디렉터리 안의 파일 (--record-debug 로 생긴다)
+    bev_pane: [0.5, 1.0]         # 가로 비율 구간 — perception 은 원본|BEV 로 붙인다
+
+  targets:
+    ipm_src:
+      kind: quad
+      nodes: [perception]
+      param: ipm_src_pts
+      hint: "좌우 변을 ★차선 위에★ 올려라. 그러면 BEV 에서 차선이 수직이 된다."
+    lane_roi:
+      kind: rect
+      nodes: [perception]
+      params: [lane_roi_xmin, lane_roi_ymin, lane_roi_xmax, lane_roi_ymax]
+      hint: "차선 세그멘테이션을 돌릴 영역. 하늘·차체를 빼면 빨라진다."
+    tl_roi:
+      kind: rect
+      nodes: [perception]
+      params: [tl_roi_xmin, tl_roi_ymin, tl_roi_xmax, tl_roi_ymax]
+      hint: "신호등 검출 영역. 보통 화면 위쪽 절반."
+    px2m:
+      kind: scale
+      nodes: [perception, camera_judgment]
+      param: pixel_to_meter_bev
+      hint: "BEV 에서 실측 길이를 아는 두 점을 찍어라(차선폭이 제일 쉽다)."
+    lane_width:
+      kind: length_m
+      nodes: [perception, camera_judgment]
+      param: lane_width_m
+      hint: "좌우 차선 중심 간 거리 [m]. 이 영상의 트랙 규격에 맞출 것."
+
+# ── 4. 관찰 대상 — 여기 적힌 토픽만 기록한다 ───────────────────────────
+#   타입은 런타임에 발견하므로 적지 않는다(커스텀 msg 로 바뀌어도 그대로 동작).
+observe:
+  - /lane/state
+  - /lane_metrics
+  - /tl/state
+  - /stop_line_dist
+  - /crosswalk_dist
+  - /judgment_state
+  - /brake_level
+  - /cmd_vel_raw
+
+# ── 5. 신호(signal) — 메시지 안의 어느 값을 시계열로 뽑을 것인가 ───────
+#   ★레이아웃이 바뀌면 고치는 곳은 여기 한 줄뿐이다★
+signals:
+  # /lane/state  = [aL,bL,cL, aR,bR,cR, conf, half_width_px]
+  fit_aL:        { topic: /lane/state,      path: ["data[0]"] }
+  fit_bL:        { topic: /lane/state,      path: ["data[1]"] }
+  fit_cL:        { topic: /lane/state,      path: ["data[2]"] }
+  fit_aR:        { topic: /lane/state,      path: ["data[3]"] }
+  fit_bR:        { topic: /lane/state,      path: ["data[4]"] }
+  fit_cR:        { topic: /lane/state,      path: ["data[5]"] }
+  conf:          { topic: /lane/state,      path: ["data[6]"] }
+  half_width_px: { topic: /lane/state,      path: ["data[7]"] }
+  # T-02(스탬프 추가) 후에도 자동으로 붙는다. 지금은 없으므로 결측.
+  stamp_sec:     { topic: /lane/state,      path: ["data[8]"],  optional: true }
+  stamp_nsec:    { topic: /lane/state,      path: ["data[9]"],  optional: true }
+
+  # /lane_metrics = [cte_rear, cte_near, theta_deg, curv, conf_eff,
+  #                  width_m, flags, d_near, conf_raw, seq]
+  cte_rear_m:    { topic: /lane_metrics,    path: ["data[0]", cte_rear_m] }
+  cte_near_m:    { topic: /lane_metrics,    path: ["data[1]", cte_near_m] }
+  theta_deg:     { topic: /lane_metrics,    path: ["data[2]", theta_lane_deg] }
+  curvature:     { topic: /lane_metrics,    path: ["data[3]", curvature_1pm] }
+  conf_eff:      { topic: /lane_metrics,    path: ["data[4]", conf_eff] }
+  lane_width_m:  { topic: /lane_metrics,    path: ["data[5]", lane_width_m] }
+  flags:         { topic: /lane_metrics,    path: ["data[6]", flags] }
+  d_near_m:      { topic: /lane_metrics,    path: ["data[7]", d_near_m] }
+  conf_raw:      { topic: /lane_metrics,    path: ["data[8]", conf_raw] }
+  seq:           { topic: /lane_metrics,    path: ["data[9]", seq] }
+
+  tl_state:        { topic: /tl/state,        path: [data] }
+  stop_line_dist:  { topic: /stop_line_dist,  path: [data] }
+  crosswalk_dist:  { topic: /crosswalk_dist,  path: [data] }
+  judgment_state:  { topic: /judgment_state,  path: [data] }
+  brake_level:     { topic: /brake_level,     path: [data] }
+  cmd_speed:       { topic: /cmd_vel_raw,     path: ["linear.x"] }
+  cmd_steer:       { topic: /cmd_vel_raw,     path: ["angular.z"] }
+
+# ── 6. 비트 플래그 해석 (리포트 가독성 전용) ───────────────────────────
+flag_bits:
+  signal: flags
+  bits:
+    1:  NO_LANE       # 차선없음
+    2:  WIDTH_BAD     # 폭이상
+    4:  CTE_JUMP      # CTE점프
+    8:  CONF_LOW      # conf미달
+    16: SINGLE        # 단독차선
+
+# ── 7. 회귀 비교에서 "달라지면 안 되는" 신호 ───────────────────────────
+#   compare 리포트가 이 순서대로 위에서부터 보여준다.
+compare_signals:
+  - cte_rear_m
+  - theta_deg
+  - conf_raw
+  - conf_eff
+  - lane_width_m
+  - curvature
+  - flags
+  - half_width_px
+# 이산 신호 — 프레임별로 값이 같아야 한다
+compare_categorical:
+  - tl_state
+  - brake_level
+
+# ★타이머/변화시에만 발행되는 신호★ — 프레임별 비교를 하면 안 된다.
+#   camera_judgment 는 /judgment_state 를 1Hz 타이머로도 낸다(_status_tick).
+#   어느 프레임에 실리는지는 벽시계에 달려 있어 lockstep 에서도 재현되지 않는다.
+#   그래서 "값이 바뀐 순서"(연속 중복 제거)만 비교한다.
+compare_sequence:
+  - judgment_state
+
+# 상태 의미를 가진 신호 — 다음 발행 때까지 값이 유지된다(zero-order hold).
+#   프레임마다 오지 않으므로 앞 값으로 채워야 소비자가 보는 것과 같아진다.
+hold_signals:
+  - tl_state
+  - judgment_state
+  - brake_level
+  - stop_line_dist
+  - crosswalk_dist
+  - cmd_speed
+  - cmd_steer
+
+# ── 7.2 시각화 — 테스트베드가 ★판정에 쓴 값 그대로★ 다시 그릴 때 필요한 것 ──
+#   대상 노드의 /lane/debug 는 그 노드가 보여 주고 싶은 것이고,
+#   이건 리포트의 숫자가 어디서 나왔는지를 그림으로 확인하기 위한 것이다.
+render:
+  bottom_ratio:    0.92     # 근점 y = bev_h × 이 값 (perception/judgment 와 같아야)
+  lookahead_ratio: 0.45     # 전방점 y
+  ipm_src_pts: [620, 650, 1300, 650, 1920, 1080, 0, 1080]   # 시나리오 params 가 우선
+  signals:
+    left:       [fit_aL, fit_bL, fit_cL]    # x = a·y² + b·y + c
+    right:      [fit_aR, fit_bR, fit_cR]
+    half_width: half_width_px               # 단독차선일 때 중심선 추정용
+  readout: [theta_deg, cte_rear_m, cte_near_m, conf_eff, lane_width_m, flags]
+
+# ── 7.3 θ 품질 — gps_imu 가 쓰는 유일한 값의 건강 진단 ────────────────
+theta_quality:
+  signal: theta_deg
+  fps: 30.0                       # 영상 fps (lockstep 이면 프레임=처리 1회)
+  straight_max_rate_dps: 10.0     # gps_imu CAM_HEAD_MAX_GYRO 와 같은 기준
+  vibration_band_hz: [0.08, 0.18] # 실측 조향 진동 주피크 0.119Hz 주변
+
+# ── 7.4 신호 주입 — 변환 수학을 영상 없이 격리 검증 ───────────────────
+#   perception 을 띄우지 않고 camera_judgment 에만 합성 /lane/state 를 쏜다.
+#   입력을 내가 만들었으므로 참값이 정확히 알려져 있다 → 값이 다르면 계산이 틀린 것.
+injection:
+  nodes: [camera_judgment]            # 이것만 띄운다 (YOLO·영상 불필요)
+  input:  {topic: /lane/state,   type: std_msgs/msg/Float32MultiArray}
+  output: {topic: /lane_metrics}
+  cases:  cases/theta_math.yaml
+
+# ── 7.5 소비자 — 이 신호를 실제로 쓰는 하류 노드와 그 게이트 ──────────
+#   ★판정 임계값을 지어내지 않기 위한 장치다★
+#   "차선을 잘 봤나"가 아니라 "그래서 하류가 실제로 썼나"를 재려면
+#   하류가 쓰는 상수를 그대로 옮겨 적어야 한다. 아래 값들은 전부
+#   gps_imu.py / camera_judgment.py 의 실제 상수에서 왔다.
+#   하류 상수가 바뀌면 여기도 바꿀 것 — 그때 기여율이 어떻게 변하는지가 곧 답이다.
+consumers:
+  - id: gps_imu_heading
+    label: GPS/IMU 헤딩 보정
+    source: gps_imu.py CAM_HEAD_*
+    stages:
+      - name: 차선 검출
+        expr: "int(flags) % 2 == 0"
+        why: "F_NO_LANE 비트. 차선을 아예 못 본 프레임"
+      - name: 폭 게이트
+        expr: "int(flags) % 4 < 2"
+        why: "F_WIDTH_BAD. 이게 서면 camera_judgment 가 conf_eff 를 0 으로 만든다"
+        const: "width_min_m=1.8, width_max_m=4.5"
+      - name: conf 문턱
+        expr: "conf_eff >= 0.35"
+        why: "gps_imu 는 0.35 를 쓴다 — camera_judgment 의 conf_min 0.15 보다 훨씬 높다"
+        const: "CAM_HEAD_CONF_MIN=0.35"
+      - name: θ 보정 대역
+        expr: "abs(theta_deg) >= 0.5 and abs(theta_deg) <= 15.0"
+        why: "0.5° 미만은 노이즈로, 15° 초과는 오검출로 gps_imu 가 버린다"
+        const: "CAM_HEAD_MIN_DEG=0.5, CAM_HEAD_MAX_DEG=15.0"
+      - name: 신선도
+        expr: "latency_ms <= 400"
+        why: "이보다 오래된 /lane_metrics 는 gps_imu 가 무시한다"
+        const: "CAM_HEAD_MAX_AGE=0.40s"
+
+  - id: judgment_gate
+    label: 신호등·차선 게이트 통과
+    source: camera_judgment.py
+    stages:
+      - name: 차선 검출
+        expr: "int(flags) % 2 == 0"
+      - name: 치명 플래그 없음
+        expr: "conf_eff > 0"
+        why: "폭·점프·conf 중 하나라도 걸리면 conf_eff=0 → 융합에서 카메라 미반영"
+
+# ── 8. 메타모픽 규칙 : 장면을 좌우 반전하면 부호만 뒤집혀야 하는 신호 ──
+#   robustness 시나리오의 `mirror: true` 변형에서 쓴다.
+#   여기 없는 신호(conf, lane_width_m 등)는 반전해도 ★값이 같아야★ 한다.
+mirror_odd_signals:
+  - cte_rear_m
+  - cte_near_m
+  - theta_deg
+  - cmd_steer
+  - fit_bL
+  - fit_bR

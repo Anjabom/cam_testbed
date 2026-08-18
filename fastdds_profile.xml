@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  Fast DDS 프로파일 — 1080p 이미지를 로컬호스트로 무손실 전달하기 위한 것.
+
+  ★왜 필요한가★
+  sensor_msgs/Image 1920x1080x3 = 6.2 MB 다. Fast DDS 의 기본 공유메모리(SHM)
+  세그먼트는 512 KB 라서 이 샘플이 안 들어가고 UDPv4 로 폴백한다. 그러면 6.2MB 가
+  ~4400개 UDP 조각으로 쪼개져 커널 수신버퍼(net.core.rmem_max, 기본 208 KB)를
+  넘치고, BEST_EFFORT 라 재전송이 없으므로 ★샘플 통째로 유실★된다.
+  실측 손실률 5.0% — lockstep 재생에서 프레임이 통으로 비는 원인이었다.
+
+  세그먼트를 키워 SHM 안에서 처리되게 하면 손실이 사라진다.
+  sudo 없이 적용 가능하다(커널 rmem_max 를 건드리지 않는다).
+-->
+<dds xmlns="http://www.eprosima.com">
+  <profiles>
+    <transport_descriptors>
+      <transport_descriptor>
+        <transport_id>shm_big</transport_id>
+        <type>SHM</type>
+        <segment_size>134217728</segment_size>   <!-- 128 MB -->
+        <maxMessageSize>16777216</maxMessageSize>
+      </transport_descriptor>
+      <transport_descriptor>
+        <transport_id>udp_big</transport_id>
+        <type>UDPv4</type>
+        <sendBufferSize>16777216</sendBufferSize>
+        <receiveBufferSize>16777216</receiveBufferSize>
+      </transport_descriptor>
+    </transport_descriptors>
+
+    <participant profile_name="testbed_participant" is_default_profile="true">
+      <rtps>
+        <userTransports>
+          <transport_id>shm_big</transport_id>
+          <transport_id>udp_big</transport_id>
+        </userTransports>
+        <useBuiltinTransports>false</useBuiltinTransports>
+      </rtps>
+    </participant>
+  </profiles>
+</dds>

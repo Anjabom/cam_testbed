@@ -1,0 +1,80 @@
+# 회귀(golden) 시나리오 — GT 없이 "코드 변경이 출력에 무슨 짓을 했는가"를 잡는다.
+name: regression
+contract: contracts/white_camera.yaml
+
+video: track_a      # ★논리 이름★ — 실제 경로는 local.yaml 의 videos: 에 있다
+
+# lockstep: 프레임 1개 = 처리 1회. 머신 속도와 무관하게 같은 결과가 나온다.
+#   실차는 30fps 입력에 6.5Hz 처리라 프레임을 버리지만, 그 드롭 패턴은
+#   머신마다 달라서 회귀 비교에 쓸 수 없다. 타이밍 재현은 realtime 시나리오에서 한다.
+mode: lockstep
+start: 780          # 좌우 차선이 모두 보이는 구간 (앞부분은 트랙 밖을 본다)
+limit: 400          # 0 = 끝까지 (track_record.mp4 는 2191프레임)
+stride: 1
+warmup_s: 8.0       # YOLO 로딩 여유
+sync_timeout: 4.0   # 실측 처리 p50 은 66ms — 4초면 유실 확정. 유실 시 같은 프레임 재투입
+sim_time: false
+discard_first: 5    # YOLO 첫 추론 지연 로딩분은 통계에서 뺀다
+
+params:
+  perception:
+    # 실차 기본값은 /home/mad2/... 이고 .engine(TensorRT) 이다.
+    # 머신마다 다르므로 local.yaml 에서 덮어쓴다.
+    show_window: false
+    record_video: false
+    enable_undistort: true   # ★원본 카메라 영상이므로 켠다★
+                             #  perception 이 남긴 Raw.webm 은 이미 보정된 뒤라
+                             #  그걸 먹일 때는 false 로 내려야 이중보정이 안 된다.
+  camera_judgment: {}
+    # ── 이 영상에 대한 메모 ──────────────────────────────────────────
+    # track_record.mp4 는 실내 모형 트랙이다. 실측 차선폭이 약 1.3 m 인데
+    # perception/camera_judgment 의 기본값은 실차 규격(lane_width_m 3.0,
+    # width_min_m 1.8)이라 WIDTH_BAD 가 프레임의 54% 에서 뜨고
+    # conf_eff 가 0 으로 눌린다(= 융합에서 카메라가 통째로 무시된다).
+    # 모형 트랙 영상으로 인지 성능만 볼 때는 아래를 켜서 규격을 맞춘다.
+    # 실차 영상으로 바꿀 때는 다시 끈다.
+    #   width_min_m: 0.9
+    #   width_max_m: 2.2
+
+variants:
+  - {name: base, perturb: none}
+
+# ── 불변식 체크 : 진실을 몰라도 성립해야 하는 것들 ──────────────────
+checks:
+  - {stat: drop_rate,        max: 0.02, why: "lockstep 인데 프레임이 새면 동기 실패"}
+  - {stat: latency_p95_ms,   max: 600,  why: "프레임당 처리 지연"}
+  - {signal: conf_raw,  stat: frac_nonzero, min: 0.5,
+     why: "절반 이상 프레임에서 차선을 봐야 한다"}
+  - {signal: lane_width_m, stat: mean, min: 2.0, max: 4.5, when_valid: true,
+     why: "차선폭은 물리량이다 — 평균이 이 밖이면 px2m/IPM 캘리브가 틀렸다"}
+  - {signal: lane_width_m, stat: std,  max: 0.6, when_valid: true,
+     why: "같은 도로에서 폭이 흔들리면 fit 이 흔들린 것"}
+  - {signal: theta_deg, stat: p95_abs_diff, max: 8.0,
+     why: "θ 가 프레임 간 8도씩 튀면 IMU 보정에 못 쓴다"}
+  - {signal: cte_rear_m, stat: p95_abs_diff, max: 0.35,
+     why: "camera_judgment 의 jump_max_m 과 같은 뜻"}
+  # ★가장 중요한 체크★ — 인지가 좋아도 하류가 안 쓰면 주행은 그대로다.
+  - {stat: "contribution:gps_imu_heading", min: 0.30,
+     why: "GPS/IMU 헤딩 보정에 실제로 반영되는 프레임 비율"}
+  - {stat: "contribution:judgment_gate", min: 0.50,
+     why: "camera_judgment 치명 게이트를 통과하는 비율"}
+  # θ 는 gps_imu 가 쓰는 유일한 값이다 — 편향과 진동이 핵심
+  - {stat: "theta:abs_bias_deg", max: 1.0,
+     why: "직진에서 편향이 있으면 헤딩이 계속 한쪽으로 끌린다"}
+  - {stat: "theta:vibration_frac", max: 0.15,
+     why: "조향 진동 대역 파워. 크면 카메라가 진동을 만든다"}
+  - {stat: "flag_rate:WIDTH_BAD", max: 0.30}
+  - {stat: "flag_rate:CTE_JUMP",  max: 0.10}
+
+# ── 회귀 허용오차 : 이보다 크게 바뀌면 DIFF ────────────────────────
+compare_tol:
+  _default: 1.0e-6      # 기본은 완전 일치 요구
+  cte_rear_m:   0.005   # [m]
+  cte_near_m:   0.005
+  theta_deg:    0.20    # [deg]
+  conf_raw:     0.01
+  conf_eff:     0.01
+  lane_width_m: 0.02
+  curvature:    0.02
+  half_width_px: 1.0
+  flags:        0.0     # 플래그는 한 프레임도 달라지면 안 된다
