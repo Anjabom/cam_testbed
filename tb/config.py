@@ -52,6 +52,11 @@ def _video_info(path):
     return out
 
 
+def video_info(path):
+    """영상 한 개의 상태 — 화면이 「이 파일이 열리긴 하는가」를 물을 때."""
+    return _video_info(path)
+
+
 def snapshot():
     """등록 화면이 통째로 그리는 데 필요한 현재 상태."""
     r = _run()
@@ -386,3 +391,181 @@ def new_scenario(name, contract, video, mode="lockstep", start=0, limit=0):
     yaml.safe_load(text)
     f.write_text(text)
     return {"file": f.name}
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  params: 쓰기 — 캘리브레이션 화면이 맞춘 값을 되돌려 놓는 곳
+# ══════════════════════════════════════════════════════════════════════
+def _yv(v):
+    """YAML 스칼라 한 개 표기. 리스트는 흐름식으로 한 줄에 둔다."""
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (list, tuple)):
+        return "[" + ", ".join(_yv(x) for x in v) + "]"
+    if isinstance(v, dict):
+        return "{" + ", ".join(f"{k}: {_yv(x)}" for k, x in v.items()) + "}"
+    if isinstance(v, float):
+        s = f"{v:.6f}".rstrip("0")
+        return s + "0" if s.endswith(".") else s
+    if isinstance(v, int) or v is None:
+        return "null" if v is None else str(v)
+    s = str(v)
+    return s if NAME_RE.match(s) or s.startswith("/") else yaml.safe_dump(
+        s, default_flow_style=True).strip().rstrip("\n...").strip()
+
+
+def _block_end(lines, i, indent):
+    """lines[i] 뒤로 들여쓰기가 indent 보다 깊은 구간의 끝(배타)."""
+    j = i + 1
+    while j < len(lines):
+        ln = lines[j]
+        if ln.strip() and (len(ln) - len(ln.lstrip())) <= indent:
+            break
+        j += 1
+    # 끝에 붙은 빈 줄은 블록 밖으로 본다 (그래야 삽입이 문단 사이에 낀다)
+    while j > i + 1 and not lines[j - 1].strip():
+        j -= 1
+    return j
+
+
+def _child_indent(lines, i, indent, default=2):
+    """lines[i] 아래 자식들이 쓰는 들여쓰기 폭. 자식이 없으면 default."""
+    for j in range(i + 1, len(lines)):
+        ln = lines[j]
+        if not ln.strip():
+            continue
+        w = len(ln) - len(ln.lstrip())
+        if w <= indent:
+            break
+        if not ln.lstrip().startswith("#"):
+            return w - indent
+    return default
+
+
+def _ensure_key(lines, key, indent, lo, hi):
+    """lo~hi 안에서 `key:` 줄을 찾는다. 없으면 만들고 그 줄 번호를 준다.
+
+    `key: {}` 처럼 빈 흐름식으로 돼 있으면 블록식으로 편다 — 뒤에 달린 주석은
+    그대로 살린다(이 파일들의 주석은 「왜 이렇게 뒀는지」라서 지우면 안 된다).
+    """
+    pat = re.compile(rf"^\s{{{indent}}}{re.escape(key)}\s*:(.*)$")
+    for i in range(lo, min(hi, len(lines))):
+        m = pat.match(lines[i])
+        if not m:
+            continue
+        rest = m.group(1)
+        cut = rest.find("#") if not rest.lstrip().startswith("{") else -1
+        val = (rest[:cut] if cut >= 0 else rest).strip()
+        if val:                                  # `key: {a: 1, b: 2}` → 블록식
+            if not (val.startswith("{") and val.endswith("}")):
+                raise ValueError(
+                    f"`{key}:` 가 예상 못 한 모양이라 건드리지 않았다: {lines[i].strip()}")
+            try:
+                kids = yaml.safe_load(val) or {}
+            except yaml.YAMLError as e:
+                raise ValueError(f"`{key}:` 를 읽지 못했다: {e}") from None
+            step = _child_indent(lines, i, indent)
+            lines[i] = _keep_comment(lines[i], " " * indent + f"{key}:")
+            for j, (k2, v2) in enumerate(kids.items()):
+                lines.insert(i + 1 + j, " " * (indent + step) + f"{k2}: {_yv(v2)}")
+        return i, True
+    lines.insert(hi, " " * indent + f"{key}:")
+    return hi, False
+
+
+def _same(a, b):
+    """값 비교 — 0.006 과 0.0060 은 같다."""
+    if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
+        return len(a) == len(b) and all(_same(x, y) for x, y in zip(a, b))
+    if isinstance(a, bool) or isinstance(b, bool):
+        return a is b
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return abs(float(a) - float(b)) < 1e-6
+    return a == b
+
+
+def _leaves(obj, prefix=()):
+    """중첩 dict 를 (경로 튜플, 값) 목록으로 편다. 리스트는 값으로 본다."""
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            yield from _leaves(v, prefix + (str(k),))
+    else:
+        yield prefix, obj
+
+
+def set_params(node_params, target="local"):
+    """노드 파라미터를 `params:` 블록에 병합한다 (주석 보존).
+
+    target "local" 이면 local.yaml, 아니면 scenarios/<파일>. 캘리브레이션 값은
+    카메라·영상마다 다르므로 보통 local.yaml 이 맞고, 시나리오에 굳혀 두고
+    싶을 때만 시나리오를 고른다.
+
+    ★쓰고 나서 다시 읽어 확인한다★ — 줄 단위로 갈아 끼우는 방식이라
+    파일 모양이 예상과 다르면 조용히 엉뚱한 곳에 붙을 수 있다. 그 상태로
+    저장하면 다음 실행이 틀린 값으로 돌아간다.
+    """
+    if not isinstance(node_params, dict) or not node_params:
+        raise ValueError("저장할 파라미터가 없다")
+    if target in ("local", "local.yaml"):
+        path, text = ROOT / "local.yaml", _local_text()
+    else:
+        name = Path(str(target)).name
+        if not NAME_RE.match(name.replace(".yaml", "")) or not name.endswith(".yaml"):
+            raise ValueError(f"저장할 곳이 잘못됐다: {target}")
+        path = ROOT / "scenarios" / name
+        if not path.is_file():
+            raise ValueError(f"그런 시나리오가 없다: scenarios/{name}")
+        text = path.read_text()
+
+    lines = text.splitlines()
+    pi, _ = _ensure_key(lines, "params", 0, 0, len(lines))
+    for nid, kv in node_params.items():
+        if not NAME_RE.match(str(nid)):
+            raise ValueError(f"노드 이름이 잘못됐다: {nid}")
+        pend = _block_end(lines, pi, 0)
+        ni, _ = _ensure_key(lines, str(nid), 2, pi + 1, pend)
+        step = _child_indent(lines, ni, 2)
+        for k, v in kv.items():
+            if not NAME_RE.match(str(k)):
+                raise ValueError(f"파라미터 이름이 잘못됐다: {k}")
+            nend = _block_end(lines, ni, 2)
+            body = " " * (2 + step) + f"{k}: {_yv(v)}"
+            pat = re.compile(rf"^\s+{re.escape(str(k))}\s*:")
+            hit = next((i for i in range(ni + 1, nend) if pat.match(lines[i])), None)
+            if hit is not None:
+                lines[hit] = _keep_comment(lines[hit], body)
+            else:
+                # ★블록 끝에 붙인다★ — 중간에 끼우면 여러 줄짜리 주석이
+                #   설명하던 줄에서 떨어져 나간다.
+                lines.insert(nend, body)
+
+    out = "\n".join(lines) + "\n"
+    before = yaml.safe_load(text) or {}
+    after = yaml.safe_load(out) or {}                        # 깨진 YAML 차단
+
+    # ① 넣으려던 값이 실제로 들어갔는가
+    got = after.get("params") or {}
+    for nid, kv in node_params.items():
+        for k, v in kv.items():
+            g = (got.get(nid) or {}).get(k)
+            if not _same(g, v):
+                raise ValueError(
+                    f"{path.name} 에 {nid}.{k} 를 제대로 넣지 못했다 "
+                    f"(넣으려던 값 {v}, 다시 읽은 값 {g}). 파일을 바꾸지 않았다.")
+
+    # ② ★그 밖의 것이 하나도 사라지지 않았는가★
+    #    줄 단위로 갈아 끼우는 방식이라 파일 모양이 예상과 다르면 키가 중복돼
+    #    조용히 덮이는 일이 생긴다(YAML 은 중복 키를 에러로 보지 않는다).
+    #    실제로 `perception: {show_window: false, …}` 를 그렇게 날려 먹었다.
+    touched = {("params", str(n), str(k)) for n, kv in node_params.items() for k in kv}
+    for key, val in _leaves(before):
+        if key in touched:
+            continue
+        if key not in dict(_leaves(after)):
+            raise ValueError(f"{path.name} 의 {'.'.join(key)} 가 사라졌다 — "
+                             "파일을 바꾸지 않았다.")
+        if not _same(dict(_leaves(after))[key], val):
+            raise ValueError(f"{path.name} 의 {'.'.join(key)} 가 바뀌었다 — "
+                             "파일을 바꾸지 않았다.")
+    path.write_text(out)
+    return str(path.relative_to(ROOT))

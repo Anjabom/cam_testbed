@@ -94,6 +94,8 @@
      '비교의 기준으로 삼은 결과들. 어떤 영상·구간에서 나왔는지 함께 봅니다.'],
     ['#/check', '환경 점검',
      '계약·워크스페이스·영상이 제대로 물려 있는지, 테스트베드 자체는 이상 없는지.'],
+    ['#/tools', '도구',
+     '터미널에서 쓰는 명령을 전부 여기서. 인자를 골라 넣고 명령줄을 확인한 뒤 실행합니다.'],
     ['#/help', '사용 안내',
      '처음 켠 사람이 어떤 순서로 쓰면 되는지.'],
   ];
@@ -706,14 +708,50 @@
         h('button', { text: '다시 만들기', onclick: make }),
       ]));
       body.appendChild(b);
+      body.appendChild(rdOptions());
+    }
+
+    /* 만들 때 쓰는 인자 — 기본값은 「전체 프레임을 원본 속도로」다.
+       CLI 의 `tb.run render` 가 받는 나머지는 아래 «영상 옵션» 에서 바꾼다. */
+    var rdLimit = h('input', { type: 'number', value: '0', style: 'width:90px' });
+    var rdWidth = h('input', { type: 'number', value: '1400', style: 'width:90px' });
+    var rdFps = h('input', { type: 'number', step: 'any', placeholder: '원본과 같게',
+                             style: 'width:110px' });
+    var rdWhere = h('input', { type: 'text', placeholder: '(전부)', size: '24' });
+    var rdFrames = h('input', { type: 'text', placeholder: '예: 1090,850', size: '18' });
+    function rdArgs() {
+      // --fps 를 주지 않으면 엔진이 ★원본 영상과 같은 속도★로 맞춘다.
+      // 예전에는 10 을 박아 30fps 영상이 1/3 배속으로 나왔다.
+      var a = [id, '--mp4', 'auto',
+               '--limit', String(Number(rdLimit.value) || 0),
+               '--width', String(Number(rdWidth.value) || 1400)];
+      if (rdFps.value && Number(rdFps.value)) a.push('--fps', rdFps.value);
+      if (rdWhere.value.trim()) a.push('--where', rdWhere.value.trim());
+      if (rdFrames.value.trim()) a.push('--frames', rdFrames.value.trim());
+      return a;
+    }
+    function rdOptions() {
+      var det = h('details', { class: 'reg' });
+      det.appendChild(h('summary', { text: '영상 옵션' }));
+      det.appendChild(h('div', { class: 'regbody toolform' }, [
+        h('div', { class: 'toolopt' }, [h('label', { class: 'mono', text: '--limit' }), rdLimit,
+          h('span', { class: 'mut', text: '몇 장까지 (0=전부)' })]),
+        h('div', { class: 'toolopt' }, [h('label', { class: 'mono', text: '--width' }), rdWidth,
+          h('span', { class: 'mut', text: '가로 픽셀' })]),
+        h('div', { class: 'toolopt' }, [h('label', { class: 'mono', text: '--fps' }), rdFps,
+          h('span', { class: 'mut', text: '재생 속도 (비우면 원본과 같게)' })]),
+        h('div', { class: 'toolopt' }, [h('label', { class: 'mono', text: '--where' }), rdWhere,
+          h('span', { class: 'mut', text: '조건에 맞는 프레임만' })]),
+        h('div', { class: 'toolopt' }, [h('label', { class: 'mono', text: '--frames' }), rdFrames,
+          h('span', { class: 'mut', text: '프레임 번호를 쉼표로' })]),
+      ]));
+      return det;
     }
 
     function make() {
       clear(body);
       body.appendChild(spinner('경로 영상을 만드는 중… (400프레임 약 30초)'));
-      // --fps 를 주지 않는다 → 엔진이 ★원본 영상과 같은 속도★로 맞춘다.
-      // 예전에는 10 을 박아 30fps 영상이 1/3 배속으로 나왔다.
-      postJob('render', [id, '--limit', '0', '--mp4', 'auto', '--width', '1400']);
+      postJob('render', rdArgs());
       var t = setInterval(function () {
         get('/api/runs/' + encodeURIComponent(id) + '/pathmeta').then(function (m) {
           var el = body.querySelector('.spin span');
@@ -733,6 +771,7 @@
         text: '아직 경로 영상이 없습니다. 만들면 좌·우 차선과 중심선, θ 가 '
               + '그려진 영상을 재생할 수 있습니다.' }));
       body.appendChild(h('button', { class: 'primary', text: '경로 영상 만들기', onclick: make }));
+      body.appendChild(rdOptions());
     }).catch(function () {});
 
     wrap.seekFrame = function (fr) {
@@ -1156,11 +1195,35 @@
       h('span', { class: 'spacer' }),
       h('button', { text: '이 조건으로 추출',
         title: '조건에 맞는 원본 프레임을 이미지로 저장합니다 (라벨링용)',
-        onclick: function () {
-          postJob('harvest', [id, '--where', state.where, '--limit', String(state.limit)]);
-        } }),
+        onclick: function () { postJob('harvest', hvArgs()); } }),
     ]));
     view.appendChild(presets);
+
+    /* 추출 세부 옵션 — CLI 의 `tb.run harvest` 가 받는 나머지. */
+    var hvOut = h('input', { type: 'text', placeholder: '(비우면 <런>/harvest)', size: '26' });
+    var hvW = h('input', { type: 'number', placeholder: '0 = 원본', style: 'width:110px' });
+    var hvDry = h('input', { type: 'checkbox' });
+    function hvArgs() {
+      var a = [id, '--where', state.where, '--limit', String(state.limit)];
+      if (hvOut.value.trim()) a.push('--out', hvOut.value.trim());
+      if (hvW.value && Number(hvW.value)) a.push('--width', hvW.value);
+      if (hvDry.checked) a.push('--dry-run');
+      return a;
+    }
+    var hvDet = h('details', { class: 'reg' });
+    hvDet.appendChild(h('summary', { text: '추출 옵션' }));
+    hvDet.appendChild(h('div', { class: 'regbody toolform' }, [
+      h('div', { class: 'toolopt' }, [h('label', { class: 'mono', text: '--out' }), hvOut,
+        h('span', { class: 'mut', text: '저장 폴더' })]),
+      h('div', { class: 'toolopt' }, [h('label', { class: 'mono', text: '--width' }), hvW,
+        h('span', { class: 'mut', text: '가로 축소 (0=원본)' })]),
+      h('div', { class: 'toolflags' }, [
+        h('label', { class: 'toolflag' }, [hvDry,
+          h('span', { class: 'mono', text: '--dry-run' }),
+          h('span', { class: 'mut', text: '저장하지 않고 몇 장이 뽑히는지만 세어 본다' })]),
+      ]),
+    ]));
+    view.appendChild(hvDet);
 
     var info = h('p', { class: 'sub' });
     var box = h('div', {});
@@ -1305,8 +1368,25 @@
     }));
     if (cfg.suggest && scenarios.indexOf(cfg.suggest) >= 0) scSel.value = cfg.suggest;
     var tagIn = h('input', { type: 'text', placeholder: '태그 (선택)', size: '12' });
+    tagIn.addEventListener('input', function () { syncCmd(); });
     var recCb = h('input', { type: 'checkbox' });
+    recCb.addEventListener('change', function () { syncCmd(); });
+
+    /* 고급 옵션 — CLI 의 `tb.run run` 이 받는 나머지 인자들.
+       평소에는 접혀 있다. 여기 없는 명령은 «도구» 탭에 전부 있다. */
+    var advCont = h('select', {}, [h('option', { value: '', text: '(시나리오가 정한 것)' })]
+      .concat((cfg.contracts || []).map(function (c) {
+        return h('option', { value: c.file, text: c.file }); })));
+    var advVar = h('input', { type: 'text', placeholder: '전부', size: '18' });
+    var advBase = h('select', {}, [h('option', { value: '', text: '(비교 안 함)' })]
+      .concat((cfg.baselines || []).map(function (b) {
+        return h('option', { value: b, text: b }); })));
+    var advDom = h('input', { type: 'number', placeholder: '0', style: 'width:80px' });
+    var advKeep = h('input', { type: 'checkbox' });
+    var advWatch = h('input', { type: 'checkbox' });
     var planBox = h('div', {});
+    var advBox = h('div', {});
+    var cmdPrev = h('div', {});
     var runBar = h('div', { class: 'framebar' });
     var liveBox = h('div', {});
     var regBox = h('div', {});
@@ -1319,7 +1399,9 @@
         [recCb, h('span', { text: '디버그 영상 기록' })]),
     ]));
     view.appendChild(planBox);
+    view.appendChild(advBox);
     view.appendChild(runBar);
+    view.appendChild(cmdPrev);
     view.appendChild(liveBox);
     view.appendChild(regBox);
 
@@ -1411,16 +1493,58 @@
           html: '<b class="wn">⚠</b> ' + m }));
       });
       planBox.appendChild(cli(p.cmd || ''));
+      drawAdv();
       drawRunBar();
     }
 
     // ── 3) 실행 버튼 ────────────────────────────────────────────
     function args() {
       var a = ['--scenario', 'scenarios/' + scSel.value];
+      if (advCont.value) a.push('--contract', 'contracts/' + advCont.value);
+      advVar.value.split(',').forEach(function (v) {
+        v = v.trim();
+        if (v) a.push('--variant', v);
+      });
       if (tagIn.value.trim()) a.push('--tag', tagIn.value.trim());
+      if (advBase.value) a.push('--baseline', advBase.value);
+      if (advDom.value && Number(advDom.value)) a.push('--domain', advDom.value);
       if (recCb.checked) a.push('--record-debug');
+      if (advWatch.checked) a.push('--watch');
+      if (advKeep.checked) a.push('--keep-going');
       return a;
     }
+    function drawAdv() {
+      clear(advBox);
+      var det = h('details', { class: 'reg' });
+      det.appendChild(h('summary', { text: '고급 옵션' }));
+      var b = h('div', { class: 'regbody toolform' });
+      function row(lab, el, help) {
+        return h('div', { class: 'toolopt' }, [
+          h('label', { class: 'mono', text: lab }), el,
+          help ? h('span', { class: 'mut', text: help }) : null]);
+      }
+      b.appendChild(row('--contract', advCont, '시나리오의 contract: 를 덮어쓴다'));
+      b.appendChild(row('--variant', advVar,
+        '이 변형만 돌린다 (쉼표로 여러 개). 이 시나리오의 변형: '
+        + (((state.plan || {}).variants || []).join(', ') || '—')));
+      b.appendChild(row('--baseline', advBase, '끝나고 이 기준과 자동 비교'));
+      b.appendChild(row('--domain', advDom, 'ROS_DOMAIN_ID (0=기본)'));
+      b.appendChild(h('div', { class: 'toolflags' }, [
+        h('label', { class: 'toolflag' }, [advWatch,
+          h('span', { class: 'mono', text: '--watch' }),
+          h('span', { class: 'mut', text:
+            '디버그 영상 창을 띄운다 — ★서버가 도는 PC 의 화면★에 뜬다. '
+            + '멀리서 브라우저로 붙었다면 아래 라이브 화면을 보면 된다.' })]),
+        h('label', { class: 'toolflag' }, [advKeep,
+          h('span', { class: 'mono', text: '--keep-going' }),
+          h('span', { class: 'mut', text: '변형 하나가 실패해도 나머지를 계속' })]),
+      ]));
+      det.appendChild(b);
+      advBox.appendChild(det);
+      b.addEventListener('input', syncCmd);
+      b.addEventListener('change', syncCmd);
+    }
+
     function drawRunBar() {
       clear(runBar);
       var blocked = state.plan && state.plan.block && state.plan.block.length > 0;
@@ -1435,6 +1559,13 @@
         onclick: function () { start('doctor', ['--scenario', 'scenarios/' + scSel.value]); } }));
       runBar.appendChild(h('span', { class: 'spacer' }));
       runBar.appendChild(h('button', { text: '중지', onclick: stop }));
+      syncCmd();
+    }
+    // 고급 옵션을 켰을 때 ★실제로 나갈 명령줄★을 눈으로 확인시킨다.
+    // 값이 바뀌는 족족 다시 쓴다 — 실행하고 나서야 무엇이 나갔는지 알면 늦다.
+    function syncCmd() {
+      clear(cmdPrev);
+      cmdPrev.appendChild(cli('python3 -m tb.run run ' + args().join(' ')));
     }
 
     function start(kind, a) {
@@ -1452,46 +1583,11 @@
         });
     }
 
-    // ── 4) 실행 중 화면 — 진행률·라이브·로그 ────────────────────
+    // ── 4) 실행 중 화면 — «도구» 탭과 같은 것을 본다 (jobBox)
     function drawLive(st) {
-      var pr = st.progress || {};
-      var frac = pr.total ? Math.min(1, (pr.pushed || 0) / pr.total) : 0;
       clear(liveBox);
       if (!st.running && !st.kind) return;
-
-      var head = h('div', { class: 'livehd' }, [
-        h('b', { text: st.running ? '● 실행 중' : '○ 끝났습니다' }),
-        h('span', { class: 'mut', text: (st.kind || '') + ' ' + ((st.args || []).join(' ')) }),
-        h('span', { class: 'spacer' }),
-        h('span', { text: (st.elapsed_s || 0).toFixed(1) + 's' }),
-      ]);
-      if (pr.total) {
-        head.appendChild(h('span', { text: '  ' + (pr.pushed || 0) + '/' + pr.total +
-          '  sync ' + (pr.sync || 0) + (pr.fps ? '  ' + pr.fps.toFixed(1) + 'fps' : '') }));
-      }
-      if (!st.running && st.returncode != null) {
-        head.appendChild(h('b', { class: st.returncode === 0 ? 'ok' : 'no',
-          text: '  종료코드 ' + st.returncode }));
-      }
-      var box = h('div', { class: 'livebox' }, [head]);
-      if (pr.total) box.appendChild(h('div', { class: 'pbar' },
-        [h('i', { style: 'width:' + (frac * 100).toFixed(1) + '%' })]));
-      if (st.has_live && st.running) {
-        box.appendChild(h('img', { class: 'liveimg', alt: '라이브 화면',
-          src: '/api/runs/' + encodeURIComponent(st.run) + '/live?t=' + Date.now() }));
-      }
-      if (st.run && !st.running) {
-        box.appendChild(h('div', { class: 'framebar' }, [
-          h('button', { class: 'primary', text: '결과 보기 →',
-            onclick: function () { location.hash = '/run/' + st.run; } }),
-          h('span', { class: 'mut mono', text: st.run }),
-        ]));
-      }
-      if (st.log_tail) {
-        box.appendChild(h('div', { class: 'md', style: 'margin-top:11px;max-height:280px',
-          text: st.log_tail }));
-      }
-      liveBox.appendChild(box);
+      liveBox.appendChild(jobBox(st));
     }
 
     function poll() {
@@ -1511,7 +1607,10 @@
 
     // ── 5) 등록 — 워크스페이스·영상·시나리오 ────────────────────
     function reload() {
-      get('/api/config').then(function (c2) { renderExec(c2); });
+      get('/api/config').then(function (c2) {
+        c2.baselines = cfg.baselines || [];
+        renderExec(c2);
+      });
     }
     function post(url, body2) {
       return fetch(url, { method: 'POST',
@@ -1673,29 +1772,78 @@
       return h('option', { value: f2, text: f2 });
     }));
     var out = h('div', { class: 'md' });
+    var cSel = h('select', {}, [h('option', { value: '', text: '(시나리오가 정한 것)' })].concat(
+      (state.contracts || []).map(function (x) { return h('option', { value: x, text: x }); })));
 
-    function run(name, extra) {
+    /* 인자는 명세가 검사한다 — 화면은 순서대로 넘기기만 한다 */
+    function run(name, argv) {
       out.textContent = '실행 중…';
-      var url = '/api/quick/' + name + (extra ? '?scenario=' + encodeURIComponent(extra) : '');
-      get(url).then(function (d) {
-        out.textContent = d.out || '(출력 없음)';
-        hintEl.textContent = (JOBNAME[name] || name) + ' → '
-                             + (d.rc === 0 ? '이상 없음' : '문제 있음');
-        setTimeout(function () { hintEl.textContent = ''; }, 4000);
-      }).catch(function (e) { out.textContent = '오류: ' + e.message; });
+      var qs = (argv || []).map(function (a) { return 'a=' + encodeURIComponent(a); });
+      get('/api/quick/' + name + (qs.length ? '?' + qs.join('&') : ''))
+        .then(function (d) {
+          out.textContent = (d.cmd ? '$ ' + d.cmd + '\n\n' : '') + (d.out || '(출력 없음)');
+          hintEl.textContent = (JOBNAME[name] || name) + ' → '
+                               + (d.rc === 0 ? '이상 없음' : '문제 있음');
+          setTimeout(function () { hintEl.textContent = ''; }, 4000);
+        }).catch(function (e) { out.textContent = '오류: ' + e.message; });
+    }
+    function doctorArgs() {
+      var a = ['--scenario', 'scenarios/' + scSel.value];
+      if (cSel.value) a.push('--contract', 'contracts/' + cSel.value);
+      return a;
     }
 
     view.appendChild(h('div', { class: 'framebar' }, [
       h('span', { class: 'mut', text: '시나리오' }), scSel,
+      h('span', { class: 'mut', text: '계약' }), cSel,
       h('button', { class: 'primary', text: '환경 점검 (doctor)',
-                    onclick: function () { run('doctor', 'scenarios/' + scSel.value); } }),
-      h('button', { text: '자체 검사 (selftest)', onclick: function () { run('selftest'); } }),
-      h('button', { text: '계약 초안 (discover)',
-                    title: '돌고 있는 ROS 시스템을 읽어 계약 초안을 뽑습니다 (약 6초)',
-                    onclick: function () { run('discover'); } }),
+                    onclick: function () { run('doctor', doctorArgs()); } }),
+      h('button', { text: '자체 검사 (selftest)', onclick: function () { run('selftest', []); } }),
     ]));
+
+    /* 계약 초안 — 인자가 여럿이라 따로 묶는다. 돌고 있는 ROS 그래프가 있어야 한다. */
+    var dSec = h('input', { type: 'number', value: '8', step: '1', style: 'width:80px' });
+    var dName = h('input', { type: 'text', placeholder: 'discovered', size: '16' });
+    var dOut = h('input', { type: 'text', placeholder: '(화면에만)', size: '26' });
+    var dWs = h('input', { type: 'text', placeholder: '/home/me/other_ws', size: '26' });
+    var dInc = h('input', { type: 'text', placeholder: '이 문자열이 든 토픽만 (쉼표)', size: '22' });
+    var dExc = h('input', { type: 'text', placeholder: '제외할 토픽 (쉼표)', size: '22' });
+    function discArgs() {
+      var a = [];
+      if (dSec.value) a.push('--seconds', dSec.value);
+      if (dName.value.trim()) a.push('--name', dName.value.trim());
+      if (dOut.value.trim()) a.push('--out', dOut.value.trim());
+      if (dWs.value.trim()) a.push('--workspace', dWs.value.trim());
+      if (dInc.value.trim()) a.push('--include', dInc.value.trim());
+      if (dExc.value.trim()) a.push('--exclude', dExc.value.trim());
+      return a;
+    }
+    var dDet = h('details', { class: 'reg' });
+    dDet.appendChild(h('summary', { text: '계약 초안 (discover) — 다른 워크스페이스를 붙일 때' }));
+    dDet.appendChild(h('div', { class: 'regbody toolform' }, [
+      h('p', { class: 'help', html:
+        '<b>대상 시스템을 평소처럼 띄워 둔 상태</b>에서 누르세요. 돌고 있는 토픽·타입·필드 '
+        + '배치를 실제 메시지에서 읽어 계약 초안을 만듭니다. '
+        + '<code>--out</code> 에 <code>contracts/이름.yaml</code> 을 적으면 파일로 남습니다.' }),
+      h('div', { class: 'toolopt' }, [h('label', { class: 'mono', text: '--seconds' }), dSec,
+        h('span', { class: 'mut', text: '몇 초 동안 들을 것인가' })]),
+      h('div', { class: 'toolopt' }, [h('label', { class: 'mono', text: '--name' }), dName,
+        h('span', { class: 'mut', text: '계약 이름' })]),
+      h('div', { class: 'toolopt' }, [h('label', { class: 'mono', text: '--out' }), dOut,
+        h('span', { class: 'mut', text: '쓸 파일 (비우면 화면에만)' })]),
+      h('div', { class: 'toolopt' }, [h('label', { class: 'mono', text: '--workspace' }), dWs,
+        h('span', { class: 'mut', text: '대상 워크스페이스 경로' })]),
+      h('div', { class: 'toolopt' }, [h('label', { class: 'mono', text: '--include' }), dInc, null]),
+      h('div', { class: 'toolopt' }, [h('label', { class: 'mono', text: '--exclude' }), dExc, null]),
+      h('div', { class: 'framebar' }, [
+        h('button', { class: 'primary', text: '계약 초안 뽑기',
+                      onclick: function () { run('discover', discArgs()); } }),
+      ]),
+    ]));
+    view.appendChild(dDet);
     view.appendChild(out);
-    view.appendChild(cli('python3 -m tb.run doctor  /  python3 -m tb.selftest'));
+    view.appendChild(h('p', { class: 'sub', html:
+      '다른 명령은 <a href="#/tools">도구</a> 탭에 전부 있습니다.' }));
   }
 
   /* ── 결과 비교 : 두 실행(또는 기준)을 골라 회귀 비교 ──────────────────── */
@@ -1712,13 +1860,25 @@
     var bSel = h('select', {}, opts(state.runs));
     if (state.runs.length) bSel.value = state.runs[0];
     var out = h('div', { class: 'md' });
+    /* 계약·시나리오를 바꿔 가며 비교할 수 있다 — 계약을 고친 뒤 옛 결과를
+       새 해석으로 다시 보는 것이 회귀 확인의 절반이다. */
+    var cSel = h('select', {}, [h('option', { value: '', text: '(기본)' })].concat(
+      (state.contracts || []).map(function (x) { return h('option', { value: x, text: x }); })));
+    var sSel = h('select', {}, [h('option', { value: '', text: '(기본)' })].concat(
+      (state.scenarios || []).map(function (x) { return h('option', { value: x, text: x }); })));
+    function cmpArgs() {
+      var a = [aSel.value, bSel.value];
+      if (cSel.value) a.push('--contract', 'contracts/' + cSel.value);
+      if (sSel.value) a.push('--scenario', 'scenarios/' + sSel.value);
+      return a;
+    }
 
     view.appendChild(h('div', { class: 'framebar' }, [
       h('span', { class: 'mut', text: '기준' }), aSel,
       h('span', { class: 'mut', text: '→ 현재' }), bSel,
       h('button', { class: 'primary', text: '비교', onclick: function () {
         out.textContent = '비교 중…';
-        postJob('compare', [aSel.value, bSel.value]).then(function () {
+        postJob('compare', cmpArgs()).then(function () {
           setTimeout(function () {
             get('/api/status').then(function (st) {
               out.textContent = st.log_tail || '(출력 없음)';
@@ -1727,263 +1887,791 @@
         });
       } }),
     ]));
+    var adv = h('details', { class: 'reg' });
+    adv.appendChild(h('summary', { text: '고급 옵션' }));
+    adv.appendChild(h('div', { class: 'regbody toolform' }, [
+      h('div', { class: 'toolopt' }, [h('label', { class: 'mono', text: '--contract' }), cSel,
+        h('span', { class: 'mut', text: '이 계약으로 다시 해석해 비교한다' })]),
+      h('div', { class: 'toolopt' }, [h('label', { class: 'mono', text: '--scenario' }), sSel,
+        h('span', { class: 'mut', text: '허용오차(compare_tol)를 이 시나리오 것으로 쓴다' })]),
+    ]));
+    view.appendChild(adv);
     view.appendChild(out);
   }
 
-  /* ── 캘리브레이션 : 4점을 끌어 BEV 를 맞춘다 ────────────────────
+  /* ── 캘리브레이션 : 영상을 돌려 가며 사각형·ROI·px2m 을 직접 맞춘다 ──
    * 기하 계산은 서버(tb.geometry)가 한다 — 대상 노드가 하는 변환을 그대로
-   * 재현한 코드가 이미 있고, 그걸 JS 에 한 벌 더 쓰면 반드시 어긋난다. */
+   * 재현한 코드가 이미 있고, 그걸 JS 에 한 벌 더 쓰면 반드시 어긋난다.
+   * 여기서 하는 일은 ★어디를 찍었는지 원본 좌표로 되돌리는 것★뿐이고,
+   * 그 환산은 서버가 준 meta(disp_w/disp_h/split_x/src_scale)만 쓴다. */
+  var CAL = null;                       // 화면을 떠나도 살아 있는 편집 상태
+
   function renderCalib(st) {
     clear(view);
+    if (CAL) {
+      if (CAL.timer) clearInterval(CAL.timer);
+      (CAL.off || []).forEach(function (f2) { f2(); });   // 이전 화면의 리스너 해제
+    }
+
     view.appendChild(h('h1', { text: '카메라 보정' }));
     view.appendChild(h('p', { class: 'sub',
       text: 'IPM 사각형의 좌우 변을 차선 위에 올리세요. 지면은 평평해서 제대로 올리면 '
             + 'BEV(위에서 내려다본 화면)에서 차선이 수직으로 섭니다. 수직에 얼마나 가까운지를 '
             + '아래 «수직도» 로 재 줍니다 (직선 구간에서만 의미가 있습니다).' }));
 
-    var quad = (st.quad || [620, 650, 1300, 650, 1920, 1080, 0, 1080]).map(Number);
-    var vids = Object.keys(st.videos || {});
-    var state = { frame: 780, px2m: 0.006, undist: true, sel: 0, video: null,
-                  mode: 'quad', meas: [], realM: 3.0 };
-    state.video = vids.length ? st.videos[vids[0]] : null;
-
-    var vidSel = h('select', {}, vids.map(function (k) {
-      return h('option', { value: st.videos[k], text: k });
-    }));
-    vidSel.addEventListener('change', function () { state.video = vidSel.value; draw(); });
-
-    var frIn = h('input', { type: 'number', value: '780', class: 'wherebox',
-                            style: 'max-width:110px' });
-    frIn.addEventListener('change', function () {
-      state.frame = parseInt(frIn.value, 10) || 0; draw();
+    /* ── 편집 대상 — 전부 계약의 targets 에서 온다 ────────────────
+       계약에 ROI 를 하나 더 늘려도 이 화면은 고치지 않는다. */
+    var KIND_LABEL = { quad: 'IPM 사각형', rect: 'ROI', scale: '길이 재기' };
+    var modes = [];
+    Object.keys(st.targets || {}).forEach(function (k) {
+      var t = st.targets[k];
+      if (t.kind === 'quad') modes.push({ id: 'quad', key: k, label: KIND_LABEL.quad, hint: t.hint });
+      else if (t.kind === 'rect') modes.push({ id: k, key: k, label: k, hint: t.hint });
     });
-
-    var pxIn = h('input', { type: 'number', step: '0.0001', value: '0.006',
-                            class: 'wherebox', style: 'max-width:120px' });
-    pxIn.addEventListener('change', function () {
-      state.px2m = parseFloat(pxIn.value) || 0.006; draw();
+    Object.keys(st.targets || {}).forEach(function (k) {
+      var t = st.targets[k];
+      if (t.kind === 'scale') modes.push({ id: 'measure', key: k, label: KIND_LABEL.scale, hint: t.hint });
     });
+    if (!modes.length) modes.push({ id: 'quad', key: '', label: KIND_LABEL.quad, hint: '' });
 
-    var img = h('img', { class: 'bigov', style: 'cursor:crosshair' });
-    var meta = h('div', { class: 'readout' });
-    var yamlBox = h('div', { class: 'md', style: 'max-height:220px' });
-
-    var ptBtns = ['TL', 'TR', 'BR', 'BL'].map(function (t, i) {
-      return h('button', { class: 'sigbtn' + (i === 0 ? ' on' : ''), text: t,
-        style: i === 0 ? 'background:var(--accent)' : '',
-        onclick: function () {
-          state.sel = i;
-          ptBtns.forEach(function (b, k) {
-            b.classList.toggle('on', k === i);
-            b.style.background = k === i ? 'var(--accent)' : '';
-          });
-        } });
-    });
-
-    /* 클릭 처리 — 왼쪽(원본)은 사각형 점 이동, 오른쪽(BEV)은 측정.
-       화면은 축소돼 있으므로 패널 폭 대비 비율로 좌표를 되돌린다. */
-    img.addEventListener('click', function (e) {
-      if (!img.__meta) return;
-      var r = img.getBoundingClientRect();
-      var x = (e.clientX - r.left) / r.width * img.__dispW;
-      var y = (e.clientY - r.top) / r.height * img.__dispH;
-      var mm = img.__meta;
-      if (x <= mm.panel_w) {
-        if (state.mode !== 'quad') return;
-        quad[state.sel * 2] = Math.round(x / mm.panel_w * mm.src_w);
-        quad[state.sel * 2 + 1] = Math.round(y / mm.bev_h * mm.src_h);
-      } else {
-        if (state.mode !== 'measure') return;
-        // BEV 픽셀 좌표 — 표시된 폭이 실제 bev_w 와 다를 수 있으므로 비율로 환산
-        var bevDisp = mm.panel_w + mm.bev_w;
-        var bx = (x - mm.panel_w) / (bevDisp - mm.panel_w) * mm.bev_w;
-        var by = y / mm.bev_h * mm.bev_h;
-        if (state.meas.length >= 2) state.meas = [];
-        state.meas.push([bx, by]);
-      }
-      draw();
-    });
-
-    function nudge(dx, dy) {
-      if (state.mode !== 'quad') return;
-      quad[state.sel * 2] += dx;
-      quad[state.sel * 2 + 1] += dy;
-      draw();
-    }
-    function measInfo() {
-      if (state.meas.length < 2) {
-        return state.mode === 'measure'
-          ? 'BEV 에서 실제 길이를 아는 두 점을 클릭하세요 (차선 폭이 가장 쉽습니다)'
-          : '';
-      }
-      var a = state.meas[0], b = state.meas[1];
-      var d = Math.hypot(a[0] - b[0], a[1] - b[1]);
-      var v = state.realM / Math.max(1e-6, d);
-      return '잰 거리 ' + d.toFixed(1) + ' px = ' + state.realM.toFixed(2) + ' m  →  px2m = '
-             + v.toFixed(6);
-    }
-    function applyMeas() {
-      if (state.meas.length < 2) return;
-      var a = state.meas[0], b = state.meas[1];
-      var d = Math.hypot(a[0] - b[0], a[1] - b[1]);
-      if (d < 2) return;
-      state.px2m = state.realM / d;
-      pxIn.value = state.px2m.toFixed(6);
-      state.meas = [];
-      draw();
-    }
-    document.onkeydown = function (e) {
-      var k = { ArrowLeft: [-1, 0], ArrowRight: [1, 0],
-                ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
-      if (!k) return;
-      e.preventDefault();
-      var m2 = e.shiftKey ? 10 : 1;
-      nudge(k[0] * m2, k[1] * m2);
+    var vidNames = Object.keys(st.videos || {});
+    var curVid = st.video || (vidNames.length ? st.videos[vidNames[0]].path : '');
+    var S = {
+      st: st, video: curVid, frame: st.start || 0,
+      quad: (st.quad || []).slice(), rects: JSON.parse(JSON.stringify(st.rects || {})),
+      px2m: st.px2m, lengthM: st.length_m,
+      mode: modes[0].id, sel: 0, meas: [], realM: st.length_m,
+      undist: st.undistort !== false, grid: true, playing: false, fps: 15,
+      busy: false, dirty: false, timer: null, meta: null, off: [],
     };
+    CAL = S;
 
-    function draw() {
-      syncMeasBtns();
-      if (!state.video) { meta.textContent = 'local.yaml 의 videos: 에 영상을 등록하세요'; return; }
-      var mq = state.meas.length
-               ? '&meas=' + state.meas.map(function (p2) {
-                   return p2[0].toFixed(1) + ',' + p2[1].toFixed(1); }).join(';')
-               : '';
-      var url = '/api/calib/view?quad=' + quad.join(',') +
-                '&frame=' + state.frame + '&px2m=' + state.px2m +
-                '&video=' + encodeURIComponent(state.video) +
-                '&undistort=' + (state.undist ? 1 : 0) + '&w=1400' + mq;
-      get(url).then(function (d) {
-        img.src = 'data:image/jpeg;base64,' + d.img;
-        img.__meta = d.meta;
-        img.__dispW = 1400;
-        img.__dispH = d.meta.bev_h;
-        clear(meta);
-        var v = d.meta.verticality_deg;
-        var verdict = v == null ? '선을 못 찾았습니다'
-          : v < 2 ? '잘 맞았습니다' : v < 5 ? '거의 맞았습니다'
-          : '좌우 변을 차선에 더 붙이세요';
-        meta.appendChild(h('span', {}, [h('b', {
-          text: '수직도 ' + (v == null ? '—' : v + '°') }), 
-          document.createTextNode(' (' + verdict + ', 선 ' + d.meta.lines + '개)')]));
-        meta.appendChild(h('span', { text: 'BEV 폭 ' + d.meta.bev_width_m + ' m' }));
-        if (!d.meta.sane) {
-          meta.appendChild(h('span', { class: 'no', text: '⚠ ' + (d.meta.why || []).join(' / ') }));
-        }
-        var mi = measInfo();
-        if (mi) meta.appendChild(h('span', { class: 'tb', text: mi }));
-        var hint = document.getElementById('calibhint');
-        if (hint) {
-          hint.textContent = state.mode === 'quad'
-            ? '왼쪽 원본 화면을 클릭하면 고른 점이 그 자리로 갑니다. 방향키는 1px, Shift+방향키는 10px.'
-            : '오른쪽 BEV 에서 두 점을 클릭하세요. 실제 길이를 넣고 «px2m 적용» 을 누릅니다.';
-        }
-        yamlBox.textContent = buildYaml();
-      }).catch(function (e) { meta.textContent = '오류: ' + e.message; });
+    function vidInfo() {
+      for (var i = 0; i < vidNames.length; i++) {
+        if (st.videos[vidNames[i]].path === S.video) return st.videos[vidNames[i]];
+      }
+      return {};
+    }
+    function total() { return vidInfo().frames || 0; }
+    if (total()) S.frame = Math.max(0, Math.min(total() - 1, S.frame));
+
+    // ── 1) 시나리오 · 영상 ──────────────────────────────────────
+    var scSel = h('select', {}, (st.scenarios || []).map(function (f2) {
+      return h('option', { value: f2, text: f2 });
+    }));
+    scSel.value = st.scenario || '';
+    scSel.addEventListener('change', function () {
+      stopPlay();
+      var want = scSel.value;
+      get('/api/calib?scenario=' + encodeURIComponent(want))
+        .then(renderCalib)
+        .catch(function (e) {
+          /* 그 계약에 calibration: 이 없으면 맞출 게 없다. 화면을 날리지 않고
+             고르기 전으로 되돌린다 — 안 그러면 탭을 다시 눌러야 한다. */
+          scSel.value = st.scenario || '';
+          say(want + ' 로는 보정할 수 없습니다 — ' + e.message, true);
+        });
+    });
+
+    var vidSel = h('select', {}, vidNames.map(function (k) {
+      var v = st.videos[k];
+      return h('option', { value: v.path,
+        text: k + (v.frames ? '  (' + v.frames + '프레임)' : '  (열 수 없음)') });
+    }));
+    vidSel.value = S.video;
+    vidSel.addEventListener('change', function () {
+      S.video = vidSel.value;
+      S.frame = Math.min(S.frame, Math.max(0, total() - 1));
+      syncBar(); draw();
+    });
+
+    // ── 2) 프레임 바 — 재생하며 정지, 슬라이더로 훑기 ────────────
+    var slider = h('input', { type: 'range', min: '0', max: '1', value: '0',
+                              class: 'calslider' });
+    slider.addEventListener('input', function () {
+      stopPlay(); S.frame = parseInt(slider.value, 10) || 0; syncBar(); draw();
+    });
+    var frIn = h('input', { type: 'number', class: 'wherebox', style: 'max-width:100px' });
+    frIn.addEventListener('change', function () { goto(parseInt(frIn.value, 10) || 0); });
+    var totLbl = h('span', { class: 'mut' });
+    var playBtn = h('button', { class: 'sigbtn', text: '▶ 재생',
+                                title: '스페이스바' , onclick: togglePlay });
+    var fpsIn = h('input', { type: 'number', value: '15', min: '1', max: '60',
+                             class: 'wherebox', style: 'max-width:64px' });
+    fpsIn.addEventListener('change', function () {
+      S.fps = Math.max(1, Math.min(60, parseInt(fpsIn.value, 10) || 15));
+      if (S.playing) { stopPlay(); togglePlay(); }
+    });
+
+    function goto(n) {
+      var t = total();
+      S.frame = Math.max(0, t ? Math.min(t - 1, n) : n);
+      syncBar(); draw();
+    }
+    function step(d) { stopPlay(); goto(S.frame + d); }
+    function togglePlay() {
+      if (S.playing) return stopPlay();
+      S.playing = true;
+      playBtn.textContent = '⏸ 정지';
+      playBtn.classList.add('on');
+      S.timer = setInterval(function () {
+        if (location.hash.indexOf('/calib') < 0) return stopPlay();
+        var t = total();
+        if (t && S.frame >= t - 1) return stopPlay();
+        S.frame += 1; syncBar(); draw();
+      }, Math.round(1000 / S.fps));
+    }
+    function stopPlay() {
+      S.playing = false;
+      if (S.timer) { clearInterval(S.timer); S.timer = null; }
+      playBtn.textContent = '▶ 재생';
+      playBtn.classList.remove('on');
+    }
+    window.__stopPoll = stopPlay;        // 다른 화면으로 가면 라우터가 세운다
+
+    function syncBar() {
+      var t = total();
+      slider.max = String(Math.max(1, t - 1));
+      slider.value = String(S.frame);
+      frIn.value = String(S.frame);
+      totLbl.textContent = t ? '/ ' + (t - 1) : '(프레임 수를 모릅니다)';
     }
 
-    function buildYaml() {
-      var out = 'params:\n';
-      var byNode = {};
-      Object.keys(st.targets || {}).forEach(function (k) {
-        var t = st.targets[k];
-        if (t.kind !== 'quad') return;
-        (t.nodes || []).forEach(function (n) {
-          byNode[n] = byNode[n] || {};
-          byNode[n][t.param] = quad;
-        });
-      });
-      Object.keys(st.targets || {}).forEach(function (k) {
-        var t = st.targets[k];
-        if (t.kind !== 'scale') return;
-        (t.nodes || []).forEach(function (n) {
-          byNode[n] = byNode[n] || {};
-          byNode[n][t.param] = state.px2m;
-        });
-      });
-      Object.keys(byNode).forEach(function (n) {
-        out += '  ' + n + ':\n';
-        Object.keys(byNode[n]).forEach(function (k) {
-          var v = byNode[n][k];
-          out += '    ' + k + ': ' +
-                 (Array.isArray(v) ? '[' + v.join(', ') + ']' : v.toFixed(6)) + '\n';
-        });
-      });
-      return out || '(계약에 quad 대상이 없습니다)';
+    var undBtn = toggleBtn('왜곡보정', function () { return S.undist; },
+      function (v) { S.undist = v; }, '렌즈 왜곡을 펴서 볼지 여부 (u)');
+    var gridBtn = toggleBtn('격자', function () { return S.grid; },
+      function (v) { S.grid = v; }, 'BEV 에 0.5m 격자를 겹칩니다 (g)');
+
+    function toggleBtn(label, getv, setv, title) {
+      var b = h('button', { class: 'sigbtn', title: title, onclick: function () {
+        setv(!getv()); sync(); draw();
+      } });
+      function sync() {
+        var on = getv();
+        b.classList.toggle('on', on);
+        b.style.background = on ? 'var(--accent)' : '';
+        b.textContent = label + ' ' + (on ? 'ON' : 'OFF');
+      }
+      sync();
+      return b;
     }
 
-    var realIn = h('input', { type: 'number', step: '0.05', value: '3.0',
-                              class: 'wherebox', style: 'max-width:100px' });
-    realIn.addEventListener('change', function () {
-      state.realM = parseFloat(realIn.value) || 3.0; draw();
+    // ── 3) 편집 대상 탭 ─────────────────────────────────────────
+    var hintEl2 = h('p', { class: 'sub' });
+    var modeBtns = modes.map(function (m, i) {
+      return h('button', { class: 'sigbtn', text: (i + 1) + '. ' + m.label,
+        title: m.hint || '', onclick: function () { setMode(m.id); } });
     });
-    var modeBtns = [['quad', '사각형 맞추기'],
-                    ['measure', '길이 재기 (px2m)']].map(function (t) {
-      return h('button', { class: 'sigbtn' + (t[0] === state.mode ? ' on' : ''),
-        text: t[1], style: t[0] === state.mode ? 'background:var(--accent)' : '',
-        onclick: function () {
-          state.mode = t[0]; state.meas = [];
-          modeBtns.forEach(function (b, k) {
-            var on = (['quad', 'measure'][k] === state.mode);
-            b.classList.toggle('on', on);
-            b.style.background = on ? 'var(--accent)' : '';
-          });
-          draw();
-        } });
-    });
-    var applyBtn = h('button', { text: 'px2m 적용', onclick: applyMeas });
-    /* 측정 두 점이 없으면 applyMeas 는 조용히 아무것도 안 했다 — 그래서 눌러도
-       반응이 없어 보였다. 지금은 못 누르는 이유가 버튼에 적힌다.
-       실측 길이 입력도 측정 모드에서만 의미가 있으므로 같이 잠근다. */
-    function syncMeasBtns() {
-      var measuring = state.mode === 'measure';
-      var ready = measuring && state.meas.length >= 2;
-      realIn.disabled = !measuring;
-      applyBtn.disabled = !ready;
-      if (ready) {
-        var a = state.meas[0], b = state.meas[1];
-        var d = Math.hypot(a[0] - b[0], a[1] - b[1]);
-        applyBtn.textContent = 'px2m 적용 → ' + (state.realM / Math.max(1e-6, d)).toFixed(6);
-        applyBtn.title = '찍은 두 점 사이를 실제 ' + state.realM.toFixed(2)
-                         + ' m 로 놓고 px2m 을 다시 계산합니다';
+    function setMode(id) {
+      S.mode = id; S.sel = 0; S.meas = [];
+      modes.forEach(function (m, i) {
+        var on = m.id === S.mode;
+        modeBtns[i].classList.toggle('on', on);
+        modeBtns[i].style.background = on ? 'var(--accent)' : '';
+      });
+      var cur = modes.filter(function (m) { return m.id === S.mode; })[0] || {};
+      hintEl2.textContent = (cur.hint ? cur.hint + '  —  ' : '') + (
+        S.mode === 'measure'
+          ? '오른쪽 BEV 에서 실제 길이를 아는 두 점을 클릭하세요 (차선 폭이 가장 쉽습니다).'
+          : S.mode === 'quad'
+            ? '왼쪽 원본에서 점을 끌어 옮기세요. 빈 곳을 누르면 고른 점이 그 자리로 갑니다.'
+            : '왼쪽 원본에서 드래그하면 새 사각형, 모서리를 잡으면 그 모서리만 움직입니다.');
+      drawFields(); draw();
+    }
+
+    // ── 4) 값 패널 — 지금 고른 대상의 숫자를 직접 넣을 수도 있다 ──
+    var fields = h('div', { class: 'framebar' });
+    function numField(label, get2, set2, stepv) {
+      var i = h('input', { type: 'number', step: String(stepv || 1),
+                           class: 'wherebox', style: 'max-width:96px',
+                           value: String(get2()) });
+      i.addEventListener('change', function () {
+        var v = parseFloat(i.value);
+        if (v === v) { set2(v); draw(); }
+      });
+      i.__sync = function () { if (document.activeElement !== i) i.value = String(get2()); };
+      return [h('span', { class: 'mut', text: label }), i];
+    }
+    var syncers = [];
+    function drawFields() {
+      clear(fields); syncers = [];
+      function add(pair) { fields.appendChild(pair[0]); fields.appendChild(pair[1]);
+                           syncers.push(pair[1].__sync); }
+      if (S.mode === 'quad') {
+        ['TL', 'TR', 'BR', 'BL'].forEach(function (lab, i) {
+          fields.appendChild(h('button', {
+            class: 'sigbtn' + (S.sel === i ? ' on' : ''), text: lab,
+            style: S.sel === i ? 'background:var(--accent)' : '',
+            onclick: function () { S.sel = i; drawFields(); } }));
+          add(numField('x', function () { return Math.round(S.quad[i * 2]); },
+                       function (v) { S.quad[i * 2] = v; }));
+          add(numField('y', function () { return Math.round(S.quad[i * 2 + 1]); },
+                       function (v) { S.quad[i * 2 + 1] = v; }));
+        });
+      } else if (S.rects[S.mode]) {
+        ['x0', 'y0', 'x1', 'y1'].forEach(function (lab, i) {
+          add(numField(lab, function () { return Math.round(S.rects[S.mode][i]); },
+                       function (v) { S.rects[S.mode][i] = v; }));
+        });
+        fields.appendChild(h('button', { text: '화면 전체', onclick: function () {
+          S.rects[S.mode] = [0, 0, st.size[0], st.size[1]]; drawFields(); draw();
+        } }));
+      } else if (S.mode === 'measure') {
+        add(numField('실제 길이 [m]', function () { return S.realM; },
+                     function (v) { S.realM = v; }, 0.05));
+        fields.appendChild(applyBtn);
+        fields.appendChild(h('button', { text: '측정 지우기',
+          onclick: function () { S.meas = []; draw(); } }));
+      }
+      fields.appendChild(h('span', { class: 'spacer' }));
+      add(numField('px2m', function () { return S.px2m; },
+                   function (v) { S.px2m = v; }, 0.0001));
+      add(numField('lane_width [m]', function () { return S.lengthM; },
+                   function (v) { S.lengthM = v; }, 0.05));
+      syncFields();
+    }
+    function syncFields() { syncers.forEach(function (f2) { if (f2) f2(); }); }
+
+    var applyBtn = h('button', { text: 'px2m 적용', onclick: function () {
+      if (S.meas.length < 2) return;
+      var d = Math.hypot(S.meas[0][0] - S.meas[1][0], S.meas[0][1] - S.meas[1][1]);
+      if (d < 2) return;
+      S.px2m = Number((S.realM / d).toFixed(6));
+      S.lengthM = S.realM;                 // 잰 길이가 곧 차선 폭이다
+      S.meas = [];
+      drawFields(); draw();
+    } });
+
+    // ── 5) 화면 ─────────────────────────────────────────────────
+    var img = h('img', { class: 'bigov', style: 'cursor:crosshair;user-select:none' });
+    var meta = h('div', { class: 'readout' });
+
+    /* 클릭 좌표 → 원본 픽셀. ★서버가 준 meta 로만 환산한다★
+       (예전에는 리사이즈 전 값을 써서 6~7% 어긋났다) */
+    function at(e) {
+      var m = S.meta;
+      if (!m) return null;
+      var r = img.getBoundingClientRect();
+      var x = (e.clientX - r.left) / r.width * m.disp_w;
+      var y = (e.clientY - r.top) / r.height * m.disp_h;
+      if (x <= m.split_x) {
+        return { panel: 'src', x: x / m.src_scale, y: y / m.src_scale };
+      }
+      return { panel: 'bev', x: (x - m.split_x) / m.bev_scale, y: y / m.bev_scale };
+    }
+    function handles() {                 // [x, y, 쓰기 함수]
+      if (S.mode === 'quad') {
+        return [0, 1, 2, 3].map(function (i) {
+          return [S.quad[i * 2], S.quad[i * 2 + 1], function (x, y) {
+            S.quad[i * 2] = Math.round(x); S.quad[i * 2 + 1] = Math.round(y); }];
+        });
+      }
+      var r = S.rects[S.mode];
+      if (!r) return [];
+      return [0, 1].map(function (i) {
+        return [r[i * 2], r[i * 2 + 1], function (x, y) {
+          r[i * 2] = Math.round(x); r[i * 2 + 1] = Math.round(y); }];
+      });
+    }
+
+    var drag = null;
+    img.addEventListener('mousedown', function (e) {
+      var p = at(e);
+      if (!p) return;
+      e.preventDefault();
+      if (p.panel === 'bev') {
+        if (S.mode !== 'measure') return;
+        if (S.meas.length >= 2) S.meas = [];
+        S.meas.push([p.x, p.y]);
+        return draw();
+      }
+      if (S.mode === 'measure') return;
+      var hs = handles();
+      var near = -1, best = 1e9;
+      hs.forEach(function (hh, i) {
+        var d = Math.hypot(hh[0] - p.x, hh[1] - p.y);
+        if (d < best) { best = d; near = i; }
+      });
+      var reach = 70 / Math.max(1e-6, S.meta.src_scale);      // 화면상 70px
+      if (near >= 0 && best < reach) {
+        S.sel = near; drag = hs[near];
+      } else if (S.rects[S.mode]) {
+        S.rects[S.mode] = [Math.round(p.x), Math.round(p.y),
+                           Math.round(p.x), Math.round(p.y)];
+        S.sel = 1; drag = handles()[1];                       // 반대 모서리를 끈다
       } else {
-        applyBtn.textContent = 'px2m 적용';
-        applyBtn.title = measuring
-          ? 'BEV 에서 두 점을 클릭하면 눌립니다 (지금 ' + state.meas.length + '/2)'
-          : '«길이 재기» 모드에서만 씁니다';
+        drag = hs[S.sel];                                     // 고른 점을 그리로
+      }
+      if (drag) { drag[2](p.x, p.y); drawFields(); draw(); }
+    });
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    S.off.push(function () {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    });
+    function onMove(e) {
+      if (!drag) return;
+      var p = at(e);
+      if (!p || p.panel !== 'src') return;
+      drag[2](p.x, p.y);
+      syncFields(); draw();
+    }
+    function onUp() { if (drag) { drag = null; drawFields(); } }
+
+    document.onkeydown = function (e) {
+      if (/^(INPUT|SELECT|TEXTAREA)$/.test((e.target || {}).tagName || '')) return;
+      var nud = { ArrowLeft: [-1, 0], ArrowRight: [1, 0],
+                  ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
+      if (nud) {
+        var hs = handles();
+        if (!hs.length || S.sel >= hs.length) return;
+        e.preventDefault();
+        var m2 = e.shiftKey ? 10 : 1;
+        hs[S.sel][2](hs[S.sel][0] + nud[0] * m2, hs[S.sel][1] + nud[1] * m2);
+        syncFields(); return draw();
+      }
+      if (e.key === ' ') { e.preventDefault(); return togglePlay(); }
+      if (e.key === ',') return step(-1);
+      if (e.key === '.') return step(1);
+      if (e.key === '[') return step(-30);
+      if (e.key === ']') return step(30);
+      if (e.key === 'g') { S.grid = !S.grid; return refreshToggles(); }
+      if (e.key === 'u') { S.undist = !S.undist; return refreshToggles(); }
+      if (e.key === 'r') return reset();
+      var n = parseInt(e.key, 10);
+      if (n >= 1 && n <= modes.length) return setMode(modes[n - 1].id);
+    };
+    function refreshToggles() {
+      // 토글 버튼의 라벨은 '지금 상태'다 — 키로 바꿨으면 버튼도 따라와야 한다
+      [[undBtn, S.undist, '왜곡보정'], [gridBtn, S.grid, '격자']].forEach(function (t) {
+        t[0].classList.toggle('on', t[1]);
+        t[0].style.background = t[1] ? 'var(--accent)' : '';
+        t[0].textContent = t[2] + ' ' + (t[1] ? 'ON' : 'OFF');
+      });
+      draw();
+    }
+    function reset() {
+      S.quad = (st.quad || []).slice();
+      S.rects = JSON.parse(JSON.stringify(st.rects || {}));
+      S.px2m = st.px2m; S.lengthM = st.length_m; S.realM = st.length_m;
+      S.meas = [];
+      drawFields(); draw();
+      say('파일에 있던 값으로 되돌렸습니다');
+    }
+
+    // ── 6) 그리기 — 서버에 한 번에 하나만 물어본다 ───────────────
+    function body() {
+      return { scenario: scSel.value, video: S.video, frame: S.frame,
+               quad: S.quad, rects: S.rects, px2m: S.px2m, length_m: S.lengthM,
+               undistort: S.undist, grid: S.grid, mode: S.mode,
+               meas: S.meas, w: 1400 };
+    }
+    var yamlTimer = null;
+    function draw() {
+      if (yamlTimer) clearTimeout(yamlTimer);
+      yamlTimer = setTimeout(refreshYaml, 500);
+      if (!S.video) { meta.textContent = '먼저 영상을 등록하세요 (테스트 실행 화면)'; return; }
+      if (S.busy) { S.dirty = true; return; }
+      S.busy = true;
+      postJSON('/api/calib/view', body()).then(function (d) {
+        S.busy = false;
+        if (d.error) { meta.textContent = '오류: ' + d.error; return; }
+        S.meta = d.meta;
+        img.src = 'data:image/jpeg;base64,' + d.img;
+        drawMeta(d.meta);
+        if (S.dirty) { S.dirty = false; draw(); }
+      }).catch(function (e) {
+        S.busy = false; meta.textContent = '오류: ' + e.message;
+      });
+    }
+    function drawMeta(m) {
+      clear(meta);
+      var v = m.verticality_deg;
+      var verdict = v == null ? '선을 못 찾았습니다'
+        : v < 2 ? '잘 맞았습니다' : v < 5 ? '거의 맞았습니다'
+        : '좌우 변을 차선에 더 붙이세요';
+      meta.appendChild(h('span', {}, [
+        h('b', { text: '수직도 ' + (v == null ? '—' : v + '°') }),
+        document.createTextNode(' (' + verdict + ', 선 ' + m.lines + '개)')]));
+      meta.appendChild(h('span', { text: 'BEV 폭 ' + m.bev_width_m + ' m' }));
+      meta.appendChild(h('span', { class: 'mut', text: 'frame ' + S.frame }));
+      if (!m.sane) {
+        meta.appendChild(h('span', { class: 'no', text: '⚠ ' + (m.why || []).join(' / ') }));
+      }
+      if (S.mode === 'measure') {
+        if (S.meas.length >= 2) {
+          var d = Math.hypot(S.meas[0][0] - S.meas[1][0], S.meas[0][1] - S.meas[1][1]);
+          meta.appendChild(h('span', { class: 'tb', text:
+            '잰 거리 ' + d.toFixed(1) + ' px = ' + S.realM.toFixed(2) + ' m  →  px2m = '
+            + (S.realM / Math.max(1e-6, d)).toFixed(6) }));
+          applyBtn.disabled = false;
+          applyBtn.textContent = 'px2m 적용 → ' + (S.realM / Math.max(1e-6, d)).toFixed(6);
+        } else {
+          applyBtn.disabled = true;
+          applyBtn.textContent = 'px2m 적용';
+          meta.appendChild(h('span', { class: 'mut',
+            text: 'BEV 에서 두 점을 클릭하세요 (지금 ' + S.meas.length + '/2)' }));
+        }
       }
     }
 
-    /* 왜곡보정 토글 — 라벨이 '지금 상태'다. 누르라는 명령이 아니라 켜져 있다는 표시라서
-       다른 토글(점·모드)과 같은 on 스타일을 그대로 쓴다. */
-    var undBtn = h('button', { class: 'sigbtn on', style: 'background:var(--accent)',
-      text: '왜곡보정 ON', title: '렌즈 왜곡을 펴서 볼지 여부',
-      onclick: function () {
-        state.undist = !state.undist;
-        undBtn.classList.toggle('on', state.undist);
-        undBtn.style.background = state.undist ? 'var(--accent)' : '';
-        undBtn.textContent = '왜곡보정 ' + (state.undist ? 'ON' : 'OFF');
-        draw();
-      } });
+    // ── 7) 저장 · 대조 ──────────────────────────────────────────
+    var yamlBox = h('div', { class: 'md', style: 'max-height:240px' });
+    var saveSel = h('select', {}, [h('option', { value: 'local', text: 'local.yaml (이 PC 전용)' })]
+      .concat((st.scenarios || []).map(function (f2) {
+        return h('option', { value: f2, text: 'scenarios/' + f2 });
+      })));
+    function say(msg, bad) {
+      hintEl.textContent = (bad ? '오류: ' : '') + msg;
+      setTimeout(function () { hintEl.textContent = ''; }, 5000);
+    }
+    function refreshYaml() {
+      postJSON('/api/calib/yaml', body()).then(function (d) {
+        yamlBox.textContent = d.error ? ('오류: ' + d.error) : d.yaml;
+      }).catch(function (e) { yamlBox.textContent = '오류: ' + e.message; });
+    }
+    var saveBtn = h('button', { class: 'primary', text: '저장', onclick: function () {
+      var b = body();
+      b.target = saveSel.value;
+      postJSON('/api/calib/save', b).then(function (d) {
+        if (d.error) return say(d.error, true);
+        say(d.path + ' 에 저장했습니다');
+        get('/api/calib?scenario=' + encodeURIComponent(scSel.value))
+          .then(function (s2) { st.quad = s2.quad; st.rects = s2.rects;
+                                st.px2m = s2.px2m; st.length_m = s2.length_m; })
+          .catch(function () {});
+      }).catch(function (e) { say(e.message, true); });
+    } });
 
+    var runSel = h('select', {}, (st.runs || []).map(function (r) {
+      return h('option', { value: r, text: r });
+    }));
+    var vOut = h('div', { class: 'md' });
+    var vBtn = h('button', { text: '노드와 대조', onclick: function () {
+      if (!(st.runs || []).length) return;
+      vOut.textContent = '대조 중… (프레임을 여러 장 맞춰 보므로 시간이 걸립니다)';
+      postJSON('/api/calib/verify', { scenario: scSel.value, run: runSel.value })
+        .then(function (d) { vOut.textContent = d.error ? ('오류: ' + d.error) : d.out; })
+        .catch(function (e) { vOut.textContent = '오류: ' + e.message; });
+    } });
+
+    // ── 조립 ────────────────────────────────────────────────────
     view.appendChild(h('div', { class: 'framebar' }, [
+      h('span', { class: 'mut', text: '시나리오' }), scSel,
       h('span', { class: 'mut', text: '영상' }), vidSel,
-      h('span', { class: 'mut', text: 'frame' }), frIn,
-      h('span', { class: 'mut', text: 'px2m' }), pxIn,
-      undBtn,
-    ]));
-    view.appendChild(h('div', { class: 'framebar' }, modeBtns.concat([
-      h('span', { class: 'mut', text: '실제 길이 [m]' }), realIn, applyBtn,
       h('span', { class: 'spacer' }),
-      h('span', { class: 'mut', text: '점' }),
-    ]).concat(ptBtns)));
-    view.appendChild(h('p', { class: 'sub', id: 'calibhint',
-      text: '왼쪽 원본 화면을 클릭하면 고른 점이 그 자리로 갑니다. 방향키는 1px, Shift+방향키는 10px.' }));
+      h('span', { class: 'mut', text: '계약 ' + (st.contract_file || '') }),
+    ]));
+    view.appendChild(h('div', { class: 'framebar' }, [
+      playBtn,
+      h('button', { class: 'sigbtn', text: '처음', title: '0번 프레임으로',
+                    onclick: function () { step(-1e9); } }),
+      h('button', { class: 'sigbtn', text: '−30', title: '[', onclick: function () { step(-30); } }),
+      h('button', { class: 'sigbtn', text: '−1', title: ',', onclick: function () { step(-1); } }),
+      h('button', { class: 'sigbtn', text: '+1', title: '.', onclick: function () { step(1); } }),
+      h('button', { class: 'sigbtn', text: '+30', title: ']', onclick: function () { step(30); } }),
+      frIn, totLbl,
+      h('span', { class: 'mut', text: 'fps' }), fpsIn,
+      h('span', { class: 'spacer' }), undBtn, gridBtn,
+    ]));
+    view.appendChild(slider);
+    view.appendChild(h('div', { class: 'framebar' }, modeBtns.concat([
+      h('span', { class: 'spacer' }),
+      h('button', { text: '되돌리기', title: '파일에 있던 값으로 (r)', onclick: reset }),
+    ])));
+    view.appendChild(hintEl2);
+    view.appendChild(fields);
     view.appendChild(img);
     view.appendChild(meta);
-    view.appendChild(sectionTitle('시나리오에 붙여 넣을 값'));
+    view.appendChild(h('p', { class: 'sub', text:
+      '단축키 — 스페이스 재생/정지 · , . 한 프레임 · [ ] 30프레임 · 방향키 1px · '
+      + 'Shift+방향키 10px · 1~' + modes.length + ' 편집 대상 · g 격자 · u 왜곡보정 · r 되돌리기' }));
+
+    view.appendChild(sectionTitle('저장'));
+    view.appendChild(h('p', { class: 'help', html:
+      '캘리브 값은 카메라·영상마다 다르므로 보통 <b>local.yaml</b> 에 둡니다. '
+      + '시나리오에 굳혀 두고 싶을 때만 시나리오를 고르세요. 두 경우 모두 <b>주석은 그대로</b> 남습니다.' }));
+    view.appendChild(h('div', { class: 'framebar' }, [
+      h('span', { class: 'mut', text: '저장할 곳' }), saveSel, saveBtn,
+      h('button', { text: 'YAML 새로 고침', onclick: refreshYaml }),
+    ]));
     view.appendChild(yamlBox);
-    view.appendChild(cli('python3 -m tb.calibrate --scenario scenarios/regression.yaml'));
-    draw();
+
+    view.appendChild(sectionTitle('노드와 대조'));
+    view.appendChild(h('p', { class: 'help', html:
+      '여기서 그리는 BEV 가 <b>노드가 실제로 만드는 BEV</b> 와 같은지 확인합니다. '
+      + '<code>--record-debug</code> 로 디버그 영상을 남긴 실행이 있어야 합니다.' }));
+    view.appendChild(h('div', { class: 'framebar' }, (st.runs || []).length
+      ? [h('span', { class: 'mut', text: '실행' }), runSel, vBtn]
+      : [h('span', { class: 'mut', text:
+          '디버그 영상이 있는 실행이 없습니다 — 테스트 실행에서 «디버그 영상 기록» 을 켜고 한 번 돌리세요.' })]));
+    view.appendChild(vOut);
+    view.appendChild(cli('python3 -m tb.calibrate --scenario scenarios/'
+                         + (st.scenario || 'regression.yaml')));
+
+    setMode(S.mode);
+    syncBar();
+    refreshYaml();
+  }
+
+  /* ── 도구 : 터미널에서 되는 것을 전부 여기서 ──────────────────────
+   * 폼도 화이트리스트도 서버의 COMMANDS 명세 하나에서 나온다. 화면에 인자를
+   * 따로 적어 두면 CLI 에 인자가 늘어도 웹은 모르고, 반대로 화면에만 있는
+   * 인자는 서버가 거부한다 — 그래서 여기에는 인자 이름이 하나도 없다. */
+  var TOOLS = { pick: '', vals: {}, timer: null };
+
+  function renderTools(spec, want) {
+    clear(view);
+    if (TOOLS.timer) { clearInterval(TOOLS.timer); TOOLS.timer = null; }
+    var cmds = spec.commands || [];
+    var choices = spec.choices || {};
+
+    view.appendChild(h('h1', { text: '도구' }));
+    view.appendChild(h('p', { class: 'sub',
+      text: '터미널에서 쓰는 명령을 그대로 씁니다. 고르면 그 명령이 받는 인자만 물어보고, '
+            + '실제로 어떤 명령줄이 되는지 아래에 그대로 보여 줍니다.' }));
+
+    var pick = want || TOOLS.pick || (cmds.length ? cmds[0].id : '');
+    if (!cmds.filter(function (c) { return c.id === pick; }).length) {
+      pick = cmds.length ? cmds[0].id : '';
+    }
+    TOOLS.pick = pick;
+
+    var listBox = h('div', { class: 'toollist' });
+    var formBox = h('div', { class: 'toolform' });
+    var cmdBox = h('div', { class: 'cli' });
+    var runBar = h('div', { class: 'framebar' });
+    var outBox = h('div', {});
+
+    cmds.forEach(function (c) {
+      listBox.appendChild(h('button', {
+        class: 'toolbtn' + (c.id === pick ? ' on' : ''),
+        onclick: function () { location.hash = '/tools/' + c.id; } }, [
+        h('b', { text: c.title }),
+        h('span', { class: 'mono mut', text: c.id }),
+      ]));
+    });
+
+    var cur = cmds.filter(function (c) { return c.id === pick; })[0];
+
+    /* 값 저장소 — 명령을 오가도 입력한 값이 남아 있게 명령별로 따로 둔다 */
+    TOOLS.vals[pick] = TOOLS.vals[pick] || {};
+    var V = TOOLS.vals[pick];
+
+    function optionsFor(a) {
+      var src = (choices[a.src] || []).slice();
+      return src;
+    }
+
+    function field(a, key) {
+      var t = a.type;
+      if (t === 'flag') {
+        var cb = h('input', { type: 'checkbox' });
+        cb.checked = !!V[key];
+        cb.addEventListener('change', function () { V[key] = cb.checked; sync(); });
+        return h('label', { class: 'toolopt' }, [cb, h('span', { text: a.flag })]);
+      }
+      var inp;
+      if (t === 'choice') {
+        inp = h('select', {}, [h('option', { value: '', text: '(안 씀)' })].concat(
+          optionsFor(a).map(function (o) { return h('option', { value: o, text: o }); })));
+      } else if (t === 'run') {
+        inp = h('select', {}, [h('option', { value: '', text: '(안 씀)' })].concat(
+          (choices.runs || []).map(function (o) { return h('option', { value: o, text: o }); })));
+      } else {
+        inp = h('input', { type: (t === 'int' || t === 'float') ? 'number' : 'text',
+                           step: t === 'float' ? 'any' : (t === 'int' ? '1' : null),
+                           placeholder: a.repeat ? '쉼표로 여러 개' : '' });
+      }
+      inp.value = V[key] == null ? '' : V[key];
+      inp.className = 'wherebox';
+      inp.addEventListener(t === 'choice' || t === 'run' ? 'change' : 'input',
+        function () { V[key] = inp.value; sync(); });
+      return h('div', { class: 'toolopt' }, [
+        h('label', { class: 'mono', text: a.flag || a.name }), inp,
+        a.help ? h('span', { class: 'mut', text: a.help }) : null,
+      ]);
+    }
+
+    function argv() {
+      var out = [];
+      (cur.pos || []).forEach(function (pp, i) {
+        var v = (V['pos' + i] || '').trim();
+        if (v) out.push(v);
+      });
+      (cur.args || []).forEach(function (a) {
+        var v = V[a.flag];
+        if (a.type === 'flag') { if (v) out.push(a.flag); return; }
+        v = (v == null ? '' : String(v)).trim();
+        if (!v) return;
+        if (a.repeat) {
+          v.split(',').forEach(function (one) {
+            one = one.trim();
+            if (one) { out.push(a.flag); out.push(one); }
+          });
+          return;
+        }
+        out.push(a.flag);
+        out.push((a.prefix && v.indexOf('/') < 0) ? a.prefix + v : v);
+      });
+      return out;
+    }
+    function sync() {
+      cmdBox.textContent = '$ python3 -m ' + (cur.module || []).join(' ') + ' '
+                           + argv().join(' ');
+    }
+
+    function drawForm() {
+      clear(formBox);
+      formBox.appendChild(h('p', { class: 'help', text: cur.desc || '' }));
+      (cur.pos || []).forEach(function (pp, i) {
+        var key = 'pos' + i;
+        var inp;
+        if (pp.type === 'run') {
+          inp = h('select', {}, [h('option', { value: '', text: '(고르세요)' })].concat(
+            (choices.runs || []).map(function (o) {
+              return h('option', { value: o, text: o }); })));
+        } else {
+          inp = h('select', {}, [h('option', { value: '', text: '(고르세요)' })].concat(
+            (choices.baselines || []).concat(choices.runs || []).map(function (o) {
+              return h('option', { value: o, text: o }); })));
+        }
+        inp.className = 'wherebox';
+        inp.value = V[key] || '';
+        inp.addEventListener('change', function () { V[key] = inp.value; sync(); });
+        formBox.appendChild(h('div', { class: 'toolopt' }, [
+          h('label', { class: 'mono', text: pp.name
+            + (pp.required ? ' *' : '') }), inp,
+          h('span', { class: 'mut', text: pp.help || '' })]));
+      });
+      var flags = (cur.args || []).filter(function (a) { return a.type === 'flag'; });
+      var rest = (cur.args || []).filter(function (a) { return a.type !== 'flag'; });
+      rest.forEach(function (a) { formBox.appendChild(field(a, a.flag)); });
+      if (flags.length) {
+        formBox.appendChild(h('div', { class: 'toolflags' },
+          flags.map(function (a) {
+            var cb = h('input', { type: 'checkbox' });
+            cb.checked = !!V[a.flag];
+            cb.addEventListener('change', function () { V[a.flag] = cb.checked; sync(); });
+            return h('label', { class: 'toolflag', title: a.help || '' },
+                     [cb, h('span', { class: 'mono', text: a.flag }),
+                      h('span', { class: 'mut', text: a.help || '' })]);
+          })));
+      }
+      sync();
+    }
+
+    function drawRunBar() {
+      clear(runBar);
+      runBar.appendChild(h('button', { class: 'primary', text: '실행',
+        onclick: function () {
+          outBox.textContent = '';
+          if (cur.quick) {
+            outBox.appendChild(spinner('돌리는 중…'));
+            var qs = argv().map(function (a) { return 'a=' + encodeURIComponent(a); });
+            get('/api/quick/' + cur.id + (qs.length ? '?' + qs.join('&') : ''))
+              .then(function (d) {
+                clear(outBox);
+                outBox.appendChild(h('div', { class: 'md',
+                  text: (d.out || '(출력 없음)') }));
+                say((d.rc === 0 ? '이상 없음' : '문제 있음') + ' (종료코드 ' + d.rc + ')');
+              })
+              .catch(function (e) { outBox.textContent = '오류: ' + e.message; });
+            return;
+          }
+          postJob(cur.id, argv()).then(function (j) { if (!j.error) poll(); });
+        } }));
+      runBar.appendChild(h('button', { text: '값 지우기', onclick: function () {
+        TOOLS.vals[pick] = {}; V = TOOLS.vals[pick]; drawForm(); } }));
+      runBar.appendChild(h('span', { class: 'spacer' }));
+      runBar.appendChild(h('button', { text: '중지', onclick: function () {
+        fetch('/api/jobs/stop', { method: 'POST' })
+          .then(function (r) { return r.json(); })
+          .then(function (j) { say(j.error || '중지 신호를 보냈습니다'); });
+      } }));
+    }
+    function say(m) {
+      hintEl.textContent = m;
+      setTimeout(function () { hintEl.textContent = ''; }, 4000);
+    }
+
+    function poll() {
+      if (TOOLS.timer) clearInterval(TOOLS.timer);
+      var tick = function () {
+        if (location.hash.indexOf('/tools') < 0) {
+          clearInterval(TOOLS.timer); TOOLS.timer = null; return;
+        }
+        get('/api/status').then(function (st) {
+          clear(outBox);
+          outBox.appendChild(jobBox(st));
+          if (!st.running) { clearInterval(TOOLS.timer); TOOLS.timer = null; }
+        }).catch(function () { clearInterval(TOOLS.timer); TOOLS.timer = null; });
+      };
+      tick();
+      TOOLS.timer = setInterval(tick, 1200);
+    }
+    window.__stopPoll = function () {
+      if (TOOLS.timer) { clearInterval(TOOLS.timer); TOOLS.timer = null; }
+    };
+
+    view.appendChild(h('div', { class: 'toolwrap' }, [
+      listBox,
+      h('div', {}, [formBox, cmdBox, runBar, outBox]),
+    ]));
+
+    view.appendChild(sectionTitle('여기 없는 명령'));
+    view.appendChild(h('div', { class: 'tbl' }, [h('table', {}, [
+      h('tbody', {}, (spec.omitted || []).map(function (o) {
+        return h('tr', {}, [h('td', { class: 'mono', text: o[0] }),
+                            h('td', { text: o[1] })]);
+      })),
+    ])]));
+
+    drawForm();
+    drawRunBar();
+    get('/api/status').then(function (st) {
+      if (st.running) poll();
+    }).catch(function () {});
+  }
+
+  /* 실행 중 화면 — «테스트 실행» 과 «도구» 가 같은 것을 본다 */
+  function jobBox(st) {
+    var pr = st.progress || {};
+    var frac = pr.total ? Math.min(1, (pr.pushed || 0) / pr.total) : 0;
+    var head = h('div', { class: 'livehd' }, [
+      h('b', { text: st.running ? '● 실행 중' : '○ 끝났습니다' }),
+      h('span', { class: 'mut mono', text: st.cmd || (st.kind || '') }),
+      h('span', { class: 'spacer' }),
+      h('span', { text: (st.elapsed_s || 0).toFixed(1) + 's' }),
+    ]);
+    if (pr.total) {
+      head.appendChild(h('span', { text: '  ' + (pr.pushed || 0) + '/' + pr.total +
+        '  sync ' + (pr.sync || 0) + (pr.fps ? '  ' + pr.fps.toFixed(1) + 'fps' : '') }));
+    }
+    if (!st.running && st.returncode != null) {
+      head.appendChild(h('b', { class: st.returncode === 0 ? 'ok' : 'no',
+        text: '  종료코드 ' + st.returncode }));
+    }
+    var box = h('div', { class: 'livebox' }, [head]);
+    if (pr.total) box.appendChild(h('div', { class: 'pbar' },
+      [h('i', { style: 'width:' + (frac * 100).toFixed(1) + '%' })]));
+    if (st.has_live && st.running) {
+      box.appendChild(h('img', { class: 'liveimg', alt: '라이브 화면',
+        src: '/api/runs/' + encodeURIComponent(st.run) + '/live?t=' + Date.now() }));
+    }
+    if (st.run && !st.running) {
+      box.appendChild(h('div', { class: 'framebar' }, [
+        h('button', { class: 'primary', text: '결과 보기 →',
+          onclick: function () { location.hash = '/run/' + st.run; } }),
+        h('span', { class: 'mut mono', text: st.run }),
+      ]));
+    }
+    if (st.log_tail) {
+      box.appendChild(h('div', { class: 'md', style: 'margin-top:11px;max-height:280px',
+        text: st.log_tail }));
+    }
+    return box;
   }
 
   /* ── 사용방법 : 오프라인에서도 보이는 안내 ─────────────────────── */
@@ -2310,17 +2998,30 @@
     });
 
     view.appendChild(sec('12. 터미널에서'));
+    view.appendChild(para(
+      '아래 명령은 <b>전부 <a href="#/tools">도구</a> 탭에 그대로 있다</b> — 인자를 골라 넣으면 ' +
+      '어떤 명령줄이 되는지 보여 주고 그대로 실행한다. 터미널이 편하면 터미널에서 쓰면 된다.'));
     view.appendChild(h('div', { class: 'md', text:
       'python3 -m tb.run doctor                                # 점검\n' +
       'python3 -m tb.run inject --scenario scenarios/regression.yaml\n' +
       'python3 -m tb.run run    --scenario scenarios/regression.yaml\n' +
       'python3 -m tb.run run    --scenario ... --watch         # 창 띄우고 space/n\n' +
       'python3 -m tb.run baseline <실행> --name regression\n' +
+      'python3 -m tb.run compare <A> <B>\n' +
+      'python3 -m tb.run reanalyze <실행>                      # 계약 수정 후 재해석\n' +
       'python3 -m tb.run render <실행> --mp4 auto              # 경로 영상\n' +
       'python3 -m tb.run harvest <실행> --where "int(flags) % 4 >= 2"\n' +
       'python3 -m tb.run feedback <실행> --vs <이전 실행>      # 개선 요청문\n' +
-      'python3 -m tb.calibrate --scenario scenarios/regression.yaml\n' +
-      'python3 -m tb.run list' }));
+      'python3 -m tb.run list\n' +
+      'python3 -m tb.selftest\n' +
+      'python3 -m tb.discover --seconds 8 --out contracts/other.yaml\n' +
+      'python3 -m tb.calibrate --scenario scenarios/regression.yaml' }));
+    view.appendChild(para(
+      '웹에 없는 것은 셋뿐이고 이유가 분명하다. <code>tb.run web / app</code> 은 <b>이 앱 자신</b>을 ' +
+      '띄우는 명령이고, <code>tb.calibrate</code> 는 <a href="#/calib">카메라 보정</a> 탭이 대신하며, ' +
+      '<code>tb.viewer / player / probe</code> 는 <code>tb.run</code> 이 내부적으로 띄우는 모듈이다. ' +
+      '<code>--watch</code> 는 도구 탭에 있지만, 그 창은 <b>서버가 도는 PC 의 화면</b>에 뜬다 — ' +
+      '멀리서 브라우저로 붙었다면 라이브 화면이 그 자리를 대신한다.'));
   }
 
   // ── 라우팅 ──────────────────────────────────────────────────────
@@ -2359,27 +3060,42 @@
       setNav('calib');
       return get('/api/calib').then(renderCalib).catch(fail);
     }
+    var mt2 = hash.match(/^\/tools(?:\/([A-Za-z0-9_-]+))?$/);
+    if (mt2) {
+      setNav('tools');
+      return get('/api/commands').then(function (sp) {
+        renderTools(sp, mt2[1] || '');
+      }).catch(fail);
+    }
     if (hash === '/check') {
       setNav('check');
       return get('/api/meta').then(function (mt) {
-        renderCheck({ scenarios: mt.scenarios || [] });
+        renderCheck({ scenarios: mt.scenarios || [], contracts: mt.contracts || [] });
       }).catch(fail);
     }
     if (hash === '/compare') {
       setNav('compare');
       return get('/api/runs').then(function (d) {
         return get('/api/baselines').then(function (b) {
-          renderCompare({
-            runs: (d.runs || []).filter(function (r) { return r.has_summary; })
-                    .map(function (r) { return r.id; }),
-            baselines: (b.baselines || []).map(function (x) { return x.name; }),
+          return get('/api/meta').then(function (mt) {
+            renderCompare({
+              runs: (d.runs || []).filter(function (r) { return r.has_summary; })
+                      .map(function (r) { return r.id; }),
+              baselines: (b.baselines || []).map(function (x) { return x.name; }),
+              contracts: mt.contracts || [], scenarios: mt.scenarios || [],
+            });
           });
         });
       }).catch(fail);
     }
     if (hash === '/exec') {
       setNav('exec');
-      return get('/api/config').then(renderExec).catch(fail);
+      return get('/api/config').then(function (c) {
+        return get('/api/baselines').then(function (b) {
+          c.baselines = (b.baselines || []).map(function (x) { return x.name; });
+          renderExec(c);
+        }).catch(function () { renderExec(c); });
+      }).catch(fail);
     }
     if (hash === '/baselines') {
       setNav('baselines');

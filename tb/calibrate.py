@@ -113,15 +113,15 @@ class Calib:
         for key, t in self.targets.items():
             k = t["kind"]
             if k == "quad":
-                put(t, [float(round(v, 1)) for v in self.quad.reshape(-1)])
+                put(t, [round(float(v), 1) for v in self.quad.reshape(-1)])
             elif k == "rect":
                 (x0, y0), (x1, y1) = self.rects[key]
                 put(t, [int(round(x0)), int(round(y0)),
                         int(round(x1)), int(round(y1))])
             elif k == "scale":
-                put(t, [float(round(self.px2m, 6))])
+                put(t, [round(float(self.px2m), 6)])
             elif k == "length_m":
-                put(t, [float(round(self.length_m, 3))])
+                put(t, [round(float(self.length_m), 3)])
         return out
 
     # ── 편집 ────────────────────────────────────────────────────────
@@ -368,8 +368,8 @@ def main(argv=None):
                            {"frame": fno, "note": note}, args.disp_width)
         cv2.imwrite(args.check, canvas)
         print(f"렌더 → {args.check}  (frame {fno})")
-        print(yaml.safe_dump({"params": cal.to_params()},
-                             allow_unicode=True, sort_keys=False))
+        print(yaml.safe_dump({"params": cal.to_params()}, allow_unicode=True,
+                             sort_keys=False, default_flow_style=None))
         return 0
 
     # ── 대화형 ──────────────────────────────────────────────────────
@@ -466,8 +466,8 @@ def main(argv=None):
             note = "되돌렸다"
         elif ch == ord("s"):
             out = args.out or "calibration_out.yaml"
-            body = yaml.safe_dump({"params": cal.to_params()},
-                                  allow_unicode=True, sort_keys=False)
+            body = yaml.safe_dump({"params": cal.to_params()}, allow_unicode=True,
+                                  sort_keys=False, default_flow_style=None)
             Path(out).write_text(
                 "# tb.calibrate 결과 — 시나리오의 params: 에 붙이거나\n"
                 "# local.yaml 의 params: 로 쓴다.\n"

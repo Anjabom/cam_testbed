@@ -283,132 +283,308 @@ def overlay_jpeg(run_dir, n, width=900):
     return buf.tobytes() if ok else None
 
 
-_CALIB = {}
+#  캘리브레이션 — 영상을 보면서 IPM 사각형·ROI·px2m 을 직접 맞춘다.
+#
+#  ★「무엇을 맞추는가」도 기하도 엔진이 안다★
+#  현재 값 읽기와 저장 형식은 `tb.calibrate.Calib` 에 이미 있다. 서버가 그걸
+#  그대로 쓰므로 계약에 대상(quad/rect/scale/length_m)을 하나 더 늘려도
+#  이 파일은 고치지 않는다. 여기서 한 벌 더 쓰면 CLI 와 반드시 어긋난다.
+# ══════════════════════════════════════════════════════════════════════
+_CALIB = {}                                  # 영상별 VideoCapture 캐시
+_CALIB_ENV = {"stamp": None, "val": {}}      # 계약·시나리오 해석 결과 캐시
 
 
-def calib_state():
-    """캘리브레이션 화면이 쓸 현재 값 — 계약 + local.yaml + 시나리오."""
+def _calib_stamp():
+    """설정 파일들의 (경로, mtime) — 이게 그대로면 다시 읽지 않는다."""
+    out = []
+    for d in ("contracts", "scenarios"):
+        for f in sorted((ROOT / d).glob("*.yaml")):
+            out.append((str(f), f.stat().st_mtime))
+    lp = ROOT / "local.yaml"
+    out.append((str(lp), lp.stat().st_mtime if lp.exists() else 0.0))
+    return tuple(out)
+
+
+def _calib_env(scenario=""):
+    """`tb.calibrate --scenario …` 와 ★같은 규칙★으로 계약·파라미터·영상을 푼다.
+
+    캐시하는 이유: 예전에는 프레임 한 장마다 계약과 시나리오 YAML 을 전부 다시
+    읽었다(34ms+). 실제 영상 처리는 10ms 라, 재생을 막고 있던 건 파일 읽기였다.
+    """
     import sys
     sys.path.insert(0, str(ROOT))
+    stamp = _calib_stamp()
+    if _CALIB_ENV["stamp"] != stamp:
+        _CALIB_ENV.update({"stamp": stamp, "val": {}})
+    hit = _CALIB_ENV["val"].get(scenario)
+    if hit is not None:
+        return hit
+
     import yaml                                     # noqa: PLC0415
+    from tb.calibrate import Calib                  # noqa: PLC0415
     from tb.contract import load as _load           # noqa: PLC0415
-    cands = sorted((ROOT / "contracts").glob("*.yaml"))
-    if not cands:
-        return None
-    c = _load(cands[0])
-    for f in cands:
-        cc = _load(f)
-        if (cc.raw.get("calibration")):
-            c = cc
-            break
-    cal = c.raw.get("calibration") or {}
-    r = c.raw.get("render") or {}
-    quad = r.get("ipm_src_pts")
-    for f in sorted((ROOT / "scenarios").glob("*.yaml")):
-        try:
-            sc = yaml.safe_load(f.read_text()) or {}
-        except Exception:      # noqa: BLE001
-            continue
-        for nid, kv in (sc.get("params") or {}).items():
-            if "ipm_src_pts" in kv:
-                quad = kv["ipm_src_pts"]
-    return {"contract": c.name, "quad": quad,
-            "bev": cal.get("bev", {"w": 640, "h": 480}),
-            "size": (cal.get("undistort") or {}).get("size", [1920, 1080]),
-            "targets": {k: {"kind": v.get("kind"), "hint": v.get("hint", ""),
-                            "param": v.get("param"), "params": v.get("params"),
-                            "nodes": v.get("nodes", [])}
-                        for k, v in (cal.get("targets") or {}).items()},
-            "videos": _videos()}
+    from tb.run import (_deep_merge, _resolve_contract,     # noqa: PLC0415
+                        local_overrides, resolve_video)
+
+    sc = {}
+    if scenario:
+        f = ROOT / "scenarios" / scenario
+        if not f.is_file():
+            raise ValueError(f"그런 시나리오가 없습니다: {scenario}")
+        sc = yaml.safe_load(f.read_text()) or {}
+    loc = local_overrides()
+    cf = _resolve_contract(sc.get("contract"))
+    if cf is None or not Path(cf).is_file():
+        raise ValueError("계약 파일을 찾지 못했습니다")
+    contract = _load(cf)
+    params = _deep_merge(sc.get("params", {}), loc.get("params", {}))
+    cal = Calib(contract, params)          # 계약에 calibration: 이 없으면 SystemExit
+    # 왜곡보정을 켜고 볼지도 시나리오가 정한다 — CLI 와 같은 규칙이다.
+    # (perception 이 남긴 영상은 이미 보정된 뒤라 끄고 봐야 이중보정이 안 된다)
+    und = True
+    if cal.und_param and contract.nodes:
+        und = bool(params.get(contract.nodes[0]["id"], {}).get(cal.und_param, True))
+    env = {"cal": cal, "contract": contract, "scenario": scenario,
+           "video": resolve_video(sc, loc) or "", "undistort": und,
+           "start": int(sc.get("start", 0) or 0)}
+    _CALIB_ENV["val"][scenario] = env
+    return env
 
 
-def _videos():
-    import yaml                                     # noqa: PLC0415
-    out = {}
-    lp = ROOT / "local.yaml"
-    if lp.exists():
+def _cal_dump(cal):
+    """Calib 의 현재 값 → JSON 으로 보낼 수 있는 형태."""
+    return {
+        "quad": [round(float(v), 1) for v in cal.quad.reshape(-1)],
+        "rects": {k: [int(round(float(x))) for x in r.reshape(-1)]
+                  for k, r in cal.rects.items()},
+        "px2m": round(float(cal.px2m), 6),
+        "length_m": round(float(cal.length_m), 3),
+    }
+
+
+def _cal_work(env, body):
+    """파일에서 읽은 값은 그대로 두고, 화면이 보낸 값을 얹은 ★사본★을 만든다.
+
+    통째로 새로 만들지 않는 이유는 `Undistorter` 다 — 1920×1080 remap 맵을
+    다시 계산하는 데만 7ms 라, 재생 중이면 그게 프레임 예산의 절반이다.
+    """
+    import copy                                     # noqa: PLC0415
+    import numpy as np                              # noqa: PLC0415
+    cal = copy.copy(env["cal"])                     # remap 맵은 공유한다
+    cal.quad = env["cal"].quad.copy()
+    cal.rects = {k: v.copy() for k, v in env["cal"].rects.items()}
+
+    q = body.get("quad")
+    if q:
+        if len(q) != 8:
+            raise ValueError("quad 는 값 8개여야 합니다")
+        cal.quad = np.asarray([float(v) for v in q], np.float32).reshape(4, 2)
+    for k, v in (body.get("rects") or {}).items():
+        if k not in cal.rects:
+            raise ValueError(f"계약에 없는 ROI 입니다: {k}")
+        if len(v) != 4:
+            raise ValueError(f"{k} 는 값 4개여야 합니다")
+        cal.rects[k] = np.asarray([float(x) for x in v], np.float32).reshape(2, 2)
+    if body.get("px2m") is not None:
+        cal.px2m = max(1e-9, float(body["px2m"]))
+    if body.get("length_m") is not None:
+        cal.length_m = float(body["length_m"])
+    return cal
+
+
+def calib_state(scenario=""):
+    """캘리브레이션 화면이 통째로 그리는 데 필요한 것.
+
+    시나리오를 고르면 계약·영상·시작 프레임·현재 파라미터가 전부 따라온다 —
+    CLI 의 `tb.calibrate --scenario` 와 같은 해석이다.
+    """
+    cfg = _cfg()
+    snap = cfg.snapshot()
+    # 고르지 않았으면 ★평소 돌리는 시나리오★로 연다. 화면의 드롭다운과 실제로
+    # 읽은 값이 달라지면 안 되므로, 고르는 일을 화면에 미루지 않는다.
+    if not scenario and snap["suggest"]:
         try:
-            d = yaml.safe_load(lp.read_text()) or {}
-            out = dict(d.get("videos") or {})
-            if d.get("video"):
-                out.setdefault("(local.video)", d["video"])
-        except Exception:      # noqa: BLE001
-            pass
+            _calib_env(snap["suggest"])
+            scenario = snap["suggest"]
+        except (SystemExit, ValueError):
+            pass                       # 그 시나리오의 계약에 calibration 이 없으면 그냥 둔다
+    env = _calib_env(scenario)
+    cal, c = env["cal"], env["contract"]
+    videos = dict(snap["videos"])
+    # 시나리오가 가리키는 영상이 videos: 에 없는 경로여도 고를 수 있게 넣어 준다
+    if env["video"] and env["video"] not in [v.get("path") for v in videos.values()]:
+        videos["(시나리오)"] = cfg.video_info(env["video"])
+
+    out = {"contract": c.name, "contract_file": Path(c.path).name,
+           "scenario": scenario,
+           "scenarios": [s["file"] for s in snap["scenarios"]],
+           "bev": {"w": cal.bev_w, "h": cal.bev_h},
+           "size": list(cal.und_size),
+           "video": env["video"], "start": env["start"],
+           "undistort": env["undistort"],
+           "videos": videos,
+           "targets": {k: {"kind": v.get("kind"), "hint": v.get("hint", ""),
+                           "param": v.get("param"), "params": v.get("params"),
+                           "nodes": v.get("nodes", [])}
+                       for k, v in cal.targets.items()},
+           "runs": [d.name for d in sorted(_run_dirs(), reverse=True)
+                    if find_video(d) is not None]}
+    out.update(_cal_dump(cal))
     return out
 
 
-def calib_view(video, frame, quad, px2m, undist=True, width=1400, meas=None):
-    """4점을 받아 ★원본(사각형 표시) + BEV + 수직도★ 를 돌려준다."""
-    import sys
-    sys.path.insert(0, str(ROOT))
+def calib_yaml(scenario, body):
+    """지금 값을 시나리오 params: 형식의 YAML 로. 저장 전에 눈으로 본다."""
+    import yaml                                     # noqa: PLC0415
+    cal = _cal_work(_calib_env(scenario), body)
+    return yaml.safe_dump({"params": cal.to_params()}, allow_unicode=True,
+                          sort_keys=False, default_flow_style=None)
+
+
+def calib_save(scenario, body):
+    """맞춘 값을 local.yaml 또는 시나리오의 params: 에 쓴다 (주석 보존)."""
+    cal = _cal_work(_calib_env(scenario), body)
+    path = _cfg().set_params(cal.to_params(), body.get("target") or "local")
+    _CALIB_ENV["stamp"] = None                 # 파일이 바뀌었으니 다시 읽는다
+    return {"path": path, "params": cal.to_params()}
+
+
+def calib_view(video, frame, cal, undist=True, width=1400, meas=None,
+               mode="", grid=True):
+    """★원본(사각형·ROI 표시) + BEV + 수직도★ 를 한 장으로.
+
+    meta 의 좌표는 전부 ★돌려주는 JPEG 기준★이다. 예전에는 리사이즈 전 값을
+    보내서 클릭 위치가 6~7% 어긋났다 — 「직접 맞추는」 화면에서는 치명적이다.
+    """
     import cv2                                      # noqa: PLC0415
     import numpy as np                              # noqa: PLC0415
-    from tb.contract import load as _load           # noqa: PLC0415
-    from tb.geometry import (Undistorter, draw_grid, put_text,   # noqa: PLC0415
+    from tb.geometry import (draw_grid, put_text,   # noqa: PLC0415
                              quad_is_sane, verticality, warp_bev)
-    st = calib_state()
-    if st is None:
-        return None, {}
-    cands = [f for f in sorted((ROOT / "contracts").glob("*.yaml"))]
-    c = None
-    for f in cands:
-        cc = _load(f)
-        if cc.raw.get("calibration"):
-            c = cc
-            break
-    cal = c.raw.get("calibration") or {}
-    u = cal.get("undistort") or {}
 
     key = "calib:" + str(video)
     ent = _CALIB.get(key)
     if ent is None:
-        ent = {"video": video, "cap": None, "pos": -1,
-               "und": Undistorter(u["size"], u["K"], u["D"], u.get("alpha", 0.0))
-               if u else None}
+        ent = {"video": video, "cap": None, "pos": -1}
         _CALIB[key] = ent
     img = _grab(ent, frame)
     if img is None:
         return None, {}
-    if undist and ent["und"] is not None:
-        img = ent["und"](img)
-    else:
-        img = cv2.resize(img, tuple(st["size"]))
+    img = cal.und(img) if undist else cv2.resize(img, tuple(cal.und_size))
 
-    bw, bh = int(st["bev"]["w"]), int(st["bev"]["h"])
-    q = np.asarray(quad, np.float32).reshape(4, 2)
+    bw, bh = cal.bev_w, cal.bev_h
+    q = cal.quad
     bev = warp_bev(img, q, bw, bh)
     dev, nline = verticality(bev)
-    bev = draw_grid(bev, px2m)
+    if grid:
+        bev = draw_grid(bev, cal.px2m)
 
     src = img.copy()
-    cv2.polylines(src, [q.astype(np.int32).reshape(-1, 1, 2)], True,
-                  (70, 160, 255), 3, cv2.LINE_AA)
+    for k, r in cal.rects.items():                  # ROI — 고르는 중인 것만 밝게
+        on = (mode == k)
+        col = (60, 200, 255) if on else (120, 120, 120)
+        (x0, y0), (x1, y1) = r.astype(int)
+        cv2.rectangle(src, (x0, y0), (x1, y1), col, 4 if on else 2)
+        put_text(src, k, (x0 + 10, max(0, y0 + 8)), 24, col)
+        if on:
+            for pt in ((x0, y0), (x1, y1)):
+                cv2.circle(src, pt, 13, (0, 255, 255), -1, cv2.LINE_AA)
+
+    qon = mode in ("", "quad", "measure")
+    qcol = (70, 160, 255) if qon else (140, 140, 140)
+    cv2.polylines(src, [q.astype(np.int32).reshape(-1, 1, 2)], True, qcol,
+                  3 if qon else 2, cv2.LINE_AA)
     for i, lab in enumerate(("TL", "TR", "BR", "BL")):
         pt = (int(q[i][0]), int(q[i][1]))
-        cv2.circle(src, pt, 12, (0, 255, 255), -1, cv2.LINE_AA)
-        put_text(src, lab, (pt[0] + 16, pt[1] - 8), 22, (0, 255, 255))
+        cv2.circle(src, pt, 13 if qon else 7,
+                   (0, 255, 255) if qon else qcol, -1, cv2.LINE_AA)
+        put_text(src, lab, (pt[0] + 16, pt[1] - 8), 22,
+                 (0, 255, 255) if qon else qcol)
 
-    # 측정 점 — BEV 위에 표시
-    for i, pt in enumerate(meas or []):
+    for pt in (meas or []):                          # 측정 점 — BEV 위에
         cv2.circle(bev, (int(pt[0]), int(pt[1])), 5, (0, 255, 255), -1, cv2.LINE_AA)
     if meas and len(meas) >= 2:
         cv2.line(bev, (int(meas[0][0]), int(meas[0][1])),
                  (int(meas[1][0]), int(meas[1][1])), (0, 255, 255), 2, cv2.LINE_AA)
 
-    ok, why = quad_is_sane(q, st["size"][0], st["size"][1])
+    ok, why = quad_is_sane(q, cal.und_size[0], cal.und_size[1])
     sc = bh / float(src.shape[0])
-    src_small = cv2.resize(src, (int(src.shape[1] * sc), bh))
+    src_small = cv2.resize(src, (max(1, int(round(src.shape[1] * sc))), bh))
     both = np.hstack([src_small, bev])
+    shrink = 1.0
     if width and both.shape[1] > width:
-        s2 = width / float(both.shape[1])
-        both = cv2.resize(both, (width, int(round(both.shape[0] * s2))))
+        shrink = width / float(both.shape[1])
+        both = cv2.resize(both, (width, int(round(both.shape[0] * shrink))))
     okj, buf = cv2.imencode(".jpg", both, [cv2.IMWRITE_JPEG_QUALITY, 84])
     meta = {"verticality_deg": None if dev != dev else round(dev, 2),
             "lines": nline, "sane": ok, "why": why,
             "src_w": src.shape[1], "src_h": src.shape[0],
-            "panel_w": src_small.shape[1], "bev_w": bw, "bev_h": bh,
-            "bev_width_m": round(bw * px2m, 3)}
+            "bev_w": bw, "bev_h": bh,
+            "bev_width_m": round(bw * cal.px2m, 3),
+            # ★아래 다섯은 돌려주는 JPEG 좌표계★ — 클릭 환산은 이것만 쓴다
+            "disp_w": both.shape[1], "disp_h": both.shape[0],
+            "split_x": round(src_small.shape[1] * shrink, 2),
+            "src_scale": sc * shrink,               # 원본 1px → 화면 몇 px
+            "bev_scale": shrink}
     return (buf.tobytes() if okj else None), meta
+
+
+def _scen_arg(name):
+    """시나리오 파일 이름 — 디렉터리 탈출을 막는다. 빈 값은 '고르지 않음'."""
+    name = unquote(name or "").strip()
+    if not name:
+        return ""
+    if not _SAFE.match(name) or not name.endswith(".yaml"):
+        raise ValueError(f"시나리오 이름이 잘못됐습니다: {name}")
+    return name
+
+
+def _calib_post(hnd, what, body):
+    """캘리브레이션 화면의 POST — view / yaml / save / verify."""
+    scen = _scen_arg(body.get("scenario", ""))
+
+    if what == "view":
+        env = _calib_env(scen)
+        cal = _cal_work(env, body)
+        video = str(body.get("video") or env["video"])
+        if not video or not Path(video).is_file():
+            return hnd._err(400, f"영상이 없습니다: {video}")
+        meas = [(float(a), float(b)) for a, b in (body.get("meas") or [])]
+        b, meta = calib_view(video, int(body.get("frame", 0)), cal,
+                             bool(body.get("undistort", True)),
+                             int(body.get("w", 1400)), meas,
+                             str(body.get("mode", "")),
+                             bool(body.get("grid", True)))
+        if not b:
+            return hnd._err(404, "그 프레임을 읽지 못했습니다")
+        import base64                               # noqa: PLC0415
+        return hnd._json({"img": base64.b64encode(b).decode(), "meta": meta})
+
+    if what == "yaml":
+        return hnd._json({"yaml": calib_yaml(scen, body)})
+
+    if what == "save":
+        if job_running():
+            return hnd._err(409, "실행 중에는 설정을 바꿀 수 없습니다")
+        return hnd._json({"ok": True, **calib_save(scen, body)})
+
+    if what == "verify":
+        # 「내가 그리는 BEV 가 노드가 실제로 만드는 BEV 와 같은가」를 대조한다.
+        # 계산은 엔진(`tb.calibrate --verify`)이 한다 — 여기서 또 짜지 않는다.
+        rid = str(body.get("run", ""))
+        if _safe_run(rid) is None:
+            return hnd._err(404, "그런 실행이 없습니다")
+        argv = ["python3", "-m", "tb.calibrate", "--verify", f"runs/{rid}"]
+        if scen:
+            argv += ["--scenario", f"scenarios/{scen}"]
+        try:
+            r = subprocess.run(argv, cwd=str(ROOT), capture_output=True,
+                               text=True, timeout=300, env=dict(os.environ))
+        except subprocess.TimeoutExpired:
+            return hnd._err(504, "대조가 제한 시간 안에 끝나지 않았습니다")
+        return hnd._json({"rc": r.returncode,
+                          "out": (r.stdout or "") + (r.stderr or "")})
+
+    return hnd._err(404, f"없는 캘리브레이션 항목입니다: {what}")
 
 
 def pick_frames(run_dir, where, limit):
@@ -480,28 +656,236 @@ def find_path_video(d):
 #  한 번에 하나만 돌린다(ROS 노드가 겹치면 서로를 방해한다).
 # ══════════════════════════════════════════════════════════════════════
 JOB = {"proc": None, "kind": None, "args": None, "started": 0.0,
-       "log": None, "run_dir": None}
+       "log": None, "run_dir": None, "cmd": None}
 JOB_LOCK = threading.Lock()
 
-# 실행할 수 있는 작업과 그 인자 — ★화이트리스트★. 여기 없으면 거부한다.
-ALLOWED_JOBS = {
-    "run":       ["--scenario", "--variant", "--tag", "--record-debug", "--watch"],
-    "inject":    ["--scenario"],
-    "harvest":   ["--where", "--limit", "--out", "--width"],
-    "render":    ["--frames", "--where", "--limit", "--width", "--out", "--scenario",
-                  "--mp4", "--fps"],
-    "reanalyze": ["--scenario", "--contract"],
-    "baseline":  ["--name", "--force"],
-    "compare":   ["--scenario", "--contract"],
-    "doctor":    ["--scenario", "--contract"],
+# ── 실행할 수 있는 명령과 그 인자 — ★단 하나의 명세★ ─────────────────
+#   화이트리스트(무엇을 허용하는가)와 화면의 입력 폼(무엇을 물어보는가)이
+#   같은 곳에서 나온다. 둘을 따로 두면 CLI 에 인자를 하나 더해도 웹은 모르고,
+#   반대로 화면에만 있는 인자가 서버에서 거부당한다.
+#
+#   type  flag(값 없음) · text · name · path · int · float · choice
+#   src   choice 의 후보를 어디서 가져오는가 (scenarios/contracts/runs/baselines)
+_ARG_SCEN = {"flag": "--scenario", "type": "choice", "src": "scenarios",
+             "prefix": "scenarios/", "help": "시나리오 파일"}
+_ARG_CONT = {"flag": "--contract", "type": "choice", "src": "contracts",
+             "prefix": "contracts/", "help": "계약 파일 (시나리오의 contract: 를 덮어쓴다)"}
+_ARG_VIDEO = {"flag": "--video", "type": "path", "help": "원본 영상 (비우면 런이 쓴 것)"}
+
+COMMANDS = {
+    "doctor": {
+        "title": "환경 점검", "module": ["tb.run", "doctor"], "quick": True,
+        "desc": "워크스페이스·계약·영상·가중치가 제대로 물려 있는지 본다. 아무것도 바꾸지 않는다.",
+        "pos": [], "args": [_ARG_SCEN, _ARG_CONT]},
+
+    "run": {
+        "title": "테스트 실행", "module": ["tb.run", "run"],
+        "desc": "시나리오를 돌려 결과를 runs/ 에 남긴다.",
+        "pos": [], "args": [
+            dict(_ARG_SCEN, required=True), _ARG_CONT,
+            {"flag": "--variant", "type": "name", "repeat": True,
+             "help": "이 변형만 돌린다 (쉼표로 여러 개)"},
+            {"flag": "--tag", "type": "name", "help": "런 이름에 붙일 꼬리표"},
+            {"flag": "--baseline", "type": "choice", "src": "baselines",
+             "help": "끝나고 이 기준과 자동 비교"},
+            {"flag": "--domain", "type": "int", "help": "ROS_DOMAIN_ID (0=기본)"},
+            {"flag": "--record-debug", "type": "flag",
+             "help": "디버그 영상을 mp4 로 남긴다 (보정 화면의 «노드와 대조» 에 필요)"},
+            {"flag": "--watch", "type": "flag",
+             "help": "디버그 영상 창을 띄운다 — ★서버가 도는 PC 의 화면★에 뜬다"},
+            {"flag": "--keep-going", "type": "flag",
+             "help": "변형 하나가 실패해도 나머지를 계속"},
+        ]},
+
+    "inject": {
+        "title": "주입 검증", "module": ["tb.run", "inject"],
+        "desc": "합성 신호로 좌표 변환 수학만 검사한다. 영상도 YOLO 도 쓰지 않아 몇 초면 끝난다.",
+        "pos": [], "args": [
+            _ARG_SCEN, _ARG_CONT,
+            {"flag": "--cases", "type": "path", "help": "검사 케이스 YAML (비우면 기본)"},
+            {"flag": "--domain", "type": "int", "help": "ROS_DOMAIN_ID (0=기본)"},
+        ]},
+
+    "render": {
+        "title": "경로 영상 만들기", "module": ["tb.run", "render"],
+        "desc": "판정에 쓴 값 그대로 차선·중심선·θ 를 그려 그림이나 mp4 로 남긴다.",
+        "pos": [{"name": "run", "type": "run", "required": True, "help": "대상 실행"}],
+        "args": [
+            {"flag": "--frames", "type": "text", "help": "프레임 번호를 쉼표로 (예: 1090,850)"},
+            {"flag": "--where", "type": "text",
+             "help": '조건식으로 고르기 (예: int(flags) % 4 >= 2)'},
+            {"flag": "--limit", "type": "int", "help": "몇 장까지 (0=전부)"},
+            {"flag": "--width", "type": "int", "help": "가로 픽셀"},
+            {"flag": "--mp4", "type": "path", "help": "영상으로. 'auto' 면 <런>/path_overlay.mp4"},
+            {"flag": "--fps", "type": "float", "help": "재생 속도 (0=원본과 같게)"},
+            {"flag": "--out", "type": "path", "help": "저장 폴더 (비우면 <런>/render)"},
+            _ARG_VIDEO, _ARG_SCEN, _ARG_CONT,
+        ]},
+
+    "harvest": {
+        "title": "프레임 추출", "module": ["tb.run", "harvest"],
+        "desc": "조건에 맞는 프레임만 원본에서 뽑아 낸다 — 라벨링해 다시 학습시키는 입구(능동 학습).",
+        "pos": [{"name": "run", "type": "run", "required": True, "help": "대상 실행"}],
+        "args": [
+            {"flag": "--where", "type": "text",
+             "help": '조건식 (예: int(flags) % 4 >= 2 — 폭 게이트 탈락)'},
+            {"flag": "--limit", "type": "int", "help": "균등 샘플링 상한 (0=전부)"},
+            {"flag": "--width", "type": "int", "help": "가로 축소 (0=원본)"},
+            {"flag": "--out", "type": "path", "help": "저장 폴더 (비우면 <런>/harvest)"},
+            {"flag": "--dry-run", "type": "flag", "help": "몇 장이 뽑히는지만 세어 본다"},
+            _ARG_VIDEO, _ARG_SCEN, _ARG_CONT,
+        ]},
+
+    "reanalyze": {
+        "title": "재분석", "module": ["tb.run", "reanalyze"],
+        "desc": "계약을 고친 뒤 raw.jsonl 로 신호·리포트만 다시 만든다. 노드를 다시 돌리지 않는다.",
+        "pos": [{"name": "run", "type": "run", "required": True, "help": "대상 실행"}],
+        "args": [_ARG_SCEN, _ARG_CONT]},
+
+    "baseline": {
+        "title": "기준 등록", "module": ["tb.run", "baseline"],
+        "desc": "이 실행을 회귀 비교의 기준으로 등록한다.",
+        "pos": [{"name": "run", "type": "run", "required": True, "help": "기준으로 삼을 실행"}],
+        "args": [
+            {"flag": "--name", "type": "name", "help": "기준 이름 (비우면 시나리오 이름)"},
+            {"flag": "--force", "type": "flag", "help": "같은 이름이 있어도 덮어쓴다"},
+        ]},
+
+    "compare": {
+        "title": "결과 비교", "module": ["tb.run", "compare"],
+        "desc": "두 결과(기준 또는 실행)의 신호별 차이를 본다.",
+        "pos": [{"name": "a", "type": "any", "required": True, "help": "기준 쪽"},
+                {"name": "b", "type": "any", "required": True, "help": "비교할 쪽"}],
+        "args": [_ARG_CONT, _ARG_SCEN]},
+
+    "feedback": {
+        "title": "피드백 문서", "module": ["tb.run", "feedback"],
+        "desc": "실행 결과를 코드 개선 요청문(feedback.md)으로 만든다 — 클로드 코드에 그대로 넘긴다.",
+        "pos": [{"name": "run", "type": "run", "required": True, "help": "대상 실행"}],
+        "args": [
+            {"flag": "--vs", "type": "run", "help": "이전 실행과 개선 전/후를 비교"},
+            {"flag": "--note", "type": "text", "help": "사람이 본 것을 함께 적는다"},
+        ]},
+
+    "list": {
+        "title": "목록", "module": ["tb.run", "list"], "quick": True,
+        "desc": "지금까지의 실행과 리포트를 한 줄씩 훑는다. (같은 내용을 «실행 기록» 탭이 표로 보여 준다)",
+        "pos": [], "args": []},
+
+    "selftest": {
+        "title": "자체 검사", "module": ["tb.selftest"], "quick": True,
+        "desc": "테스트베드 자신이 성한지 본다. ROS 도 영상도 필요 없다.",
+        "pos": [], "args": []},
+
+    "discover": {
+        "title": "계약 초안", "module": ["tb.discover"], "quick": True,
+        "desc": "돌고 있는 ROS 그래프를 읽어 계약 초안을 뽑는다. ★대상 시스템이 떠 있어야 한다.★",
+        "pos": [], "args": [
+            {"flag": "--seconds", "type": "float", "help": "몇 초 동안 들을 것인가"},
+            {"flag": "--name", "type": "name", "help": "계약 이름"},
+            {"flag": "--out", "type": "path", "help": "쓸 파일 (비우면 화면에만)"},
+            {"flag": "--workspace", "type": "path", "help": "대상 워크스페이스 경로"},
+            {"flag": "--include", "type": "text", "help": "이 문자열이 든 토픽만 (쉼표)"},
+            {"flag": "--exclude", "type": "text", "help": "이 문자열이 든 토픽 제외 (쉼표)"},
+        ]},
 }
-# 인자 없이 도는 짧은 점검 — 결과를 그 자리에서 돌려준다
-QUICK = {
-    "doctor":   ["python3", "-m", "tb.run", "doctor"],
-    "selftest": ["python3", "-m", "tb.selftest"],
-    # 돌고 있는 ROS 그래프에서 계약 초안을 뽑는다 (대상 시스템이 떠 있어야 한다)
-    "discover": ["python3", "-m", "tb.discover", "--seconds", "6"],
-}
+
+# 예전 이름 — 화이트리스트가 명세에서 파생된다는 점이 핵심이다.
+ALLOWED_JOBS = {k: [a["flag"] for a in v["args"]] for k, v in COMMANDS.items()}
+
+# 셸을 거치지 않으므로(shell=False) 리다이렉션 기호는 무해하다. `< >` 를 막으면
+# 조건식(`int(flags) % 4 >= 2`)이 통째로 거부된다 — 그건 문서에 적힌 사용법이다.
+_BAD_CHARS = ";|&`$\n\r"
+_NAME_OK = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*$")
+_PATH_OK = re.compile(r"^[A-Za-z0-9_./~-]+$")
+
+
+def _check_value(spec, v):
+    """인자 값 하나를 타입에 맞게 검사한다. 통과하면 문자열, 아니면 예외."""
+    v = str(v).strip()
+    t = spec.get("type", "text")
+    if any(c in v for c in _BAD_CHARS):
+        raise ValueError(f"{spec.get('flag') or spec.get('name')}: "
+                         "셸 특수문자는 쓸 수 없습니다")
+    if t in ("int", "float"):
+        try:
+            return str(int(v)) if t == "int" else str(float(v))
+        except ValueError:
+            raise ValueError(f"{spec.get('flag')}: 숫자가 아닙니다: {v}") from None
+    if t == "name" and not _NAME_OK.match(v):
+        raise ValueError(f"{spec.get('flag') or spec.get('name')}: "
+                         f"영문·숫자·_·-·. 만 쓸 수 있습니다: {v}")
+    if t == "path":
+        if ".." in v or not _PATH_OK.match(v):
+            raise ValueError(f"{spec.get('flag') or spec.get('name')}: "
+                             f"경로가 잘못됐습니다: {v}")
+    if t == "run" and _safe_run(v) is None:
+        raise ValueError(f"그런 실행이 없습니다: {v}")
+    if t == "any" and not _SAFE.match(v):
+        raise ValueError(f"이름이 잘못됐습니다: {v}")
+    # text 는 위의 특수문자 검사만 통과하면 된다 (조건식에 공백·괄호가 들어간다)
+    return v
+
+
+def build_argv(kind, argv):
+    """화면이 보낸 인자를 명세로 검사해 실제 명령줄로 만든다.
+
+    ★여기를 통과하지 못한 것은 실행되지 않는다★ — 셸을 거치지 않고
+    (shell=False) 리스트로 넘기므로, 검사와 실행 사이에 해석이 끼지 않는다.
+    """
+    spec = COMMANDS.get(kind)
+    if spec is None:
+        raise ValueError(f"허용되지 않은 작업입니다: {kind}")
+    byflag = {a["flag"]: a for a in spec["args"]}
+    pos_spec = spec.get("pos") or []
+    out, pos, i = [], [], 0
+    while i < len(argv):
+        a = str(argv[i])
+        if a.startswith("--"):
+            s = byflag.get(a)
+            if s is None:
+                raise ValueError(f"허용되지 않은 인자입니다: {a}")
+            out.append(a)
+            if s.get("type") != "flag":
+                if i + 1 >= len(argv):
+                    raise ValueError(f"{a} 에 값이 없습니다")
+                out.append(_check_value(s, argv[i + 1]))
+                i += 1
+        else:
+            if len(pos) >= len(pos_spec):
+                raise ValueError(f"인자가 너무 많습니다: {a}")
+            pos.append(_check_value(pos_spec[len(pos)], a))
+        i += 1
+    for j, s in enumerate(pos_spec):
+        if s.get("required") and j >= len(pos):
+            raise ValueError(f"{s['name']} 를 지정해야 합니다")
+    for s in spec["args"]:
+        if s.get("required") and s["flag"] not in out:
+            raise ValueError(f"{s['flag']} 를 지정해야 합니다")
+    return ["python3", "-m"] + spec["module"] + pos + out
+
+
+def command_specs():
+    """화면이 입력 폼을 그리는 데 쓰는 명세 + 후보 목록."""
+    cfg = _cfg()
+    snap = cfg.snapshot()
+    return {
+        "commands": [dict(v, id=k) for k, v in COMMANDS.items()],
+        "choices": {
+            "scenarios": [s["file"] for s in snap["scenarios"]],
+            "contracts": [c["file"] for c in snap["contracts"]],
+            "runs": [d.name for d in sorted(_run_dirs(), reverse=True)],
+            "baselines": [b["name"] for b in list_baselines()],
+        },
+        # 웹에 두지 않는 것과 그 이유 — 화면이 그대로 보여 준다
+        "omitted": [
+            ["tb.run web / app", "이 웹앱 자신을 띄우는 명령입니다."],
+            ["tb.calibrate", "«카메라 보정» 탭이 같은 일을 더 편하게 합니다 "
+                             "(대조는 그 탭의 «노드와 대조»)."],
+            ["tb.viewer / player / probe", "tb.run 이 내부적으로 띄우는 모듈이라 "
+                                           "따로 부를 일이 없습니다."],
+        ],
+    }
 
 
 def _cfg():
@@ -518,42 +902,45 @@ def job_running():
 
 
 def start_job(kind, argv):
-    """`python3 -m tb.run <kind> …` 를 띄운다. 인자는 화이트리스트로 거른다."""
-    if kind not in ALLOWED_JOBS:
-        return None, f"허용되지 않은 작업입니다: {kind}"
+    """명령을 background 로 띄운다. 인자는 명세로 거른다."""
+    try:
+        cmd = build_argv(kind, argv)
+    except ValueError as e:
+        return None, str(e)
     with JOB_LOCK:
         if job_running():
             return None, "이미 실행 중인 작업이 있습니다"
-        clean, i = [], 0
-        allowed = ALLOWED_JOBS[kind]
-        while i < len(argv):
-            a = str(argv[i])
-            if a.startswith("--"):
-                if a not in allowed:
-                    return None, f"허용되지 않은 인자입니다: {a}"
-                clean.append(a)
-                if i + 1 < len(argv) and not str(argv[i + 1]).startswith("--"):
-                    v = str(argv[i + 1])
-                    if any(c in v for c in ";|&`$\n"):
-                        return None, "인자에 셸 특수문자가 들어 있습니다"
-                    clean.append(v)
-                    i += 1
-            elif not clean:
-                if any(c in a for c in ";|&`$\n"):
-                    return None, "인자에 셸 특수문자가 들어 있습니다"
-                clean.append(a)          # 위치 인자 (harvest 의 런 이름)
-            i += 1
-
         logf = ROOT / "runs" / f"_job_{kind}.log"
         logf.parent.mkdir(exist_ok=True)
         fh = open(logf, "w")
         proc = subprocess.Popen(
-            ["python3", "-m", "tb.run", kind] + clean,
-            cwd=str(ROOT), stdout=fh, stderr=subprocess.STDOUT,
+            cmd, cwd=str(ROOT), stdout=fh, stderr=subprocess.STDOUT,
             env=dict(os.environ), start_new_session=True)
-        JOB.update({"proc": proc, "kind": kind, "args": clean,
-                    "started": time.time(), "log": str(logf), "run_dir": None})
+        spec = COMMANDS[kind]
+        user_args = cmd[2 + len(spec["module"]):]      # 모듈 이름은 빼고 보여 준다
+        # 대상 런이 있는 명령(render·harvest·reanalyze…)은 그걸 기억해 둔다.
+        # 안 그러면 「결과 보기」가 ★엉뚱한 런★을 가리킨다 — 디렉터리 mtime 은
+        # 안의 파일을 고쳐도 안 바뀌므로 "가장 최근 폴더"가 답이 아니다.
+        target = None
+        if (spec.get("pos") or [{}])[0].get("type") == "run" and user_args:
+            target = user_args[0] if not user_args[0].startswith("--") else None
+        JOB.update({"proc": proc, "kind": kind, "args": user_args, "cmd": " ".join(cmd),
+                    "started": time.time(), "log": str(logf), "run_dir": target})
         return proc, None
+
+
+def run_quick(kind, argv, timeout=300):
+    """짧은 점검은 background 로 보내지 않고 그 자리에서 결과를 돌려준다."""
+    if not (COMMANDS.get(kind) or {}).get("quick"):
+        raise ValueError(f"그 자리에서 돌릴 수 있는 작업이 아닙니다: {kind}")
+    cmd = build_argv(kind, argv)
+    try:
+        r = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True,
+                           timeout=timeout, env=dict(os.environ))
+    except subprocess.TimeoutExpired:
+        raise TimeoutError("제한 시간 안에 끝나지 않았습니다") from None
+    return {"name": kind, "cmd": " ".join(cmd), "rc": r.returncode,
+            "out": (r.stdout or "") + (r.stderr or "")}
 
 
 def job_status():
@@ -563,17 +950,24 @@ def job_status():
           "elapsed_s": round(time.time() - JOB["started"], 1) if JOB.get("started") else 0}
     if p is not None and p.poll() is not None:
         st["returncode"] = p.returncode
-    # 진행 중인 런 디렉터리를 찾아 진행률·라이브 이미지를 붙인다
-    newest = None
-    ds = _run_dirs()
-    if ds:
-        newest = max(ds, key=lambda d: d.stat().st_mtime)
-    if newest is not None:
-        st["run"] = newest.name
-        pr = _read_json(newest / "progress.json")
+    st["cmd"] = JOB.get("cmd")
+    # 진행률·라이브 화면은 ★런을 새로 만드는 명령★에만 있다. 다른 명령에서
+    # 남의 런의 progress.json 을 붙이면 끝난 지 오래인 숫자가 실시간처럼 보인다.
+    d = None
+    if JOB.get("run_dir"):
+        d = _safe_run(JOB["run_dir"])
+        if d is not None:
+            st["run"] = d.name
+    elif JOB.get("kind") in ("run", "inject"):
+        ds = _run_dirs()
+        if ds:
+            d = max(ds, key=lambda x: x.stat().st_mtime)
+            st["run"] = d.name
+    if d is not None and JOB.get("kind") == "run":
+        pr = _read_json(d / "progress.json")
         if pr:
             st["progress"] = pr
-        st["has_live"] = (newest / "latest.jpg").exists()
+        st["has_live"] = (d / "latest.jpg").exists()
     if JOB.get("log") and Path(JOB["log"]).exists():
         tail = Path(JOB["log"]).read_text(errors="replace")[-3000:]
         st["log_tail"] = tail
@@ -705,51 +1099,27 @@ class Handler(BaseHTTPRequestHandler):
         if route == "status":
             return self._json(job_status())
         if route == "calib":
-            st = calib_state()
-            return self._json(st) if st else self._err(404, "계약에 calibration 항목이 없습니다")
-        if route == "calib/view":
             try:
-                quad = [float(x) for x in q.get("quad", [""])[0].split(",")]
-                frame = int(q.get("frame", ["0"])[0])
-                px2m = float(q.get("px2m", ["0.006"])[0])
-                video = unquote(q.get("video", [""])[0])
-                undist = q.get("undistort", ["1"])[0] != "0"
-                width = int(q.get("w", ["1400"])[0])
-                meas = []
-                for part in (q.get("meas", [""])[0] or "").split(";"):
-                    if not part:
-                        continue
-                    a, b2 = part.split(",")
-                    meas.append((float(a), float(b2)))
-            except (ValueError, IndexError):
-                return self._err(400, "값이 잘못됐습니다")
-            if len(quad) != 8 or not video or not Path(video).exists():
-                return self._err(400, "quad 값 8개와 실제로 있는 영상이 필요합니다")
-            try:
-                b, meta = calib_view(video, frame, quad, px2m, undist, width, meas)
-            except Exception as e:              # noqa: BLE001
-                return self._err(500, f"{type(e).__name__}: {e}")
-            if not b:
-                return self._err(404, "그 프레임을 읽지 못했습니다")
-            import base64
-            return self._json({"img": base64.b64encode(b).decode(), "meta": meta})
+                return self._json(calib_state(_scen_arg(q.get("scenario", [""])[0])))
+            except SystemExit as e:
+                return self._err(404, str(e) or "계약에 calibration 항목이 없습니다")
+            except ValueError as e:
+                return self._err(400, str(e))
+        if route == "commands":
+            return self._json(command_specs())
         if route.startswith("quick/"):
+            # 짧은 점검 — 쿼리스트링의 인자도 명세로 검사한다.
+            #   ?a=--scenario&a=scenarios/x.yaml  처럼 순서대로 넘긴다.
             name = route.split("/", 1)[1]
-            cmd = QUICK.get(name)
-            if not cmd:
-                return self._err(404, f"그런 점검이 없습니다: {name}")
-            extra = []
-            if name == "doctor" and q.get("scenario"):
-                sc = q["scenario"][0]
-                if not any(c in sc for c in ";|&`$\n"):
-                    extra = ["--scenario", sc]
+            argv = list(q.get("a", []))
+            if not argv and q.get("scenario"):        # 예전 화면이 쓰던 모양
+                argv = ["--scenario", q["scenario"][0]]
             try:
-                r = subprocess.run(cmd + extra, cwd=str(ROOT), capture_output=True,
-                                   text=True, timeout=180, env=dict(os.environ))
-            except subprocess.TimeoutExpired:
-                return self._err(504, "점검이 제한 시간 안에 끝나지 않았습니다")
-            return self._json({"name": name, "rc": r.returncode,
-                               "out": (r.stdout or "") + (r.stderr or "")})
+                return self._json(run_quick(name, argv))
+            except ValueError as e:
+                return self._err(400, str(e))
+            except TimeoutError as e:
+                return self._err(504, str(e))
         if route == "config":
             return self._json(_cfg().snapshot())
         if route == "scenario":
@@ -868,6 +1238,17 @@ def _do_post(self):
         body = json.loads(self.rfile.read(n) or b"{}") if n else {}
     except (ValueError, json.JSONDecodeError):
         return self._err(400, "요청 본문이 잘못됐습니다")
+
+    # ── 캘리브레이션 — 값이 많아 POST 로 받는다 (쿼리스트링에 넣을 양이 아니다)
+    if route.startswith("calib/"):
+        try:
+            return _calib_post(self, route[6:], body)
+        except SystemExit as e:
+            return self._err(404, str(e) or "계약에 calibration 항목이 없습니다")
+        except ValueError as e:
+            return self._err(400, str(e))
+        except Exception as e:                     # noqa: BLE001
+            return self._err(500, f"{type(e).__name__}: {e}")
 
     if route == "jobs":
         kind = body.get("kind", "")
