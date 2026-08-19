@@ -36,6 +36,77 @@ CONTROL_TOPIC = "/testbed/control"  # 뷰어 → 재생기 (pause/resume/step)
 # ══════════════════════════════════════════════════════════════════════
 #  섭동
 # ══════════════════════════════════════════════════════════════════════
+class Overlay:
+    """★합성 자극★ — 프레임 위에 그림 한 장을 얹는다.
+
+    실차 시험 절차에는 ★사람이 목업을 들고 움직이는★ 대목이 있다(신호등 목업을
+    카메라에 가까이 가져간다 같은 것). 녹화된 영상에는 그 사람이 없으므로, 그 자리를
+    이것이 대신한다 — 목업 사진 한 장을 화면에 합성하고 재생이 진행될수록 크게 만들면
+    '다가온다'가 된다.
+
+    ★이것은 정답을 주는 장치가 아니다★ 합성한 그림을 대상 노드의 인지 모델이
+    ★실제로 검출해야★ 아무 일이든 일어난다. 그림이 시원찮으면 검출 0회로 남고,
+    그 사실이 결과에 그대로 보인다. 그래서 이 장치는 '판정을 통과시키는' 쪽으로
+    작동하지 못한다 — 자극을 만들 뿐이다.
+
+    ⚠️ 회귀 비교에서는 ★같은 합성이 걸린 결과끼리만★ 비교해야 한다. 그래서 이
+    설정은 런 메타에 그대로 남고 provenance 에 들어간다.
+
+    spec (시나리오/변형의 overlay:)
+        image     얹을 그림 (테스트베드 루트 기준 상대경로 가능. PNG 알파 지원)
+        x, y      놓을 위치 [px] — anchor 가 center 면 중심, 아니면 좌상단
+        width     가로 크기 [px] (세로는 비율 유지)
+        x_to · y_to · width_to   재생이 끝날 때의 값 — 주면 그 사이를 선형으로 간다
+        from · to 이 구간에서만 그린다 (0~1, 재생 진행률)
+        anchor    center | topleft (기본 topleft)
+    """
+
+    def __init__(self, spec):
+        self.ok = False
+        if not spec or not spec.get("image"):
+            return
+        path = str(spec["image"])
+        img = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+        if img is None:
+            print(f"[player] 합성할 그림을 못 읽었다: {path}")
+            return
+        self.img = img
+        self.alpha = (img.shape[2] == 4) if img.ndim == 3 else False
+        self.x0, self.y0 = float(spec.get("x", 0)), float(spec.get("y", 0))
+        self.w0 = float(spec.get("width", img.shape[1]))
+        self.x1 = float(spec.get("x_to", self.x0))
+        self.y1 = float(spec.get("y_to", self.y0))
+        self.w1 = float(spec.get("width_to", self.w0))
+        self.t0 = float(spec.get("from", 0.0))
+        self.t1 = float(spec.get("to", 1.0))
+        self.center = str(spec.get("anchor", "topleft")) == "center"
+        self.ok = True
+
+    def __call__(self, frame, t):
+        if not self.ok or not (self.t0 <= t <= self.t1):
+            return frame
+        u = 0.0 if self.t1 <= self.t0 else (t - self.t0) / (self.t1 - self.t0)
+        w = max(4, int(round(self.w0 + (self.w1 - self.w0) * u)))
+        src = self.img
+        h = max(4, int(round(w * src.shape[0] / float(src.shape[1]))))
+        m = cv2.resize(src, (w, h), interpolation=cv2.INTER_AREA)
+        x = int(round(self.x0 + (self.x1 - self.x0) * u)) - (w // 2 if self.center else 0)
+        y = int(round(self.y0 + (self.y1 - self.y0) * u)) - (h // 2 if self.center else 0)
+        H, W = frame.shape[:2]
+        x0, y0 = max(0, x), max(0, y)
+        x1, y1 = min(W, x + w), min(H, y + h)
+        if x1 <= x0 or y1 <= y0:
+            return frame
+        patch = m[y0 - y:y1 - y, x0 - x:x1 - x]
+        if self.alpha:
+            a = patch[:, :, 3:4].astype(np.float32) / 255.0
+            frame[y0:y1, x0:x1] = (patch[:, :, :3] * a
+                                   + frame[y0:y1, x0:x1] * (1.0 - a)).astype(np.uint8)
+        else:
+            frame[y0:y1, x0:x1] = patch[:, :, :3]
+        return frame
+
+
 def make_perturb(spec):
     """'gamma:0.6' 같은 문자열 → 프레임 변환 함수. 여러 개는 '+' 로 잇는다."""
     if not spec or spec == "none":
@@ -200,6 +271,10 @@ def main(argv=None):
     ap.add_argument("--warmup-s", type=float, default=0.0,
                     help="첫 프레임 전 대기 (모델 로딩 여유)")
     ap.add_argument("--aux-json", default="[]")
+    ap.add_argument("--overlay-json", default="{}",
+                    help="합성 자극 — 목업 그림을 화면에 얹는다 (Overlay 참고)")
+    ap.add_argument("--prime", type=int, default=0,
+                    help="측정 전에 같은 프레임을 이만큼 lockstep 식으로 밀어 예열한다")
     ap.add_argument("--stats-out", default="")
     ap.add_argument("--progress-out", default="",
                     help="진행률을 주기적으로 쓸 JSON 경로")
@@ -217,6 +292,7 @@ def main(argv=None):
         cap.set(cv2.CAP_PROP_POS_FRAMES, args.start)
 
     perturb = make_perturb(args.perturb)
+    overlay = Overlay(json.loads(args.overlay_json or "{}"))
     # 진행률 분모 — limit 이 있으면 그것, 없으면 남은 프레임 수
     total_target = args.limit if args.limit else max(0, total - args.start)
     if args.stride > 1 and total_target:
@@ -245,6 +321,36 @@ def main(argv=None):
         while time.time() - t0 < args.warmup_s:
             rclpy.spin_once(node, timeout_sec=0.05)
 
+    # ── 예열 — ★첫 추론을 측정 구간 밖에서 끝낸다★ ───────────────────
+    #   YOLO 는 첫 predict 에서 가중치를 지연 로딩한다(실측 3.3초). warmup_s 는
+    #   프레임을 밀지 않고 돌기만 하므로 그 로딩이 안 일어나고, realtime 재생은
+    #   기다려 주지 않아 그 3초 동안 밀어 넣은 프레임이 ★통째로 유실된다★
+    #   (실측: 90프레임 중 앞 45장이 처리되지 않았다 = 측정 구간의 절반).
+    #   lockstep 은 sync 를 기다려서 저절로 흡수하지만 realtime 은 그렇지 않다.
+    #   그래서 측정 전에 같은 프레임을 몇 장, ★sync 를 기다리며★ 밀어 둔다.
+    #   프레임 번호는 −1 로 알려 기록에서 빠지게 한다(build_table 이 버린다).
+    if args.prime > 0:
+        okp, fp = cap.read()
+        if okp:
+            fp = perturb(fp)
+            if overlay.ok:
+                fp = overlay(fp, 0.0)      # 진행률 0 — 합성이 아직 안 켜진 상태
+            imgp = node.bridge.cv2_to_imgmsg(fp, encoding="bgr8")
+            imgp.header.frame_id = "testbed:prime"
+            for _ in range(args.prime):
+                before = node.sync_count
+                mark = Float64MultiArray()
+                mark.data = [-1.0, time.time(), -1.0]
+                node.pub_frame.publish(mark)
+                imgp.header.stamp = node.get_clock().now().to_msg()
+                node.pub_img.publish(imgp)
+                deadline = time.time() + args.sync_timeout_first
+                while (node.sync_count == before and time.time() < deadline
+                       and rclpy.ok()):
+                    rclpy.spin_once(node, timeout_sec=0.005)
+            log.info(f"예열 {args.prime}장 — 첫 추론을 측정 구간 밖에서 끝냈다")
+        cap.set(cv2.CAP_PROP_POS_FRAMES, args.start)
+
     sim_t = 0.0
     dt = 1.0 / fps * args.stride
     idx = args.start
@@ -264,6 +370,10 @@ def main(argv=None):
                 continue
             node.wait_if_paused()
             frame = perturb(frame)
+            if overlay.ok:
+                #  재생 진행률 0~1 — 목업이 '다가오는' 속도의 기준이다
+                frame = overlay(frame, (pushed / float(total_target))
+                                if total_target else 0.0)
 
             if node.pub_clock is not None:
                 c = Clock()

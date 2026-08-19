@@ -50,12 +50,19 @@ theta_deg: { topic: /lane_metrics, path: [theta_lane_deg, "data[2]"] }
 ```
 ~/cam_testbed/                     ← 워크스페이스 밖. 대상은 계약으로만 안다
 ├── contracts/                     ★유일한 결합점★ — 워크스페이스 1개 = 계약 1개
-│   ├── white_camera.yaml          이 워크스페이스
+│   ├── white_camera.yaml          white_cam_ws (차선·신호등)
+│   ├── white1_stopline.yaml       gold_ws/white1 (정지선 앞 2단계 정지) — §13
 │   └── demo_foreign.yaml          다른 시스템에 붙이는 예시(attach 모드)
 ├── scenarios/                     무엇을 어떻게 돌릴 것인가
 │   ├── regression.yaml            회귀(golden) — 재현성 최우선
 │   ├── robustness.yaml            섭동 대조 — 강건성/메타모픽
-│   └── realtime.yaml              실차 타이밍 재현 — 처리율/지연
+│   ├── realtime.yaml              실차 타이밍 재현 — 처리율/지연
+│   ├── stopline_detect.yaml       정지선이 잡히는가 (STOPLINE_TEST 단계 1) — §13
+│   ├── stopline_approach.yaml     0단→1단→2단 판정표 (단계 3·4)
+│   └── stopline_regression.yaml   정지선이 없으면 종전과 같은가 (단계 5)
+├── assets/                        시험 재료 — 합성 자극에 쓰는 그림 (§13.3)
+│   ├── red_light_mock.png         목업 신호등
+│   └── make_red_light.py          그것을 만드는 스크립트(근거가 주석에 있다)
 ├── local.yaml                     ★머신 로컬★ 영상·가중치 실제 경로 (버전관리 제외)
 ├── .flake8                        린트 설정 (자기 것을 들고 다닌다)
 ├── fastdds_profile.xml            1080p 무손실 전송용 DDS 설정 (아래 §10)
@@ -353,6 +360,10 @@ python3 -m tb.run harvest <런> --where "int(flags) % 4 >= 2" --limit 200
 
 ---
 
+> **realtime 을 쓸 때 두 가지를 챈다** — `prime:`(첫 추론을 측정 구간 밖에서 끝낸다)와
+> `sync_settle_ms:`(동기 토픽보다 늦게 나오는 값을 그 프레임 행에 붙인다). 왜 필요한지는
+> §13.7 에 실측과 함께 있다.
+
 ## 5. Ground Truth 없이 무엇을 판정하는가
 
 핸드오프 문서의 지적대로 GT 없이는 "정확도"를 못 잰다. 대신 GT 없이도 잴 수 있는
@@ -378,6 +389,10 @@ python3 -m tb.run harvest <런> --where "int(flags) % 4 >= 2" --limit 200
 `/judgment_state` 는 `camera_judgment` 가 1 Hz 타이머로도 발행해서 어느 프레임에
 실리는지가 벽시계에 달려 있다. 프레임별로 비교하면 매번 거짓 DIFF 가 뜨므로
 `compare_sequence` 로 뺐다. **재현되지 않는 것을 재현되지 않는다고 선언하는 것도 계약의 일이다.**
+
+> **「언제 물었나」를 재는 판정**은 §13.4 에 따로 있다 — 구간(`where:`)·전이(`event:`)·
+> 노드 로그(`log:`) 세 가지다. 단계적으로 개입하는 노드(예비제동 → 확정 정지처럼)는
+> 평균·분위수로 판정할 수 없어서 더한 것이고, 어느 워크스페이스에서나 쓸 수 있다.
 
 ### (2) 불변식 — 진실을 몰라도 성립해야 하는 것
 시나리오의 `checks:` 에 선언한다.
@@ -606,6 +621,10 @@ BEV 를 실시간으로 보면서** 맞춘다. 맞출 대상과 파라미터 이
 시나리오에 바로 저장**(주석 보존)하며, **«노드와 대조»** 버튼이 아래 `--verify` 를
 그 자리에서 돌린다. 편집 대상 탭은 계약의 `targets` 에서 자동으로 나오므로
 ROI 를 하나 더 늘려도 화면 코드는 고치지 않는다.
+
+**BEV 위의 가로선**(거리로 판정하는 노드의 기준선·문턱)은 `bev_row`·`bev_dist`
+두 kind 로 맞춘다 — §13.5. 어안 계수를 노드가 yaml 에서 읽는 워크스페이스라면
+계약에 `undistort: {file: …}` 로 **같은 파일**을 가리켜 옮겨 적기를 없앨 수 있다.
 
 | 키 | 동작 |
 |---|---|
@@ -1122,3 +1141,282 @@ git config --global user.email "vk1124x@gmail.com"
   근사다. T-02 로 스탬프가 들어오면 계약의 `stamp_sec`/`stamp_nsec` 이 자동으로
   잡히므로 정확 정렬로 올릴 수 있다.
 - 런마다 임의의 `ROS_DOMAIN_ID` 를 써서 다른 ROS 세션과 섞이지 않게 한다.
+
+### white1 `traffic_light` 에서 찾은 것 (2026-08-19)
+
+정지선 시험(§13)을 세우면서 **차를 꺼내기 전에** 잡힌 것들이다. 전부 재현 가능하고
+근거가 되는 런이 `runs/` 에 남아 있다. **테스트베드는 이것을 고치지 않는다** —
+고칠 곳은 워크스페이스이고, 여기서는 재현 방법만 유지한다.
+
+| # | 무엇 | 근거 | 크기 |
+|---|---|---|---|
+| ① | **왜곡보정을 켜면 정지선 검출이 0% 가 된다** | `stopline_detect` 의 두 변형: 보정 ON 0% / OFF 69.4% (같은 85프레임, `p95\|Δsl_px\|` = 94.5px) | ★관문 자체가 닫힌다★ |
+| ② | 프레임이 0.5~3초 끊기면 내부 상태가 **틱 주기(30Hz)로 왕복** 한다 | `stopline_regression` 전 변형: 해제 76회 / 재체결 75회 (2.5초) | 로그 폭주 + 대기 상태 소실 |
+| ③ | **1단을 물면 '신호등 코앞' 상한이 40px → 28px 로 내려간다** | 기본값으로 돌리면 1단 직후 `[신호등 코앞]` 으로 2단 | 정지선 2단 문턱에 못 닿는다 |
+| ④ | 절차서 단계 1 의 `sl_gate_red_s:=99999.0` 한 줄로는 관문이 안 열린다 | `_sl_should_run` 이 `red_seen_t > 0` 을 함께 요구한다 | 신호등 없이 정지선만 볼 수 없다 |
+
+**① 왜곡보정 ↔ 정지선 모델** — 정지선 seg 모델은 *어안이 남은 원본*으로 학습·운용된
+것인데(`_detect_stop_line` 주석: "이 모델은 전체 화면으로 학습·운용된 것"), 같은 날
+들어온 `camera_model.undistort` 가 그 입력을 바꿨다. `alpha=0` 이라 유효 영역을 잘라
+원래 크기로 늘리므로 노면의 스케일과 종횡비가 함께 달라진다. 신호등 detect 는 살아
+있다(목업 검출률 100%) — **깨진 것은 정지선 seg 쪽이다.**
+→ 고치는 길은 둘이다: (a) 보정된 그림으로 정지선 모델을 재학습, (b) 정지선 추론만
+원본 프레임에 돌리고 폴리곤 좌표만 보정 후로 옮긴다. 어느 쪽이든 `stopline_detect` 의
+두 변형이 그대로 판정해 준다.
+
+**② 상태 왕복** — `tick()` 은 '해제 판정 → 재계획' 순서인데, 프레임이
+`red_release_hold_s`(0.5초)보다 오래 끊기면 `_red_gone()` 이 참이 되고, 그때
+`tl_state` 는 아직 `RED` 이고 판정 유효기간(`tl_state_max_age` 3초)이 남아 있어
+`_red_confirmed()` 도 참이다. 두 조건이 **동시에 참** 이라 매 틱 0단 → 2단을
+되풀이하며, 그때마다 `_reset_stop_line_wait()` 이 대기 근거(`red_conf_t`·`sl_engaged`)를
+지운다. `tick()` 의 주석은 "동시에 참이 될 수 없다"고 적고 있다 — **사실과 다르다.**
+`/brake_level` 은 변화분만 발행하므로 **리니어 자체는 왕복하지 않는다**(그래서 실차에서
+는 안 보였다). 0.5~3초짜리 카메라 끊김은 USB·추론 지연으로 충분히 생긴다.
+
+**③ 히스테리시스 누수** — `_near_gate()` 는 *물고 있는 동안* 게이트를 0.7배로 내린다
+(해제용 히스테리시스). 그런데 `_stop_plan()` 의 '코앞' 상한이 그 게이트를 그대로
+곱해 쓰므로, 1단을 무는 순간 상한이 `25×1.6=40px` → `25×0.7×1.6=28px` 로 떨어진다.
+1단은 '아직 굴러가는 중'인데 상한은 '이미 섰다'는 기준으로 내려가는 셈이다.
+→ 상한에는 **내려가지 않은 게이트**(`tl_red_stop_min_height` 원값)를 쓰는 것이 맞다.
+
+---
+
+## 13. 정지선 앞 정지 시험 — `gold_ws/white1` (두 번째 워크스페이스)
+
+`white1/traffic_light` 는 **빨간불이 확정되면 정지선을 보고 두 단계로 선다**
+(1단 예비제동 → 2단 확정 정지). 그 시험 절차서가
+`gold_ws/src/white1/STOPLINE_TEST.md` 이고, 이 절은 **그 절차서 중 영상으로 되는
+부분을 테스트베드가 대신 하는 방법**이다.
+
+> **워크스페이스를 복사하지 않았다.** 계약 파일 하나(`contracts/white1_stopline.yaml`)를
+> 더 만들고 `workspace:` 한 줄만 gold_ws 로 두었다(§11 의 절차 그대로). `tb/*.py` 에는
+> white1 의 토픽·파라미터 이름이 여전히 한 글자도 없다.
+
+### 13.1 준비 (1회)
+
+```bash
+# ① 대상 워크스페이스 빌드 — ★--packages-up-to★ 여야 한다
+#    white1 이 nxde 를 exec_depend 로 걸고 있어 --packages-select 로는 안 선다.
+cd ~/Downloads/gold-main/gold_ws
+colcon build --symlink-install --packages-up-to white1
+
+# ② 가중치는 local.yaml 에 (머신에 묶인 값이다)
+#    실차 기본값은 /home/mad2/… 의 .engine 이고, .engine 은 ★빌드한 GPU★ 에
+#    묶여 다른 기계에서 안 열린다 → 같은 학습 결과의 .pt 를 준다.
+#      params:
+#        traffic_light:
+#          tl_weights: …/detect/combined_light/weights/best.pt
+#          sl_weights: …/segment/lane_line_new2/weights/best.pt
+#          device: cuda:0
+
+# ③ 점검
+python3 -m tb.run doctor --scenario scenarios/stopline_detect.yaml
+```
+
+### 13.2 절차서의 어느 단계를 덮는가
+
+| STOPLINE_TEST 단계 | 테스트베드 | 어떻게 |
+|---|---|---|
+| 0 노드 기동·엔진 로드 | ✅ **자동 판정** | 기동 로그 4줄을 계약의 `log_events` 로 검사 |
+| 1 **정지선이 잡히는가** ★관문★ | ✅ `stopline_detect` | 정지선이 실제로 다가오는 구간을 lockstep 으로 |
+| 2 BEV 캘리브·두 문턱 | ◐ 절반 | 사다리꼴·문턱은 **카메라 보정 탭**에서(13.5). **자로 재는 실측은 실차** |
+| 3 판정표 정적 재현 | ✅ `stopline_approach` | 사람이 판때기를 드는 대신 접근 영상 + 합성 목업 |
+| 4 저속 접근 실차 | ✅ `stopline_approach` | `sl_check.py` 와 **같은 번호·같은 기준**을 계산한다 |
+| 5 회귀 | ✅ `stopline_regression` | 변형 4개 = 절차서 5-1·5-2·5-3·5-7 |
+| 6 자율주행 통합 | ❌ 범위 밖 | driving·GPS 가 필요하다 |
+
+**`sl_check.py` 를 대체한다.** 그쪽은 주행 CSV 를 읽어 4-1~4-11 을 계산하는데,
+여기서는 같은 판정을 **토픽 기록**에서 낸다. 게다가 `sl_check.py` 가 "눈으로 볼 것"으로
+남긴 **4-7(정지 사유)** 까지 노드 로그로 판정한다. 실차 기록을 쓰고 싶으면
+계약에 `attach: true` 를 주고 돌고 있는 차에 붙이면 같은 판정 엔진이 그대로 돈다.
+
+**못 하는 것** — 4-8 실제 정지 위치(자로 잰다) · 4-10 카메라 틸트 · 2-B/2-C 실측 ·
+단계 6. 테스트베드는 그 값을 **넣고 검산**만 한다.
+
+### 13.3 합성 자극 — 목업 신호등을 화면에 얹는다
+
+이 노드는 **빨간 박스를 본 적이 있어야만** 정지선 추론을 돌린다
+(`_sl_should_run` 이 `red_seen_t > 0` 을 요구한다). 그런데 손에 있는 주행 영상에는
+신호등이 한 번도 나오지 않는다(실측: 세 영상 186프레임 샘플에서 검출 0회).
+그래서 절차서의 *"목업 신호등을 삼각대에 세운다"* 를 **화면 합성**으로 대신한다.
+
+```yaml
+# 시나리오(또는 변형)에 적는다. 상대경로는 테스트베드 루트 기준.
+overlay:
+  image: assets/red_light_mock.png
+  x: 880
+  y: 140
+  width: 240            # 세로는 비율 유지
+  width_to: 300         # 재생이 진행되면 이 크기로 — '다가온다'가 된다
+  from: 0.2             # 재생 20% 지점부터 나타난다 (to: 로 사라지게도 한다)
+  anchor: topleft       # center 로 두면 x·y 가 중심
+```
+
+**이것은 정답을 주는 장치가 아니다.** 합성한 그림을 대상 노드의 YOLO 가 *실제로*
+검출해야 아무 일이든 일어난다. 그림이 시원찮으면 결과에 '검출 0회'로 남을 뿐이고,
+그래서 이 장치로는 판정을 통과시킬 수 없다 — 자극을 만들 뿐이다. 진짜 목업 사진이
+있으면 같은 이름으로 덮어쓰면 된다(알파 PNG 를 지원한다).
+
+설정은 런 메타와 `_provenance` 에 남는다 → **같은 합성이 걸린 결과끼리만** 비교된다.
+
+**크기를 왜 실측으로 골랐나** — 이 노드는 '빨간 박스 높이[px]'를 거리의 대리값으로
+쓴다. 합성 목업은 크기가 거리와 무관하므로, 두 문턱(`tl_red_stop_min_height` ·
+`sl_override_gate_ratio`)을 목업의 실제 크기에 맞춰 옮겨 놓아야 판정 경로가 성립한다.
+폭 240px 목업의 실측값은 **검출률 100%, conf 0.81~0.89, 박스 높이 70~84px** 이고,
+세 시나리오가 그 위에서 `tl_red_stop_min_height: 50` · `sl_override_gate_ratio: 3.0`
+을 함께 쓴다(왜 그 값인지는 시나리오 주석에 근거까지 적혀 있다).
+
+### 13.4 새로 생긴 판정 문법 — 「언제 물었나」를 잰다
+
+평균과 분위수로는 *"단계가 언제 올라갔나"* 를 말할 수 없다. 단계적으로 개입하는
+노드를 판정하려고 `checks:` 에 세 가지를 더했다. **전부 워크스페이스와 무관하다** —
+신호 이름과 조건식은 시나리오·계약이 준다.
+
+```yaml
+checks:
+  # ① 조건식 — 조건이 참인 ★구간★
+  #    count 조건에 맞은 행 수 · frac 그 비율 · runs 구간 개수
+  #    run_max_frames 가장 긴 구간의 행 수 · run_max_s 그 구간의 시간
+  - {where: "sl_wait", stat: run_max_s, min: 0.3}          # 4-1 대기 구간
+  - {where: "sl_wait and brake_level > 0", stat: count, max: 0}   # 4-2
+  #    signal 을 함께 주면 ★그 조건에 맞는 행만 골라★ 평소의 신호 통계를 낸다
+  - {where: "sl_px >= 0", signal: sl_px, stat: p95_abs_diff, max: 60}
+
+  # ② 전이 — 값이 바뀐 ★그 순간★
+  #    stat: count / frame / t_s / at:<다른 신호>   (last: true 면 마지막 전이)
+  - {event: "brake_level:0->1", stat: "at:sl_px", min: 25, max: 45}   # 4-3
+  - {event: "brake_level:1->2", stat: count, min: 1}                  # 4-4
+  - {event: "tl_state:*->RED", stat: t_s, max: 1.0}                   # 와일드카드
+  - {signal: brake_level, stat: decreases, max: 0}                    # 4-6 단조성
+
+  # ③ 노드 로그 — 토픽에 없는 근거 (계약의 log_events 가 이름을 정의한다)
+  - {stat: "log:stop_at_line", min: 1}                     # 4-7 정지 사유
+```
+
+계약 쪽에 붙은 것도 셋이다.
+
+```yaml
+# 어느 신호가 언제 바뀌었고 ★그때 무엇이 얼마였나★ — 리포트와 웹에 표로 나온다
+events:
+  signal: brake_level
+  at: [sl_px, sl_wait, tl_state, tl_near]
+
+# 노드 로그에서 찾을 것들. 정규식과 노드 이름은 ★계약에만★ 있다
+log_events:
+  boot_sl_class: {node: traffic_light, pattern: "정지선 엔진 클래스 = .*'stop-line'"}
+  stop_at_line:  {node: traffic_light, pattern: "\\[정지선 앞\\]"}
+
+# ★첫 발행 이전의 값★ — 변화분만 발행되는 신호(브레이크 단계처럼)는 아무 일도 없는
+#   동안 토픽이 조용하다. 그 구간을 비워 두면 "0단 → 1단" ★첫 전이가 사라진다★.
+hold_initial: {brake_level: 0, tl_brake_req: 0, sl_wait: false}
+```
+
+> **초 단위 판정의 시간 기준은 벽시계가 아니다.** `프레임 ÷ 영상fps × 배속` 으로 잰다
+> (`analyze.scene_fps`). lockstep 에서 벽시계는 기계 속도에 좌우되지만 프레임 번호는
+> *장면 안의 시간*이고, 배속을 곱하면 *노드가 실제로 겪은 시간*이 된다.
+
+### 13.5 카메라 보정 — BEV 위의 가로선
+
+거리로 판정하는 노드를 맞추려면 **BEV 위의 가로선**이 자다(원근이 펴져 있어 가로선
+하나가 곧 '차에서 얼마'다). 계약의 캘리브 대상에 두 종류가 늘었다.
+
+| kind | 뜻 | white1 에서 |
+|---|---|---|
+| `bev_row` | BEV 의 기준선(거리 0)이 몇 번째 행인가 | `bev_bumper_y_px` (앞범퍼) |
+| `bev_dist` | **그 기준선에서의 거리**[px] | `sl_brake1_px` · `sl_brake2_px` |
+
+기준선을 옮기면 문턱이 **통째로 따라온다**(따로 잡으면 반드시 어긋난다).
+«카메라 보정» 탭에서 BEV 화면의 선을 끌거나 `↑↓` 로 옮기고, 터미널에서는 `5` 로
+대상을 순환한다. 편집 대상은 계약의 `targets` 에서 자동으로 나오므로 화면 코드는
+kind 렌더러 말고는 손대지 않았다.
+
+**어안 보정 계수는 옮겨 적지 않는다.** white1 은 계수를 yaml 에서 읽으므로
+(`camera_model.py`), 계약도 **같은 파일**을 가리킨다:
+
+```yaml
+calibration:
+  undistort:
+    file: …/gold_ws/src/white1/calibration/usb_cam_calibration.yaml
+```
+
+재캘리브해서 그 yaml 만 바꿔도 테스트베드는 그대로 맞는다. (구 white 는 계수가
+`perception.py` 소스에 박혀 있어 계약에 `K`/`D` 를 옮겨 적을 수밖에 없었다 — §9 참고.)
+
+### 13.6 디버그 화면 — 노드가 안 내주면 테스트베드가 그린다
+
+`traffic_light` 는 디버그 이미지 **토픽을 내지 않는다**(cv2 창으로 직접 그린다).
+그래서 `--watch`·`--record-debug`·`--verify` 로 볼 것이 없다. 대신 계약에
+`render.bev_dist` 를 두면 테스트베드가 **판정에 쓴 값 그대로** 같은 그림을 그린다.
+
+```yaml
+render:
+  bev_dist: {distance: sl_px, missing: -1}
+  readout: [sl_px, sl_wait, tl_state, tl_near, brake_level]
+```
+
+```bash
+python3 -m tb.run render <런> --frames 1379,1390        # 그림
+python3 -m tb.run render <런> --mp4 auto                # 영상
+```
+
+- BEV 에 **기준선과 두 문턱**을, 그 위에 **노드가 발행한 거리**를 자홍색 가로선으로
+- 그 선을 **원본 화면으로 되돌려** 그린다 → **노면의 정지선과 겹치는지** 눈으로 본다
+
+숫자만 보면 '검출률 69%' 같은 결론이 나오는데, 그것이 *정말 정지선인지*(1-3 차체
+오검출·1-4 횡단보도 오검출)는 이 그림으로만 확인된다. 웹앱 «실행 상세 → 시각화» 의
+경로 영상도 같은 그림을 쓴다.
+
+### 13.7 돌리는 법
+
+```bash
+# 단계 0·1 — ★관문★ (lockstep, 재현성 최우선)
+python3 -m tb.run run --scenario scenarios/stopline_detect.yaml \
+                      --baseline stopline_detect
+
+# 단계 3·4 — 판정표 (realtime 0.25배속, 실차 타이밍 재현)
+python3 -m tb.run run --scenario scenarios/stopline_approach.yaml \
+                      --baseline stopline_approach
+
+# 단계 5 — 회귀 (변형 4개)
+python3 -m tb.run run --scenario scenarios/stopline_regression.yaml --keep-going
+
+# 결과를 코드 개선 요청문으로
+python3 -m tb.run feedback <런>
+```
+
+**왜 시나리오마다 재생 모드가 다른가** — 이 노드의 판단은 전부 `time.time()`(벽시계)로
+돈다(`tl_hold_s` 0.4s · `sl_hold_s` 0.2s · `sl_stale_s` 0.5s · `sl_wait_max_s` 8s).
+`use_sim_time` 을 보지 않으므로 **시간 판정은 realtime 으로만 재현된다.** 반대로
+인지 판정(검출률·안정성)은 프레임이 1:1 로 처리돼야 회귀 비교가 성립하므로 lockstep 이다.
+
+| | 모드 | 왜 |
+|---|---|---|
+| `stopline_detect` | `lockstep` | 검출률은 프레임 1:1 이어야 기계가 달라도 같은 값이 나온다 |
+| `stopline_approach` · `stopline_regression` | `realtime` `rate: 0.25` | 노드의 시간 상수가 뜻을 갖게. 0.25배는 ① 이 클립의 접근이 1.5초로 너무 빠르고 ② 노드가 1080p 두 번 추론으로 7~10fps 라 30fps 를 못 따라가기 때문이다 |
+
+realtime 에는 `prime:` 이 필요하다 — YOLO 첫 추론이 3.3초 걸리고(가중치 지연 로딩)
+그동안 밀어 넣은 프레임이 통째로 유실된다(실측: 90프레임 중 앞 45장). `prime: 3` 은
+측정 전에 같은 프레임을 sync 를 기다리며 몇 장 밀어 **첫 추론을 측정 구간 밖에서**
+끝낸다. lockstep 은 sync 를 기다리므로 저절로 흡수된다.
+
+lockstep 에는 `sync_settle_ms:` 를 넉넉히 준다(정지선 시나리오는 60ms). 동기 토픽
+(`/tl/state`)이 **정지선 추론보다 먼저** 나가고 거리는 30Hz 타이머로 나가므로, 이 값이
+짧으면 그 프레임의 거리가 **다음 프레임 행**에 붙는다.
+
+### 13.8 변형이 파라미터도 바꾼다
+
+'기능을 끄고 같은 영상을 돌린다' 같은 대조군은 섭동이 아니라 **파라미터**로 만든다.
+변형은 자기 `params:` 와 자기 `checks:` 를 가질 수 있다(체크는 시나리오 것에 덧붙는다).
+
+```yaml
+variants:
+  - name: base
+    checks: [{stat: "log:boot_undistort_on", min: 1}]
+  - name: undist_off
+    params: {traffic_light: {cam_undistort: false}}
+    checks: [{stat: "log:boot_undistort_off", min: 1}]
+```
+
+우선순위는 **시나리오 < 변형 < local.yaml** 이다(local 이 맨 뒤인 것은 가중치 경로처럼
+기계에 묶인 값이라서다). 그러면 base 와 나란히 «결과 비교» 표에 오르고, §12 의 ① 처럼
+**원인을 코드 한 줄로 좁히는** 대조가 된다.

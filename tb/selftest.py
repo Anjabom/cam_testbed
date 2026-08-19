@@ -13,6 +13,7 @@ import tempfile
 from pathlib import Path
 
 from . import analyze
+from . import analyze as A   # 새 도구들(구간·전이·로그)을 짧게 부른다
 from .contract import Contract, Signal, resolve, _MISSING
 
 FAILS = []
@@ -471,6 +472,161 @@ def t_config_roundtrip():
             C.ROOT = real
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  구간 · 전이 · 로그 — 단계적으로 개입하는 노드를 판정하는 도구
+# ══════════════════════════════════════════════════════════════════════
+def _rows_stage():
+    """0단 대기 → 1단 → 2단 으로 올라가는 가짜 주행 한 판.
+
+    frame 은 30fps 영상의 프레임 번호로 읽는다(0.0333초/프레임).
+    """
+    rows = []
+    for i in range(30):
+        f = 100 + i
+        br = 0 if i < 10 else (1 if i < 22 else 2)
+        rows.append({"frame": f, "b": br, "d": 100.0 - 3.0 * i,
+                     "w": (br == 0 and i >= 3)})
+    return rows
+
+
+def t_spans():
+    rows = _rows_stage()
+    st = A.span_stats(rows, "w", 30.0)
+    eq("구간 count", st["count"], 7)
+    eq("구간 개수", st["runs"], 1)
+    eq("구간 길이[s]", round(st["run_max_s"], 3), round(7 / 30.0, 3))
+    eq("구간 첫 프레임", st["first_frame"], 103)
+    # 조건이 두 토막이면 runs 가 2 여야 한다
+    st2 = A.span_stats(rows, "b == 0 or b == 2", 30.0)
+    eq("두 토막", st2["runs"], 2)
+    # 값이 없는 행은 구간을 끊지 않고 건너뛴다
+    rows2 = [{"frame": 1, "w": True}, {"frame": 2}, {"frame": 3, "w": True}]
+    eq("결측은 안 끊는다", A.span_stats(rows2, "w", 30.0)["runs"], 1)
+
+
+def t_events():
+    rows = _rows_stage()
+    ev = A.find_events(rows, "b:0->1", 30.0)
+    eq("0->1 한 번", len(ev), 1)
+    eq("0->1 프레임", ev[0]["frame"], 110)
+    eq("0->1 시각[s]", round(ev[0]["t_s"], 3), round(10 / 30.0, 3))
+    eq("전이 순간의 다른 값", rows[ev[0]["i"]]["d"], 70.0)
+    eq("와일드카드", len(A.find_events(rows, "b:*->2", 30.0)), 1)
+    eq("없는 전이", len(A.find_events(rows, "b:2->0", 30.0)), 0)
+    # 문자열 상태도 같은 문법으로
+    cats = [{"frame": i, "s": ("UNKNOWN" if i < 3 else "RED")} for i in range(6)]
+    eq("문자열 전이", len(A.find_events(cats, "s:UNKNOWN->RED", 30.0)), 1)
+    # 규격이 틀리면 조용히 넘어가지 않는다
+    try:
+        A.parse_event("b:0")
+        FAILS.append("전이 규격 오류를 안 잡았다")
+    except ValueError:
+        pass
+
+
+def t_check_kinds():
+    """새 체크 문법이 그대로 판정으로 이어지는가."""
+    c = _contract(signals={"b": {"topic": "/b", "path": ["data"]},
+                           "d": {"topic": "/d", "path": ["data"]},
+                           "w": {"topic": "/w", "path": ["data"]}},
+                  flag_bits={})
+    rows = _rows_stage()
+    summ = {"meta": {"video_fps": 30.0}, "scene_fps": 30.0,
+            "log_events": {"ok": {"count": 2}, "bad": {"count": 0}}}
+    checks = [
+        {"where": "w", "stat": "run_max_s", "min": 0.2},
+        {"where": "w and b > 0", "stat": "count", "max": 0},
+        {"event": "b:0->1", "stat": "at:d", "min": 65, "max": 75},
+        {"event": "b:1->2", "stat": "count", "min": 1},
+        {"signal": "b", "stat": "decreases", "max": 0},
+        {"signal": "d", "where": "b == 1", "stat": "max", "max": 71.0},
+        {"stat": "log:ok", "min": 1},
+        {"stat": "log:bad", "max": 0},
+        {"stat": "log:없는것", "min": 1},
+    ]
+    got = A.run_checks(summ, rows, c, checks)
+    eq("체크 개수", len(got), 9)
+    eq("전부 통과", [g["ok"] for g in got][:8], [True] * 8)
+    eq("없는 로그이벤트는 판정보류", got[8]["ok"], None)
+    # 라벨에 무엇으로 잰 것인지 남는가 (리포트 가독성)
+    eq("전이 라벨", got[2]["check"], "b:0->1.at:d")
+
+
+def t_hold_initial():
+    """변화분만 발행되는 신호의 ★첫 전이★ 를 잃지 않는가."""
+    import json as _json
+    import tempfile
+    #  /z 는 프레임마다 오는 신호(행을 만드는 쪽), /b 는 ★변할 때만★ 오는 신호다.
+    c = _contract(signals={"b": {"topic": "/b", "path": ["data"]},
+                           "z": {"topic": "/z", "path": ["data"]}},
+                  hold_signals=["b"], hold_initial={"b": 0}, flag_bits={})
+    recs = [{"t": 0.5, "frame": 0, "t_frame": 0.4, "topic": "/z", "msg": {"data": 1}},
+            {"t": 1.0, "frame": 1, "t_frame": 0.9, "topic": "/z", "msg": {"data": 1}},
+            {"t": 1.0, "frame": 1, "t_frame": 0.9, "topic": "/b", "msg": {"data": 2}}]
+    with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as f:
+        for r in recs:
+            f.write(_json.dumps(r) + "\n")
+        path = f.name
+    rows, _ = A.build_table(path, c, 0)
+    eq("발행 전은 초기값", rows[0]["b"], 0)
+    eq("0->2 전이가 남는다", len(A.find_events(rows, "b:0->2", 30.0)), 1)
+
+
+def t_scene_fps():
+    eq("메타 우선", A.scene_fps({"video_fps": 25.0}), 25.0)
+    eq("배속을 곱한다", A.scene_fps({"video_fps": 30.0, "rate": 0.25}), 7.5)
+    eq("없으면 30", A.scene_fps({}), 30.0)
+    eq("계약 폴백", A.scene_fps({}, _contract(theta_quality={"fps": 15.0})), 15.0)
+
+
+def t_overlay():
+    """합성 자극 — 그림이 실제로 그 자리에 얹히는가."""
+    import numpy as np
+    import tempfile
+    import cv2 as _cv2
+    from .player import Overlay
+    mock = np.zeros((30, 90, 3), np.uint8)
+    mock[:, :] = (0, 0, 255)
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+        path = f.name
+    _cv2.imwrite(path, mock)
+    ov = Overlay({"image": path, "x": 10, "y": 20, "width": 90, "from": 0.5})
+    eq("로드", ov.ok, True)
+    frame = np.zeros((200, 300, 3), np.uint8)
+    out = ov(frame.copy(), 0.2)
+    eq("from 이전에는 안 그린다", int(out.sum()), 0)
+    out = ov(frame.copy(), 0.7)
+    eq("그린다", int(out[25, 50, 2]), 255)
+    eq("그 밖은 그대로", int(out[100, 200, 2]), 0)
+    eq("빈 규격은 꺼진다", Overlay({}).ok, False)
+
+
+def t_bev_rows():
+    """캘리브 대상 bev_row / bev_dist — 기준선을 옮기면 문턱이 따라온다."""
+    c = _contract(calibration={
+        "undistort": {"size": [64, 48], "K": [30, 30, 32, 24], "D": [0, 0, 0, 0, 0]},
+        "bev": {"w": 64, "h": 48},
+        "targets": {
+            "quad": {"kind": "quad", "nodes": ["n"], "param": "q",
+                     "default": [10, 20, 50, 20, 60, 48, 4, 48]},
+            "bump": {"kind": "bev_row", "nodes": ["n"], "param": "bp", "default": 48.0},
+            "b1": {"kind": "bev_dist", "nodes": ["n"], "param": "d1", "default": 30.0},
+            "b2": {"kind": "bev_dist", "nodes": ["n"], "param": "d2", "default": 10.0},
+        }})
+    from .calibrate import Calib
+    cal = Calib(c, {})
+    eq("기준선 인식", cal.bumper_key, "bump")
+    eq("기준선 값", cal.bumper_y(), 48.0)
+    eq("문턱 행", cal.row_y("b1"), 18.0)          # 48 - 30
+    cal.bev_rows["bump"] = 60.0                    # 범퍼가 BEV 밖(차체에 가림)
+    eq("기준선을 옮기면 따라온다", cal.row_y("b1"), 30.0)
+    cal.set_row_y("b2", 45.0)                      # BEV 45행을 찍었다
+    eq("찍은 행 → 거리", cal.bev_rows["b2"], 15.0)
+    p = cal.to_params()["n"]
+    eq("저장 형식", (p["bp"], p["d1"], p["d2"]), (60.0, 30.0, 15.0))
+    eq("순서는 기준선 먼저", cal.bev_keys()[0], "bump")
 
 
 def main():

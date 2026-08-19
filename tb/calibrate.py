@@ -26,11 +26,11 @@ import numpy as np
 import yaml
 
 from .contract import load as load_contract
-from .geometry import (Undistorter, draw_grid, put_text, quad_is_sane,
-                       verticality, warp_bev)
+from .geometry import (draw_grid, draw_rows, put_text, quad_is_sane,
+                       undistorter, verticality, warp_bev)
 
 HELP = [
-    "1 IPM 사각형   2 차선 ROI   3 신호등 ROI   4 BEV 측정",
+    "1 IPM 사각형   2 차선 ROI   3 신호등 ROI   4 BEV 측정   5 BEV 가로선",
     "드래그: 가장 가까운 점 이동   방향키: 1px  Shift+방향키: 10px",
     "[ ] 프레임 +-30   , . 프레임 +-1   g 격자   u 보정 on/off",
     "+ - 실측길이 조정   c 측정 지우기   r 되돌리기   s 저장   q 종료",
@@ -46,8 +46,10 @@ class Calib:
         if not cal:
             raise SystemExit("[calibrate] 계약에 calibration: 블록이 없다.")
         u = cal["undistort"]
-        self.und_size = u["size"]
-        self.und = Undistorter(u["size"], u["K"], u["D"], u.get("alpha", 0.0))
+        self.und, self.und_size = undistorter(u, Path(contract.path).parent)
+        if self.und is None:
+            raise SystemExit("[calibrate] 계약의 calibration.undistort 에 K/D 도 "
+                             "file 도 없다.")
         self.und_param = u.get("param", "")
         self.bev_w = int(cal["bev"]["w"])
         self.bev_h = int(cal["bev"]["h"])
@@ -59,6 +61,13 @@ class Calib:
         self.px2m = 0.006
         self.length_m = 3.0
         self.quad_key = self.px2m_key = self.len_key = None
+        #  ★BEV 위의 가로선들★ [bev_row = 기준선 / bev_dist = 그 선에서의 거리]
+        #  원근이 펴진 BEV 에서는 가로선 하나가 곧 '차에서 얼마'다. 기준선(범퍼)을
+        #  먼저 놓고, 문턱들은 그 선에서의 ★거리★ 로 잡는다 — 기준선을 옮기면
+        #  문턱이 통째로 따라오게 하려는 것이다(따로 잡으면 반드시 어긋난다).
+        self.bev_rows = {}        # key -> 값 (bev_row 는 행, bev_dist 는 거리)
+        self.bev_kinds = {}       # key -> 'bev_row' | 'bev_dist'
+        self.bumper_key = None
 
         for key, t in self.targets.items():
             kind = t["kind"]
@@ -79,6 +88,12 @@ class Calib:
                 self.len_key = key
                 if got:
                     self.length_m = float(got[0])
+            elif kind in ("bev_row", "bev_dist"):
+                self.bev_kinds[key] = kind
+                if kind == "bev_row" and self.bumper_key is None:
+                    self.bumper_key = key
+                dflt = float(self.bev_h) if kind == "bev_row" else self.bev_h * 0.25
+                self.bev_rows[key] = float(got[0]) if got else dflt
 
     @staticmethod
     def _param_value(params, t):
@@ -93,7 +108,11 @@ class Calib:
                     out.extend(v if isinstance(v, (list, tuple)) else [v])
             if out:
                 return out
-        return None
+        #  params 에 없으면 계약이 적어 둔 노드 기본값 — 그것도 없으면 None
+        d = t.get("default")
+        if d is None:
+            return None
+        return list(d) if isinstance(d, (list, tuple)) else [d]
 
     # ── 저장 ────────────────────────────────────────────────────────
     def to_params(self):
@@ -122,7 +141,36 @@ class Calib:
                 put(t, [round(float(self.px2m), 6)])
             elif k == "length_m":
                 put(t, [round(float(self.length_m), 3)])
+            elif k in ("bev_row", "bev_dist"):
+                put(t, [round(float(self.bev_rows.get(key, 0.0)), 1)])
         return out
+
+    # ── BEV 가로선 ──────────────────────────────────────────────────
+    def bumper_y(self):
+        """거리 0 의 기준행. 기준선을 안 두면 BEV 밑변이 기준이다."""
+        if self.bumper_key is None:
+            return float(self.bev_h)
+        return float(self.bev_rows.get(self.bumper_key, self.bev_h))
+
+    def row_y(self, key):
+        """그 대상이 BEV 의 몇 번째 행에 그려지는가."""
+        v = float(self.bev_rows.get(key, 0.0))
+        return v if self.bev_kinds.get(key) == "bev_row" else self.bumper_y() - v
+
+    def set_row_y(self, key, y):
+        """BEV 에서 y 행을 찍었을 때 그 대상의 값이 얼마가 되는가."""
+        k = self.bev_kinds.get(key)
+        if k is None:
+            return
+        self.bev_rows[key] = (float(y) if k == "bev_row"
+                              else self.bumper_y() - float(y))
+
+    def row_label(self, key):
+        v = self.bev_rows.get(key, 0.0)
+        unit = "행" if self.bev_kinds.get(key) == "bev_row" else "px"
+        m = f" ({v * self.px2m:.2f}m)" if (self.px2m > 0
+                                           and self.bev_kinds.get(key) == "bev_dist") else ""
+        return f"{key} {v:.0f}{unit}{m}"
 
     # ── 편집 ────────────────────────────────────────────────────────
     def handles(self, mode):
@@ -131,6 +179,11 @@ class Calib:
             return [(f"P{i}", self.quad, i) for i in range(4)]
         r = self.rects.get(mode)
         return [] if r is None else [("A", r, 0), ("B", r, 1)]
+
+    def bev_keys(self):
+        """기준선 먼저, 그 다음 거리들 — 화면에 그리는 순서이자 `5` 의 순환 순서."""
+        return ([self.bumper_key] if self.bumper_key else []) + \
+               [k for k in self.bev_rows if k != self.bumper_key]
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -144,6 +197,10 @@ def render(frame_raw, cal, mode, sel, use_und, grid, meas, real_m, msg,
     vdev, vn = verticality(bev)
     if grid:
         bev = draw_grid(bev, cal.px2m)
+    #  ★거리 판정의 기준선과 문턱★ — BEV 위의 가로선이 곧 '차에서 얼마'다
+    if cal.bev_rows:
+        bev = draw_rows(bev, [(k, cal.row_y(k), cal.row_label(k))
+                              for k in cal.bev_keys()], mode)
 
     left = cv2.resize(src, (disp_w, int(round(disp_w * H / W))))
     k = disp_w / W
@@ -200,6 +257,9 @@ def render(frame_raw, cal, mode, sel, use_und, grid, meas, real_m, msg,
                    "   ※ 직선 구간에서만 의미 있다")
     else:
         hud.append("수직도: 선을 못 찾았다 — 차선이 보이는 프레임으로 이동할 것")
+    if cal.bev_rows:
+        hud.append("BEV 가로선: " + "   ".join(cal.row_label(k)
+                                              for k in cal.bev_keys()))
     if len(meas) >= 2:
         d = float(np.linalg.norm(np.array(meas[0]) - np.array(meas[1])))
         hud.append(f"측정 {d:.1f}px = {real_m:.2f}m  ->  px2m={real_m / max(d, 1e-6):.6f}"
@@ -381,8 +441,17 @@ def main(argv=None):
         split = state["split"]
         k = state["k"]
         nonlocal sel, meas
-        if x > split:                      # BEV 패널 — 측정
-            if ev == cv2.EVENT_LBUTTONDOWN and y < cal.bev_h:
+        if x > split:                      # BEV 패널
+            if mode in cal.bev_rows:       # — 가로선 끌기
+                if ev == cv2.EVENT_LBUTTONDOWN:
+                    state["drag"] = True
+                if state["drag"] and ev in (cv2.EVENT_LBUTTONDOWN,
+                                            cv2.EVENT_MOUSEMOVE):
+                    cal.set_row_y(mode, y)
+                elif ev == cv2.EVENT_LBUTTONUP:
+                    state["drag"] = False
+                return
+            if ev == cv2.EVENT_LBUTTONDOWN and y < cal.bev_h:   # — 측정
                 if len(meas) >= 2:
                     meas = []
                 meas.append((x - split, y))
@@ -431,6 +500,12 @@ def main(argv=None):
         elif ch == ord("4"):
             mode = "measure"
             note = cal.targets.get(cal.px2m_key, {}).get("hint", "")
+        elif ch == ord("5"):
+            keys = cal.bev_keys()
+            if keys:
+                mode = keys[(keys.index(mode) + 1) % len(keys)] \
+                    if mode in keys else keys[0]
+                note = cal.targets.get(mode, {}).get("hint", "")
         elif ch == ord("g"):
             grid = not grid
         elif ch == ord("u"):
@@ -481,6 +556,10 @@ def main(argv=None):
                       0xFF53: (1, 0), 0xFF54: (0, 1),
                       81: (-1, 0), 82: (0, -1), 83: (1, 0), 84: (0, 1)}
             d = arrows.get(key) or arrows.get(ch)
+            if d and mode in cal.bev_rows:
+                # 위 = 멀어짐. bev_row 는 행이 줄고, bev_dist 는 거리가 는다.
+                cal.set_row_y(mode, cal.row_y(mode) + d[1] * step)
+                continue
             hs = cal.handles(mode)
             if d and hs and sel < len(hs):
                 _, arr, i = hs[sel]

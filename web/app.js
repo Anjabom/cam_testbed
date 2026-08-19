@@ -1932,6 +1932,28 @@
       var t = st.targets[k];
       if (t.kind === 'scale') modes.push({ id: 'measure', key: k, label: KIND_LABEL.scale, hint: t.hint });
     });
+    /* ── BEV 가로선 : 거리로 판정하는 노드의 기준선과 문턱 ────────
+       BEV 는 원근이 펴져 있어 가로선 하나가 곧 '차에서 얼마'다.
+       기준선(bev_row)을 먼저 놓고 문턱(bev_dist)은 그 선에서의 거리로 잡는다 —
+       기준선을 옮기면 문턱이 통째로 따라온다. */
+    var BEVKIND = {}, BUMPER = '';
+    Object.keys(st.targets || {}).forEach(function (k) {
+      var t = st.targets[k];
+      if (t.kind !== 'bev_row' && t.kind !== 'bev_dist') return;
+      BEVKIND[k] = t.kind;
+      if (t.kind === 'bev_row' && !BUMPER) BUMPER = k;
+      modes.push({ id: k, key: k, label: k, hint: t.hint });
+    });
+    function bumperY() {
+      return BUMPER ? Number(S.bevRows[BUMPER]) : ((st.bev || {}).h || 480);
+    }
+    function rowY(k) {
+      return BEVKIND[k] === 'bev_row' ? Number(S.bevRows[k])
+                                      : bumperY() - Number(S.bevRows[k]);
+    }
+    function setRowY(k, y) {
+      S.bevRows[k] = Math.round(BEVKIND[k] === 'bev_row' ? y : bumperY() - y);
+    }
     if (!modes.length) modes.push({ id: 'quad', key: '', label: KIND_LABEL.quad, hint: '' });
 
     var vidNames = Object.keys(st.videos || {});
@@ -1940,6 +1962,7 @@
       st: st, video: curVid, frame: st.start || 0,
       quad: (st.quad || []).slice(), rects: JSON.parse(JSON.stringify(st.rects || {})),
       px2m: st.px2m, lengthM: st.length_m,
+      bevRows: JSON.parse(JSON.stringify(st.bev_rows || {})),
       mode: modes[0].id, sel: 0, meas: [], realM: st.length_m,
       undist: st.undistort !== false, grid: true, playing: false, fps: 15,
       busy: false, dirty: false, timer: null, meta: null, off: [],
@@ -2116,6 +2139,17 @@
         fields.appendChild(h('button', { text: '화면 전체', onclick: function () {
           S.rects[S.mode] = [0, 0, st.size[0], st.size[1]]; drawFields(); draw();
         } }));
+      } else if (BEVKIND[S.mode]) {
+        var isRow = BEVKIND[S.mode] === 'bev_row';
+        add(numField(isRow ? 'BEV 행 [px]' : '범퍼선에서 [px]',
+                     function () { return Math.round(S.bevRows[S.mode]); },
+                     function (v) { S.bevRows[S.mode] = v; }));
+        if (!isRow) {
+          fields.appendChild(h('span', { class: 'sub',
+            text: '≈ ' + (S.bevRows[S.mode] * S.px2m).toFixed(2) + ' m' }));
+        }
+        fields.appendChild(h('span', { class: 'sub',
+          text: 'BEV 화면에서 선을 끌거나 ↑↓ 로 옮깁니다' }));
       } else if (S.mode === 'measure') {
         add(numField('실제 길이 [m]', function () { return S.realM; },
                      function (v) { S.realM = v; }, 0.05));
@@ -2180,6 +2214,11 @@
       if (!p) return;
       e.preventDefault();
       if (p.panel === 'bev') {
+        if (BEVKIND[S.mode]) {                 // 가로선을 끈다
+          setRowY(S.mode, p.y);
+          drag = ['bev', S.mode];
+          drawFields(); return draw();
+        }
         if (S.mode !== 'measure') return;
         if (S.meas.length >= 2) S.meas = [];
         S.meas.push([p.x, p.y]);
@@ -2213,7 +2252,13 @@
     function onMove(e) {
       if (!drag) return;
       var p = at(e);
-      if (!p || p.panel !== 'src') return;
+      if (!p) return;
+      if (drag[0] === 'bev') {
+        if (p.panel !== 'bev') return;
+        setRowY(drag[1], p.y);
+        syncFields(); return draw();
+      }
+      if (p.panel !== 'src') return;
       drag[2](p.x, p.y);
       syncFields(); draw();
     }
@@ -2223,6 +2268,11 @@
       if (/^(INPUT|SELECT|TEXTAREA)$/.test((e.target || {}).tagName || '')) return;
       var nud = { ArrowLeft: [-1, 0], ArrowRight: [1, 0],
                   ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
+      if (nud && BEVKIND[S.mode]) {
+        e.preventDefault();
+        setRowY(S.mode, rowY(S.mode) + nud[1] * (e.shiftKey ? 10 : 1));
+        drawFields(); return draw();
+      }
       if (nud) {
         var hs = handles();
         if (!hs.length || S.sel >= hs.length) return;
@@ -2255,6 +2305,7 @@
       S.quad = (st.quad || []).slice();
       S.rects = JSON.parse(JSON.stringify(st.rects || {}));
       S.px2m = st.px2m; S.lengthM = st.length_m; S.realM = st.length_m;
+      S.bevRows = JSON.parse(JSON.stringify(st.bev_rows || {}));
       S.meas = [];
       drawFields(); draw();
       say('파일에 있던 값으로 되돌렸습니다');
@@ -2264,6 +2315,7 @@
     function body() {
       return { scenario: scSel.value, video: S.video, frame: S.frame,
                quad: S.quad, rects: S.rects, px2m: S.px2m, length_m: S.lengthM,
+               bev_rows: S.bevRows,
                undistort: S.undist, grid: S.grid, mode: S.mode,
                meas: S.meas, w: 1400 };
     }
@@ -2339,7 +2391,8 @@
         say(d.path + ' 에 저장했습니다');
         get('/api/calib?scenario=' + encodeURIComponent(scSel.value))
           .then(function (s2) { st.quad = s2.quad; st.rects = s2.rects;
-                                st.px2m = s2.px2m; st.length_m = s2.length_m; })
+                                st.px2m = s2.px2m; st.length_m = s2.length_m;
+                                st.bev_rows = s2.bev_rows; })
           .catch(function () {});
       }).catch(function (e) { say(e.message, true); });
     } });

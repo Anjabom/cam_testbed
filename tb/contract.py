@@ -108,6 +108,11 @@ class Contract:
         self.mirror_odd = list(data.get("mirror_odd_signals") or [])
         self.compare_sequence = list(data.get("compare_sequence") or [])
         self.hold_signals = list(data.get("hold_signals") or [])
+        # ★첫 발행 이전의 값★ 변화분만 발행하는 신호(브레이크 단계처럼)는 아무 일도
+        #   없는 동안 토픽에 아무것도 안 온다. 그 구간을 비워 두면 "0단에서 1단으로
+        #   올라갔다"는 ★첫 전이가 통째로 사라진다★ — 1이 첫 값으로 보이기 때문이다.
+        #   무엇이 기본 상태인지는 워크스페이스가 아는 일이므로 계약에 적는다.
+        self.hold_initial = dict(data.get("hold_initial") or {})
         # 뷰어가 띄울 디버그 이미지 토픽 (있으면 눈으로 보며 디버깅 가능)
         self.debug_topics = list(data.get("debug_topics") or [])
         # 이 신호를 실제로 쓰는 받는 쪽 노드들과 그 게이트

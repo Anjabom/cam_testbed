@@ -359,6 +359,10 @@ def _cal_dump(cal):
                   for k, r in cal.rects.items()},
         "px2m": round(float(cal.px2m), 6),
         "length_m": round(float(cal.length_m), 3),
+        # BEV 가로선 — 값과 '그래서 몇 번째 행인가' 를 함께 보낸다.
+        # 화면은 행만 있으면 그릴 수 있고, 값은 입력칸이 쓴다.
+        "bev_rows": {k: round(float(v), 1) for k, v in cal.bev_rows.items()},
+        "bev_row_y": {k: round(float(cal.row_y(k)), 1) for k in cal.bev_rows},
     }
 
 
@@ -373,6 +377,7 @@ def _cal_work(env, body):
     cal = copy.copy(env["cal"])                     # remap 맵은 공유한다
     cal.quad = env["cal"].quad.copy()
     cal.rects = {k: v.copy() for k, v in env["cal"].rects.items()}
+    cal.bev_rows = dict(env["cal"].bev_rows)
 
     q = body.get("quad")
     if q:
@@ -385,6 +390,10 @@ def _cal_work(env, body):
         if len(v) != 4:
             raise ValueError(f"{k} 는 값 4개여야 합니다")
         cal.rects[k] = np.asarray([float(x) for x in v], np.float32).reshape(2, 2)
+    for k, v in (body.get("bev_rows") or {}).items():
+        if k not in cal.bev_rows:
+            raise ValueError(f"계약에 없는 BEV 가로선입니다: {k}")
+        cal.bev_rows[k] = float(v)
     if body.get("px2m") is not None:
         cal.px2m = max(1e-9, float(body["px2m"]))
     if body.get("length_m") is not None:
@@ -458,8 +467,8 @@ def calib_view(video, frame, cal, undist=True, width=1400, meas=None,
     """
     import cv2                                      # noqa: PLC0415
     import numpy as np                              # noqa: PLC0415
-    from tb.geometry import (draw_grid, put_text,   # noqa: PLC0415
-                             quad_is_sane, verticality, warp_bev)
+    from tb.geometry import (draw_grid, draw_rows,  # noqa: PLC0415
+                             put_text, quad_is_sane, verticality, warp_bev)
 
     key = "calib:" + str(video)
     ent = _CALIB.get(key)
@@ -477,6 +486,9 @@ def calib_view(video, frame, cal, undist=True, width=1400, meas=None,
     dev, nline = verticality(bev)
     if grid:
         bev = draw_grid(bev, cal.px2m)
+    if cal.bev_rows:                                # 거리 판정의 기준선·문턱
+        bev = draw_rows(bev, [(k, cal.row_y(k), cal.row_label(k))
+                              for k in cal.bev_keys()], mode)
 
     src = img.copy()
     for k, r in cal.rects.items():                  # ROI — 고르는 중인 것만 밝게
@@ -520,6 +532,7 @@ def calib_view(video, frame, cal, undist=True, width=1400, meas=None,
             "src_w": src.shape[1], "src_h": src.shape[0],
             "bev_w": bw, "bev_h": bh,
             "bev_width_m": round(bw * cal.px2m, 3),
+            "bumper_y": round(float(cal.bumper_y()), 1),
             # ★아래 다섯은 돌려주는 JPEG 좌표계★ — 클릭 환산은 이것만 쓴다
             "disp_w": both.shape[1], "disp_h": both.shape[0],
             "split_x": round(src_small.shape[1] * shrink, 2),

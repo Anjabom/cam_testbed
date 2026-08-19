@@ -46,6 +46,45 @@ class Undistorter:
         return out
 
 
+def load_camera_yaml(path):
+    """ROS `camera_info` yaml → (size, [fx,fy,cx,cy], D).
+
+    ★왜 읽는가★ 어안 보정 계수를 계약에 ★옮겨 적으면 반드시 갈라진다★. 대상
+    노드가 파일에서 읽는다면 테스트베드도 ★같은 파일★ 을 읽는 것이 맞다.
+    (소스에 박아 둔 노드라면 옮겨 적을 수밖에 없고, 그건 계약에 K/D 로 적는다.)
+    """
+    import yaml
+    with open(path) as f:
+        y = yaml.safe_load(f)
+    cm = [float(v) for v in y["camera_matrix"]["data"]]
+    d = [float(v) for v in y["distortion_coefficients"]["data"]]
+    size = [int(y.get("image_width", 1920)), int(y.get("image_height", 1080))]
+    return size, [cm[0], cm[4], cm[2], cm[5]], d          # fx fy cx cy
+
+
+def undistorter(spec, base_dir=None):
+    """계약의 `calibration.undistort` 블록 → (Undistorter, size).
+
+    `file:` 이 있으면 그 yaml 에서 K/D 를 읽고(경로는 계약 파일 기준 상대 가능),
+    없으면 계약에 적힌 K/D 를 쓴다. 둘 다 없으면 (None, 기본크기).
+    """
+    import os
+    if not spec:
+        return None, [1920, 1080]
+    K, D, size = spec.get("K"), spec.get("D"), spec.get("size")
+    f = spec.get("file")
+    if f:
+        f = os.path.expanduser(str(f))
+        if not os.path.isabs(f) and base_dir:
+            f = os.path.join(str(base_dir), f)
+        fsize, K, D = load_camera_yaml(f)
+        size = size or fsize
+    if K is None or D is None:
+        return None, (size or [1920, 1080])
+    size = size or [1920, 1080]
+    return Undistorter(size, K, D, float(spec.get("alpha", 0.0))), list(size)
+
+
 def quad_to_pts(flat):
     """[x0,y0,x1,y1,x2,y2,x3,y3] → (4,2) float32. 순서는 TL,TR,BR,BL."""
     a = np.asarray(flat, dtype=np.float32).reshape(4, 2)
@@ -138,6 +177,46 @@ def draw_grid(bev, px2m, step_m=0.5, color=(90, 90, 90)):
         cv2.line(out, (int(x), 0), (int(x), h), color, 1, cv2.LINE_AA)
         x -= step_px
     cv2.line(out, (w // 2, 0), (w // 2, h), (0, 200, 255), 1, cv2.LINE_AA)
+    return out
+
+
+#  BEV 가로선의 색 — 기준선(거리 0)은 초록, 문턱은 가까울수록 붉게.
+#  순서는 '먼 문턱 → 가까운 문턱' 이고, 색이 곧 급함의 정도다.
+ROW_COLORS = [(120, 220, 90), (60, 170, 255), (60, 60, 240), (200, 120, 240)]
+
+
+def draw_rows(bev, rows, active=""):
+    """BEV 위에 ★가로선★ 들을 그린다. rows = [(키, y, 라벨)]
+
+    원근이 펴진 BEV 에서는 가로선 하나가 곧 '차에서 얼마'다. 그래서 거리 판정을
+    쓰는 노드를 맞출 때는 이 선들이 자다 — 기준선(거리 0)과 문턱들을 노면 위의
+    실제 위치에 올리는 것이 캘리브레이션의 전부다.
+
+    BEV 밖의 값(차체에 가려 밑변보다 아래인 범퍼 등)은 ★가장자리에 점선★ 으로
+    표시하고 라벨에 실제 값을 남긴다 — 안 보인다고 값이 없는 게 아니다.
+    """
+    out = bev
+    h, w = out.shape[:2]
+    used = []                       # 이미 글자를 놓은 y — 겹치면 위로 비킨다
+    for i, (key, y, label) in enumerate(rows):
+        col = ROW_COLORS[i % len(ROW_COLORS)]
+        on = (key == active)
+        th = 3 if on else 2
+        if 0 <= y < h:
+            cv2.line(out, (0, int(y)), (w, int(y)), col, th, cv2.LINE_AA)
+        else:                                   # 화면 밖 — 가장자리에 점선
+            ye = h - 2 if y >= h else 1
+            for x in range(0, w, 24):
+                cv2.line(out, (x, ye), (min(w, x + 12), ye), col, th, cv2.LINE_AA)
+        #  문턱이 서로 가까우면 글자가 겹쳐 아무것도 못 읽는다 — 겹치면 위로 올린다
+        ty = int(min(h - 6, max(14, y - 6)))
+        while any(abs(ty - u) < 17 for u in used) and ty > 16:
+            ty -= 17
+        used.append(ty)
+        put_text(out, label + ("" if 0 <= y < h else " ↓밖"), (8, ty), 15, col)
+        if on:
+            cv2.circle(out, (w - 14, int(min(h - 8, max(8, y)))), 6, col, -1,
+                       cv2.LINE_AA)
     return out
 
 

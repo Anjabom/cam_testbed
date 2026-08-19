@@ -1,0 +1,310 @@
+# ══════════════════════════════════════════════════════════════════════════
+#  계약 — white1 / traffic_light 의 ★정지선 앞 정지★
+# ══════════════════════════════════════════════════════════════════════════
+#  짝 문서 : gold_ws/src/white1/STOPLINE_TEST.md (시험 절차서)
+#            그쪽의 단계 0·1·2·3·4·5 중 ★영상으로 되는 것★ 을 이 계약이 받는다.
+#            단계 6(자율주행 통합)과 자로 재는 항목(4-8·2-B 실측)은 실차의 몫이다.
+#
+#  테스트베드 코드(tb/*.py)에는 white1 의 토픽명·파라미터명·노드명이 한 글자도
+#  없다. 전부 이 파일에 있다. 워크스페이스가 바뀌면 ★이 파일만★ 고친다.
+#
+#  ★이 계약이 재는 것 한 줄 요약★
+#    "빨간불이 확정됐을 때 정지선을 보고 두 단계로 서는가" 를, 정지선이 찍힌
+#    영상 하나로 되풀이해서 묻는다. 판정값은 노드가 발행하는 /tl/stop_line_px
+#    (BEV 에서 정지선 → 앞범퍼 픽셀 거리) 하나다.
+# ══════════════════════════════════════════════════════════════════════════
+version: 1
+name: white1_stopline
+
+# ── 0. 대상 워크스페이스 ───────────────────────────────────────────────
+#   여기의 install/setup.bash 를 source 해서 노드를 띄운다.
+#   ★colcon build --symlink-install --packages-up-to white1★ 이 되어 있어야 한다
+#   (white1 은 nxde 를 exec_depend 로 걸고 있어 --packages-select 로는 안 선다).
+workspace: /home/anjabom/Downloads/gold-main/gold_ws
+
+# ── 1. 테스트 대상 노드 ────────────────────────────────────────────────
+#   import 하지 않는다. `ros2 run white1 traffic_light` 로 띄우고 DDS 로만 대화한다.
+#   ★이 노드 하나로 인지·판단·개입이 전부 끝난다★ — 정지선 seg 와 신호등 detect 를
+#   같은 프레임에서 돌리고, 결론을 /brake_level 하나로 낸다. 그래서 붙일 노드도 하나다.
+nodes:
+  - id: traffic_light
+    package: white1
+    executable: traffic_light
+    node_name: traffic_light
+    params:
+      show_window: false        # 헤드리스 (실차 기본값은 true 다)
+      # 가중치(.pt/.engine)와 device 는 ★머신마다 다르다★ → local.yaml 의 params 로.
+      #   실차 기본값은 /home/mad2/... 의 .engine 이고, .engine 은 빌드한 GPU 에
+      #   묶이므로 다른 기계에서는 반드시 .pt 로 바꿔야 한다.
+
+# ── 2. 자극 ────────────────────────────────────────────────────────────
+stimulus:
+  image_topic: /image_raw       # ★원본 그대로★ — 왜곡보정은 노드 안에서 한다
+  aux:
+    # ★개입 허락★ 이 없으면 이 노드는 브레이크를 아예 안 건다(안전 규약 ②).
+    #   실차에서는 master 의 '신호등 인지' 체크박스가 내는 값이다. 테스트베드가
+    #   그 체크박스 역할을 대신한다 — require_permission:=false 로 관문을 꺼 버리는
+    #   대신 ★실제 허락 경로를 그대로 태운다★. 그래야 그 경로의 회귀도 함께 잡힌다.
+    - topic: /tl_enable
+      type: std_msgs/msg/Bool
+      rate_hz: 5.0
+      fields: {data: true}
+
+# ── 3. 동기 신호 ───────────────────────────────────────────────────────
+#   cb_image 가 프레임마다 반드시 발행하는 토픽. lockstep 이 이걸 보고 다음 프레임을 민다.
+#   ⚠️ ★정지선 추론은 이 발행 뒤에 돈다★ (cb_image 순서: 상태 발행 → 정지선 갱신).
+#     게다가 /tl/stop_line_px 는 프레임이 아니라 ★30Hz 타이머★ 로 나간다. 그래서
+#     시나리오의 sync_settle_ms 를 넉넉히(60ms) 줘야 그 프레임의 거리가 그 프레임 행에
+#     붙는다. 짧으면 한 프레임씩 밀려 기록된다.
+sync_topic: /tl/state
+
+# ── 3.5 디버그 영상 ────────────────────────────────────────────────────
+#   ★이 노드는 디버그 이미지 토픽을 내지 않는다★ (cv2 창으로 직접 그린다).
+#   그래서 --watch·--record-debug 로 볼 것이 없고, 대신 아래 render.bev_dist 가
+#   ★테스트베드가 판정에 쓴 값으로★ 같은 그림을 그린다.
+debug_topics: []
+
+# ── 3.6 캘리브레이션 ───────────────────────────────────────────────────
+#   STOPLINE_TEST.md ★단계 2★ 가 통째로 여기 있다. 순서도 그쪽과 같다:
+#     사다리꼴(2-A) → 범퍼행(2-B) → 2단 문턱 → 1단 문턱(2-C)
+calibration:
+  undistort:
+    # ★계수를 옮겨 적지 않는다★ white1/camera_model.py 가 읽는 ★바로 그 파일★ 을
+    #   테스트베드도 읽는다. 재캘리브해서 그 yaml 만 바꿔도 여기는 그대로 맞는다.
+    #   (구 white 는 perception.py 소스에 박아 두어서 계약에 옮겨 적을 수밖에 없었다)
+    file: /home/anjabom/Downloads/gold-main/gold_ws/src/white1/calibration/usb_cam_calibration.yaml
+    alpha: 0.0                  # camera_model 의 cam_undistort_alpha 기본값
+    param: cam_undistort        # 이 파라미터가 false 면 보정을 건너뛴다
+  bev: {w: 640, h: 480}         # camera_model 의 bev_w / bev_h
+
+  targets:
+    bev_src:
+      kind: quad
+      nodes: [traffic_light]
+      param: bev_src_pts
+      default: [750.0, 560.0, 1170.0, 560.0, 1920.0, 1080.0, 0.0, 1080.0]
+      hint: "노면의 직사각형(앞범퍼에서 6~8m)에 네 점을 맞춰라. 맞으면 BEV 에서
+             정지선이 ★가로 막대★ 로 서고 좌우 변이 평행해진다. 1단 예비제동은 먼
+             곳을 봐야 하므로 ★BEV 깊이 6m 이상★ 이 되게 윗변을 올린다."
+    bev_bumper:
+      kind: bev_row
+      nodes: [traffic_light]
+      param: bev_bumper_y_px
+      default: 480.0
+      hint: "★거리 0 의 기준★ 앞범퍼 바로 앞 노면에 붙인 테이프가 BEV 의 몇 번째
+             행인가. 차체에 가려 안 보이면 480 보다 큰 값이 된다(단계 2-B)."
+    sl_brake1:
+      kind: bev_dist
+      nodes: [traffic_light]
+      param: sl_brake1_px
+      default: 240.0
+      hint: "★1단 예비제동 문턱★ 4펄스 1단 정지거리 4.8m 에 맞춘다(BRAKING.md).
+             ⚠️ 정지선이 ★처음 잡히는 거리보다 가까워야★ 한다 — 안 보이는 곳에
+             문턱을 두면 그 구간이 통째로 없는 것과 같다."
+    sl_brake2:
+      kind: bev_dist
+      nodes: [traffic_light]
+      param: sl_brake2_px
+      default: 60.0
+      hint: "★2단 확정 정지 문턱★ 정지선 앞 1.0~1.5m. ⚠️ 정지선이 ★차체에 가려
+             사라지는 거리보다 멀어야★ 한다 — 그보다 가까우면 문턱에 닿기 전에
+             화면에서 사라져 '놓침' 경로로 선다."
+    px2m:
+      kind: scale
+      nodes: [traffic_light]
+      param: bev_px_to_m
+      default: 0.0
+      hint: "BEV 한 픽셀이 몇 m 인가. ★판정에는 안 쓴다★ — 픽셀 문턱을 미터로 감
+             잡을 때만 쓰는 참고값이다(0 이면 표시하지 않는다)."
+    tl_roi:
+      kind: rect
+      nodes: [traffic_light]
+      params: [tl_roi_xmin, tl_roi_ymin, tl_roi_xmax, tl_roi_ymax]
+      default: [0, 0, 1920, 540]
+      hint: "신호등 검출 영역. 정지선 seg 는 ROI 없이 화면 전체로 돈다(모델이
+             전체 화면으로 학습돼서 잘라 넣으면 종횡비가 달라진다)."
+
+# ── 4. 관찰 대상 ───────────────────────────────────────────────────────
+observe:
+  - /tl/state
+  - /tl/stop_line_px
+  - /tl/stop_line_y
+  - /tl/stop_line_wait
+  - /tl/near_metric
+  - /tl/red_far
+  - /brake_level
+  - /tl_brake_req
+  - /cmd_vel_raw
+
+# ── 5. 신호 ────────────────────────────────────────────────────────────
+signals:
+  # ★판정값★ BEV 에서 정지선 최근접점 → 앞범퍼 픽셀 거리.
+  #   −1 = 미검출 / 0 = 범퍼선 도달(또는 지나침). ★가까울수록 작다★
+  sl_px:       {topic: /tl/stop_line_px,   path: [data]}
+  # 원본 화면 최하단 y ÷ 높이. ★판정에는 안 쓴다★ — 영상 대조용
+  sl_y:        {topic: /tl/stop_line_y,    path: [data]}
+  # RED 확정인데 정지선이 멀어 ★아직 아무 단계도 안 건★ 구간
+  sl_wait:     {topic: /tl/stop_line_wait, path: [data]}
+  tl_state:    {topic: /tl/state,          path: [data]}
+  # 근접도(빨간 박스 높이). 게이트와 나란히 보면 RED / RED_FAR 가 갈린 이유가 보인다
+  tl_near:     {topic: /tl/near_metric,    path: [data]}
+  tl_red_far:  {topic: /tl/red_far,        path: [data]}
+  # ★정지의 본체★ nxde/arduino 의 `pulse = 0 if brake > 0` 한 줄이 이 값을 쓴다
+  brake_level: {topic: /brake_level,       path: [data]}
+  # 이 노드가 '요구'하는 단계. master 가 중재하므로 brake_level 과 다를 수 있다
+  tl_brake_req: {topic: /tl_brake_req,     path: [data]}
+  cmd_speed:   {topic: /cmd_vel_raw,       path: ["linear.x"]}
+  cmd_steer:   {topic: /cmd_vel_raw,       path: ["angular.z"]}
+
+# ── 6. 회귀 비교 ───────────────────────────────────────────────────────
+compare_signals:
+  - sl_px
+  - sl_y
+  - tl_near
+compare_categorical:
+  - tl_state
+  - brake_level
+  - tl_brake_req
+  - sl_wait
+
+# ★타이머로 나가는 신호★ 프레임마다 오지 않는다 — 앞 값으로 채워야 받는 쪽이
+#   보는 것과 같아진다. sl_* 와 brake 계열이 전부 여기 해당한다(30Hz tick).
+# ★첫 발행 이전의 값★ /brake_level 과 /tl_brake_req 는 ★변화분만★ 발행된다.
+#   그래서 아무 일도 없는 동안은 토픽이 조용하고, 첫 발행이 '1단' 이면 기록에는
+#   1 이 첫 값으로 남아 ★0단 → 1단 전이가 사라진다★(4-3 이 못 잡힌다).
+#   실제로는 그 전까지 0단이었으므로 그렇게 채운다.
+hold_initial:
+  brake_level: 0
+  tl_brake_req: 0
+  sl_wait: false
+  sl_px: -1.0
+  sl_y: -1.0
+
+hold_signals:
+  - sl_px
+  - sl_y
+  - sl_wait
+  - brake_level
+  - tl_brake_req
+  - tl_state
+  - cmd_speed
+  - cmd_steer
+
+# ── 7. 단계 전이 표 — ★언제 물었나★ ───────────────────────────────────
+#   합격/불합격이 아니라 사람이 읽는 표다. 리포트와 웹 요약에 그대로 나온다.
+events:
+  signal: brake_level
+  label: 리니어 단계
+  at: [sl_px, sl_wait, tl_state, tl_near]
+  why: "0 → 1(예비제동) → 2(확정 정지) 로 ★한 방향으로만★ 가야 한다.
+        리니어는 물리적으로 왕복하는 장치이고 그 왕복이 제일 나쁜 고장 모드다."
+
+# ── 8. 로그 이벤트 — 토픽에 없는 근거 ──────────────────────────────────
+#   ★STOPLINE_TEST.md 단계 0 이 통째로 여기 있다★ 기동 로그 4줄을 사람이 눈으로
+#   읽던 것을, 시나리오의 checks 가 `log:<이름>` 으로 판정한다.
+#   단계 4-7(정지 사유)도 로그에만 있다 — sl_check.py 가 "눈으로 볼 것"으로 남긴 항목이다.
+log_events:
+  boot_sl_class:
+    node: traffic_light
+    pattern: "정지선 엔진 클래스 = .*'stop-line'.*\\(사용 id=2\\)"
+    why: "0-1 정지선 클래스표. 이름이 stop-line 이고 그 id 를 쓰는가"
+  boot_sl_on:
+    node: traffic_light
+    pattern: "🛑 정지선: ★BEV 픽셀 거리★"
+    why: "0-2 정지선 배너가 나오는가"
+  boot_sl_off:
+    node: traffic_light
+    pattern: "🛑 정지선: ★꺼져 있다★"
+    why: "0-2 이게 뜨면 기능이 꺼진 것이다 (sl_enable=false 회귀에서만 나와야 한다)"
+  boot_undistort_on:
+    node: traffic_light
+    pattern: "📐 카메라 보정 ON"
+    why: "0-3 캘리브를 읽었는가. OFF 면 BEV 거리를 믿을 수 없다"
+  boot_undistort_off:
+    node: traffic_light
+    pattern: "카메라 보정 ★OFF★"
+    why: "0-3 보정 없이 돌고 있다"
+  boot_weight_fail:
+    node: traffic_light
+    pattern: "⛔ (정지선|신호등) 가중치 로드 실패"
+    why: "0-1 .engine 은 빌드한 GPU 에 묶인다 — 기계를 바꿨으면 .pt 를 줄 것"
+  boot_class_missing:
+    node: traffic_light
+    pattern: "⛔ 정지선 엔진 클래스에 'stop' 이 없다"
+    why: "★여기서 멈춘다★ 잘못된 클래스를 정지선으로 읽으면 엉뚱한 곳에서 선다"
+  stop_pre:
+    node: traffic_light
+    pattern: "\\[예비제동\\]"
+    why: "4-7 1단을 ★정지선을 보고★ 물었다"
+  stop_at_line:
+    node: traffic_light
+    pattern: "\\[정지선 앞\\]"
+    why: "4-7 2단을 ★정지선 앞에서★ 물었다 — 이것이 성공 경로다"
+  stop_no_line:
+    node: traffic_light
+    pattern: "\\[정지선 없음\\]"
+    why: "4-7 정지선을 못 보고 그 자리에서 섰다 = 종전 동작(회귀 5-1 의 정답)"
+  stop_missed:
+    node: traffic_light
+    pattern: "정지선을 놓쳤다"
+    why: "4-7 봤다가 놓쳐서 섰다 — sl_brake2_px 가 가깝다는 뜻일 수 있다"
+  wait_cap:
+    node: traffic_light
+    pattern: "정지선 대기 상한"
+    why: "4-11 8초 상한이 발동했다 = 2단 문턱에 못 닿았다"
+  near_override:
+    node: traffic_light
+    pattern: "신호등이 코앞이다"
+    why: "정지선을 기다리지 않고 물리적 상한으로 섰다"
+  release_red_gone:
+    node: traffic_light
+    pattern: "빨간불 .* 미감지 — 리니어 해제"
+    why: "5-3 빨간불이 사라져 놓았다"
+  image_wait:
+    node: traffic_light
+    pattern: "/image_raw 수신 대기"
+    why: "0-4 영상이 안 들어온다 — 이게 계속 나오면 재생이 실패한 것이다"
+
+# ── 9. 받는 쪽 ─────────────────────────────────────────────────────────
+#   ★판정 임계값을 지어내지 않기 위한 장치다★ "정지선을 잘 봤나"가 아니라
+#   "그래서 차가 실제로 섰나"를 재려면 받는 쪽이 쓰는 조건을 그대로 옮겨 적어야 한다.
+consumers:
+  - id: brake_effective
+    label: 실제로 구동을 끊었는가
+    source: nxde/arduino.py compose() — `pulse = 0 if brake > 0 else self.cmd_pulse`
+    stages:
+      - name: 브레이크 체결
+        expr: "brake_level > 0"
+        why: "이 한 줄이 정지의 본체다 — 0 이 아니면 A보드 목표펄스가 강제로 0 이 된다"
+        const: "arduino.compose() (4) 정상 자율주행 분기"
+  - id: stopline_gate
+    label: 정지선을 보고 판단했는가
+    source: white1/traffic_light.py _stop_plan
+    stages:
+      - name: 정지선 검출
+        expr: "sl_px >= 0"
+        why: "미검출(−1)이면 이 절은 통째로 없는 것과 같다 — 종전 동작(즉시 2단)"
+      - name: 1단 문턱 안
+        expr: "sl_px >= 0 and sl_px <= 240"
+        why: "sl_brake1_px. 여기 들어와야 예비제동이 성립한다"
+        const: "sl_brake1_px=240 (단계 2-C 로 실측할 것)"
+      - name: 2단 문턱 안
+        expr: "sl_px >= 0 and sl_px <= 60"
+        why: "sl_brake2_px. 정지선 앞 정지가 성립하는 구간"
+        const: "sl_brake2_px=60 (단계 2-C 로 실측할 것)"
+
+# ── 10. 시각화 ─────────────────────────────────────────────────────────
+#   이 노드는 디버그 이미지를 안 내므로, 테스트베드가 ★판정에 쓴 값으로★ 그린다.
+#   숫자만 보면 '검출률 80%' 같은 결론이 나오는데, 그것이 ★정말 정지선인지★ 는
+#   그림으로만 확인된다(1-3 차체 오검출 · 1-4 횡단보도 오검출).
+render:
+  bev_dist:
+    distance: sl_px           # 이 신호가 BEV 의 어느 가로선인가
+    missing: -1               # 이 값이면 미검출 (선을 안 그린다)
+  readout: [sl_px, sl_y, sl_wait, tl_state, tl_near, brake_level, tl_brake_req]
+
+# ── 11. 메타모픽 ───────────────────────────────────────────────────────
+#   좌우를 뒤집어도 ★거리는 같아야 한다★ — 정지선은 가로로 긴 물체이고 판정값은
+#   거리 하나뿐이라, 부호가 뒤집히는 신호가 없다. 그래서 이 목록은 비어 있고
+#   robustness 시나리오의 mirror 변형은 '값이 그대로여야 한다'를 검사하게 된다.
+mirror_odd_signals: []

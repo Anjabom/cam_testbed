@@ -1,0 +1,50 @@
+{
+  "run_id": "0819_193001_v1_base",
+  "scenario": "stopline_approach",
+  "variant": "base",
+  "contract": "white1_stopline",
+  "contract_version": 1,
+  "contract_file": "/home/anjabom/cam_testbed/contracts/white1_stopline.yaml",
+  "video": "/home/anjabom/track_record.mp4",
+  "video_key": "track_a",
+  "perturb": "none",
+  "overlay": {
+    "image": "assets/red_light_mock.png",
+    "x": 880,
+    "y": 140,
+    "width": 240,
+    "from": 0.2
+  },
+  "start": 1340,
+  "limit": 90,
+  "stride": 1,
+  "mode": "realtime",
+  "wall_s": 26.3,
+  "video_fps": 30.0,
+  "rate": 0.25,
+  "frames_pushed": 90,
+  "sync_timeouts": 0,
+  "raw_records": 3483,
+  "domain_id": 97,
+  "discard_first": 3,
+  "params": {
+    "traffic_light": {
+      "show_window": false,
+      "cam_undistort": false,
+      "sl_brake1_px": 35.0,
+      "sl_brake2_px": 10.0,
+      "sl_stale_s": 0.8,
+      "tl_red_stop_min_height": 50,
+      "sl_override_gate_ratio": 3.0,
+      "tl_weights": "/home/anjabom/runs2/runs/detect/combined_light/weights/best.pt",
+      "sl_weights": "/home/anjabom/runs2/runs/segment/lane_line_new2/weights/best.pt",
+      "device": "cuda:0"
+    }
+  },
+  "when": "2026-08-19T19:30:29",
+  "code_fingerprint": {
+    "n_files": 58,
+    "sha": "2b9b6cf1a7f4"
+  },
+  "workspace": "/home/anjabom/Downloads/gold-main/gold_ws"
+}

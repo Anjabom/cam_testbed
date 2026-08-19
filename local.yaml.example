@@ -16,6 +16,14 @@ videos:
 # video: /path/to/one_off.mp4
 
 params:
+  # ── white1 / traffic_light (정지선·신호등) ──────────────────────────
+  #   실차 기본값은 /home/mad2/... 의 ★.engine★ 이다. .engine 은 빌드한 GPU 에
+  #   묶여 있어 다른 기계에서는 안 열린다 — 같은 학습 결과의 .pt 를 쓴다.
+  traffic_light:
+    tl_weights: /home/<사용자>/runs2/runs/detect/combined_light/weights/best.pt
+    sl_weights: /home/<사용자>/runs2/runs/segment/lane_line_new2/weights/best.pt
+    device: cuda:0
+
   perception:
     # 실차는 TensorRT .engine 을 쓰지만 GPU/TRT 버전이 다르면 안 열린다.
     # 데스크톱에서는 같은 학습 결과의 .pt 를 쓴다.

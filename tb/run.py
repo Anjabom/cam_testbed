@@ -228,10 +228,19 @@ def cmd_doctor(args):
         vid = resolve_video(sc, loc)
         chk("영상", bool(vid) and Path(vid).exists(),
             f"{sc.get('video')!r} → {vid}")
+        ids = {n["id"] for n in c.nodes}
         for nid, kv in params.items():
-            if nid not in {n["id"] for n in c.nodes}:
-                chk(f"params.{nid} 가 계약에 없는 노드", False,
-                    "계약의 nodes[].id 와 이름이 달라 무시된다")
+            if nid not in ids:
+                # ★local.yaml 은 계약 여럿이 함께 쓴다★ 다른 계약의 노드 이름이
+                # 섞여 있는 것은 정상이다(가중치 경로는 계약이 아니라 기계에 묶인다).
+                # 시나리오에 적힌 오타만 실패로 본다 — 그건 조용히 무시되면 곤란하다.
+                if nid in (sc.get("params") or {}):
+                    chk(f"params.{nid} 가 계약에 없는 노드", False,
+                        "시나리오의 이름이 계약의 nodes[].id 와 달라 무시된다")
+                else:
+                    print(f"  ·  local.yaml 의 params.{nid} 는 이 계약과 무관 "
+                          f"(다른 계약용) — 무시된다")
+                    continue
             for k, v in kv.items():
                 if not (isinstance(v, str) and "/" in v):
                     continue
@@ -264,7 +273,14 @@ def _one_run(sc, contract_path, variant, run_dir, domain_id, args):
     for k, v in (loc.get("env") or {}).items():
         env[str(k)] = str(v)
 
-    params = _deep_merge(sc.get("params", {}), loc.get("params", {}))
+    # 시나리오 < 변형 < local.yaml 순으로 덮인다.
+    #   ★변형이 파라미터를 바꿀 수 있다★ — '기능을 끄고 같은 영상을 돌린다' 같은
+    #   대조군은 섭동이 아니라 파라미터로 만들어야 하고(예: 그 기능만 false),
+    #   그래야 base 와 나란히 비교표에 오른다.
+    #   local 이 맨 뒤인 것은 가중치 경로처럼 ★기계에 묶인 값★ 이라서다.
+    params = _deep_merge(_deep_merge(sc.get("params", {}),
+                                     variant.get("params", {}) or {}),
+                         loc.get("params", {}))
     pref = ws_prefix(contract)
     procs = []
 
@@ -335,6 +351,11 @@ def _one_run(sc, contract_path, variant, run_dir, domain_id, args):
                 f"      시나리오의 video: 는 논리 이름이고 실제 경로는 "
                 f"local.yaml 의 videos: 에 둔다.")
         aux = json.dumps(contract.aux)
+        #  ★합성 자극★ 시나리오 < 변형 순으로 덮는다. 상대경로는 테스트베드 루트 기준
+        #  (영상처럼 머신마다 다른 것이 아니라 ★시험 재료★ 라서 저장소에 함께 둔다).
+        ovl = _deep_merge(sc.get("overlay") or {}, variant.get("overlay") or {})
+        if ovl.get("image") and not str(ovl["image"]).startswith("/"):
+            ovl = dict(ovl, image=str(ROOT / str(ovl["image"])))
         play = (f"{pref}exec python3 -m tb.player "
                 f"--video '{video}' --image-topic '{contract.image_topic}' "
                 f"--sync-topic '{contract.sync_topic or ''}' "
@@ -344,10 +365,17 @@ def _one_run(sc, contract_path, variant, run_dir, domain_id, args):
                 f"--warmup-s {sc.get('warmup_s', 6.0)} "
                 f"--sync-timeout {sc.get('sync_timeout', 15.0)} "
                 f"--sync-retries {sc.get('sync_retries', 2)} "
+                # ★동기 신호 뒤 여유★ 받는 쪽이 이 프레임의 결과를 다 낼 때까지
+                #   조금 더 돈다. 동기 토픽보다 ★뒤에★ 나오는 값(두 번째 추론의
+                #   결과나 타이머로 나가는 진단값)이 있으면 이게 짧을 때 그 값이
+                #   ★다음 프레임 행★ 에 붙는다. 기본 20ms.
+                f"--sync-settle-ms {sc.get('sync_settle_ms', 20)} "
+                f"--prime {int(sc.get('prime', 0))} "
                 f"--sync-timeout-first {sc.get('sync_timeout_first', 90.0)} "
                 f"--perturb '{variant.get('perturb', 'none')}' "
                 f"{'--sim-time' if sc.get('sim_time') else ''} "
-                f"--aux-json '{aux}' --stats-out '{run_dir / 'player.json'}' "
+                f"--aux-json '{aux}' --overlay-json '{json.dumps(ovl)}' "
+                f"--stats-out '{run_dir / 'player.json'}' "
                 f"--progress-out '{run_dir / 'progress.json'}'")
         (run_dir / "cmd_player.txt").write_text(play + "\n")
         t0 = time.time()
@@ -383,21 +411,47 @@ def _one_run(sc, contract_path, variant, run_dir, domain_id, args):
         "run_id": run_dir.name, "scenario": sc.get("name", "?"),
         "variant": variant.get("name", "base"),
         "contract": contract.name, "contract_version": contract.version,
+        # ★계약 파일 경로★ 이름만 남기면 나중에 이 런을 다시 그리거나 재분석할 때
+        #   어느 계약으로 봐야 하는지 알 수 없다(기본 계약으로 잘못 열면 신호가
+        #   전부 결측인 그림이 조용히 나온다 — 실제로 겪었다).
+        "contract_file": str(Path(contract_path).resolve()),
         "video": pstats.get("video"), "video_key": sc.get("video"),
         "perturb": variant.get("perturb", "none"),
+        "overlay": _deep_merge(sc.get("overlay") or {},
+                               variant.get("overlay") or {}) or None,
         "start": sc.get("start", 0), "limit": sc.get("limit", 0),
         "stride": sc.get("stride", 1),
         "mode": sc.get("mode", "lockstep"), "wall_s": round(wall, 1),
+        # ★영상 fps★ — 초 단위 판정(구간 길이·전이 간격)의 환산 기준이다.
+        #   lockstep 은 벽시계가 기계 속도에 좌우되므로 프레임을 장면 시간으로
+        #   되돌려 재야 실차에서 일어난 그대로가 된다(analyze.scene_fps).
+        "video_fps": _video_fps(pstats.get("video") or ""),
+        # 배속. realtime 재생에서 rate=0.5 면 ★노드가 겪는 시간★ 이 두 배로
+        # 늘어난다(느린 접근을 흉내낸다) → 초 단위 판정이 그만큼 달라진다.
+        "rate": float(sc.get("rate", 1.0)),
         "frames_pushed": pstats.get("frames_pushed", 0),
         "sync_timeouts": pstats.get("sync_timeouts", 0),
         "raw_records": nlines, "domain_id": domain_id,
         "discard_first": int(sc.get("discard_first", 0)),
-        "params": params, "when": datetime.now().isoformat(timespec="seconds"),
+        # ★이 런이 실제로 쓴 파라미터만★ 남긴다. local.yaml 은 계약 여럿이 함께
+        #   쓰므로 다른 계약의 노드가 섞여 있는데, 그것까지 적으면 회귀 비교가
+        #   "조건이 다르다"고 잘못 경고한다(가중치 경로 하나 늘렸다고 기준이 무효가
+        #   되면 안 된다). 계약이 띄운 노드의 것만 이 런의 조건이다.
+        "params": {k: v for k, v in params.items()
+                   if k in {n["id"] for n in contract.nodes}},
+        "when": datetime.now().isoformat(timespec="seconds"),
         "code_fingerprint": _fingerprint(contract.workspace),
         "workspace": str(contract.workspace or ""),
     }
     summary = analyze.summarize(rows, contract, meta)
-    checks = analyze.run_checks(summary, rows, contract, sc.get("checks"))
+    # 노드 로그는 토픽에 없는 근거를 갖고 있다(기동 배너·개입 사유).
+    # 체크가 `log:<이름>` 으로 참조하므로 판정 ★전에★ 채워 둔다.
+    summary["log_events"] = analyze.log_events(run_dir, contract)
+    # 변형이 자기 체크를 ★덧붙일★ 수 있다. 대조군은 조건이 달라서 기준도 달라지기
+    # 때문이다(기능을 끈 변형에서 "기능이 켜져 있다"를 요구하면 안 된다).
+    checks = analyze.run_checks(
+        summary, rows, contract,
+        (sc.get("checks") or []) + (variant.get("checks") or []))
     drift = contract.drift_report()
     (run_dir / "summary.json").write_text(
         json.dumps({"summary": summary, "checks": checks, "drift": drift},
@@ -523,7 +577,8 @@ def cmd_render(args):
     from .render import Renderer
     rd = _resolve_run(args.run)
     sc = load_yaml(args.scenario) if args.scenario else {}
-    contract = load_contract(_resolve_contract(args.contract or sc.get("contract")))
+    contract = load_contract(_resolve_contract(
+        args.contract or sc.get("contract") or contract_of_run(rd)))
     meta = json.loads((rd / "summary.json").read_text())["summary"]["meta"] \
         if (rd / "summary.json").exists() else {}
     R = Renderer(contract, meta.get("params"))
@@ -622,7 +677,12 @@ def cmd_render(args):
         except OSError:
             pass
     print(f"오버레이 {n}장 → {out}")
-    print("  좌차선=파랑 · 우차선=빨강 · 중심선(경로)=주황 · θ시컨트=노랑 · 접선=회색")
+    # 범례는 ★그린 화면 종류★ 에 맞춘다 — 계약이 어느 렌더러를 골랐는지에 달려 있다
+    if getattr(R, "bd", None):
+        print("  자홍색 가로선 = 노드가 발행한 거리 · 초록/주황/빨강 = 기준선과 문턱")
+        print("  ★원본 화면의 자홍색 선이 노면의 그것과 겹치는지 보는 것이 요점★")
+    else:
+        print("  좌차선=파랑 · 우차선=빨강 · 중심선(경로)=주황 · θ시컨트=노랑 · 접선=회색")
     return 0
 
 
@@ -631,7 +691,8 @@ def cmd_harvest(args):
     from . import harvest as H
     rd = _resolve_run(args.run)
     sc = load_yaml(args.scenario) if args.scenario else {}
-    contract = load_contract(_resolve_contract(args.contract or sc.get("contract")))
+    contract = load_contract(_resolve_contract(
+        args.contract or sc.get("contract") or contract_of_run(rd)))
 
     rows = H.read_signals(rd)
     if not rows:
@@ -758,7 +819,8 @@ def cmd_reanalyze(args):
     sj = rd / "summary.json"
     old = json.loads(sj.read_text())["summary"]["meta"] if sj.exists() else {}
     sc = load_yaml(args.scenario) if args.scenario else {}
-    cpath = _resolve_contract(args.contract or sc.get("contract"))
+    cpath = _resolve_contract(args.contract or sc.get("contract")
+                              or contract_of_run(rd))
     contract = load_contract(cpath)
     discard = int(sc.get("discard_first", old.get("discard_first", 0)))
     rows, nlines = analyze.build_table(rd / "raw.jsonl", contract, discard)
@@ -769,6 +831,7 @@ def cmd_reanalyze(args):
                  "discard_first": discard,
                  "reanalyzed": datetime.now().isoformat(timespec="seconds")})
     summary = analyze.summarize(rows, contract, meta)
+    summary["log_events"] = analyze.log_events(rd, contract)
     checks = analyze.run_checks(summary, rows, contract, sc.get("checks"))
     drift = contract.drift_report()
     (rd / "summary.json").write_text(json.dumps(
@@ -788,6 +851,7 @@ def _provenance(meta):
         "video_key": meta.get("video_key"),
         "mode": meta.get("mode"),
         "perturb": meta.get("perturb"),
+        "overlay": meta.get("overlay"),
         "start": meta.get("start"), "limit": meta.get("limit"),
         "stride": meta.get("stride"),
         "contract": meta.get("contract"),
@@ -846,6 +910,35 @@ def cmd_compare(args):
     if Path(b).parent.is_dir():
         (Path(b).parent / "compare.md").write_text(md)
     return 0 if res["verdict"] == "PASS" else 1
+
+
+def contract_of_run(run_dir):
+    """그 런이 ★실제로 쓴★ 계약 파일. 없으면 None.
+
+    메타의 contract_file 을 먼저 보고, 옛 런(그 항목이 없다)이면 이름으로 찾는다.
+    이것이 없으면 `--contract` 를 생략한 render·harvest·reanalyze 가 기본 계약으로
+    열려서, 신호가 전부 결측인 그림·리포트를 조용히 만들어 낸다.
+    """
+    sj = Path(run_dir) / "summary.json"
+    if not sj.exists():
+        return None
+    try:
+        meta = json.loads(sj.read_text())["summary"]["meta"]
+    except (KeyError, ValueError):
+        return None
+    f = meta.get("contract_file")
+    if f and Path(f).exists():
+        return f
+    want = meta.get("contract")
+    if not want:
+        return None
+    for cand in sorted((ROOT / "contracts").glob("*.yaml")):
+        try:
+            if load_contract(cand).name == want:
+                return str(cand)
+        except Exception:                                  # noqa: BLE001
+            continue
+    return None
 
 
 def _resolve_run(x):
@@ -947,7 +1040,8 @@ def main(argv=None):
     rn.add_argument("--fps", type=float, default=0.0,
                 help="영상 재생 속도. 0=원본과 같은 속도(기본)")
     rn.add_argument("--video", default="")
-    rn.add_argument("--scenario", default="scenarios/regression.yaml")
+    rn.add_argument("--scenario", default="",
+                          help="비우면 런이 기록한 계약·파라미터를 그대로 쓴다")
     rn.add_argument("--contract", default="")
     rn.set_defaults(fn=cmd_render)
 
@@ -960,7 +1054,8 @@ def main(argv=None):
     hv.add_argument("--limit", type=int, default=0, help="균등 샘플링 상한")
     hv.add_argument("--width", type=int, default=0, help="가로 축소 (0=원본)")
     hv.add_argument("--video", default="")
-    hv.add_argument("--scenario", default="scenarios/regression.yaml")
+    hv.add_argument("--scenario", default="",
+                          help="비우면 런이 기록한 계약·파라미터를 그대로 쓴다")
     hv.add_argument("--contract", default="")
     hv.add_argument("--dry-run", action="store_true")
     hv.set_defaults(fn=cmd_harvest)
@@ -982,6 +1077,7 @@ def main(argv=None):
 
     ij = sub.add_parser("inject",
                         help="합성 신호로 변환 수학만 검사 (영상·YOLO 없음)")
+    #  inject 는 런이 아니라 ★시나리오★ 를 대상으로 도는 명령이라 기본값을 남겨 둔다
     ij.add_argument("--scenario", default="scenarios/regression.yaml")
     ij.add_argument("--contract", default="")
     ij.add_argument("--cases", default="")
@@ -991,7 +1087,8 @@ def main(argv=None):
     ra = sub.add_parser("reanalyze",
                         help="raw.jsonl 로 신호/리포트만 재생성 (계약 수정 후)")
     ra.add_argument("run")
-    ra.add_argument("--scenario", default="scenarios/regression.yaml")
+    ra.add_argument("--scenario", default="",
+                          help="비우면 런이 기록한 계약·파라미터를 그대로 쓴다")
     ra.add_argument("--contract", default="")
     ra.set_defaults(fn=cmd_reanalyze)
 

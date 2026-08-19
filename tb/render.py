@@ -14,15 +14,27 @@
 
 계약의 `render:` 블록이 어느 신호가 좌/우 계수인지 알려 준다 —
 이 파일에는 워크스페이스의 신호 이름이 없다.
+
+★거리 판정 노드용 화면 (`render.bev_dist`)★
+    차선 폴리핏 대신 ★BEV 위의 가로선 하나★ 로 판정하는 노드가 있다(정지선까지
+    몇 px 처럼). 그런 노드는 디버그 이미지를 안 낼 수도 있는데, 그러면 숫자만 남고
+    "그 숫자가 가리키는 곳에 정말 그것이 있나"를 볼 방법이 없어진다 — 검출률이
+    좋아도 엉뚱한 것을 잡고 있으면 소용이 없으므로 그 확인이 판정의 절반이다.
+    그래서 계약에 `render.bev_dist` 가 있으면 아래를 그린다:
+        · BEV 의 기준선(거리 0)과 문턱들          ← 캘리브 대상에서 그대로
+        · ★노드가 발행한 거리★ 가 놓이는 가로선   ← 자홍색
+        · 그 선을 ★원본 화면으로 되돌린 것★       ← 노면 위 실제 위치와 대조
 """
 from __future__ import annotations
 
 import math
 
+from pathlib import Path
+
 import cv2
 import numpy as np
 
-from .geometry import Undistorter, ipm_matrices, put_text
+from .geometry import draw_rows, ipm_matrices, put_text, undistorter
 
 C_LEFT = (235, 150, 60)     # BGR 파랑
 C_RIGHT = (70, 80, 220)     # 빨강
@@ -30,6 +42,7 @@ C_CENTER = (60, 175, 245)   # 주황 — 경로
 C_SECANT = (80, 255, 255)   # 노랑 — θ 를 만드는 직선
 C_TANGENT = (150, 150, 150)  # 회색 — 접선(비교)
 C_AXIS = (120, 120, 120)
+C_MEAS = (230, 90, 230)     # 자홍 — 노드가 잰 거리
 
 
 def _poly_x(fit, y):
@@ -46,6 +59,22 @@ def _valid(fit):
     return fit is not None and (abs(fit[0]) + abs(fit[1]) + abs(fit[2])) > 1e-9
 
 
+def _target_value(t, params):
+    """캘리브 대상 하나의 현재 값 — 시나리오/런의 params 에서 찾는다.
+
+    `tb.calibrate.Calib._param_value` 와 같은 규칙이다. 파라미터 이름은 계약에만
+    있으므로 이 함수도 워크스페이스를 모른다.
+    """
+    names = t.get("params") or ([t["param"]] if t.get("param") else [])
+    for nid in t.get("nodes", []):
+        kv = (params or {}).get(nid, {})
+        for n in names:
+            if n in kv:
+                v = kv[n]
+                return v[0] if isinstance(v, (list, tuple)) and v else v
+    return None
+
+
 class Renderer:
     """계약의 render 블록으로 설정을 읽어 프레임에 오버레이를 그린다."""
 
@@ -53,9 +82,15 @@ class Renderer:
         cal = contract.raw.get("calibration") or {}
         r = contract.raw.get("render") or {}
         u = cal.get("undistort") or {}
-        self.und = (Undistorter(u["size"], u["K"], u["D"], u.get("alpha", 0.0))
-                    if u else None)
-        self.size = u.get("size", [1920, 1080])
+        base = Path(contract.path).parent if contract.path != "mem" else None
+        self.und, self.size = undistorter(u, base)
+        # ★그 런이 실제로 보정을 켜고 돌았는가★ 껐다면 여기서도 끄지 않으면
+        #   '노드가 본 그림' 과 다른 것을 그리게 되고, 거리선이 엉뚱한 곳에 얹힌다.
+        pnm = u.get("param")
+        if pnm:
+            for nid, kv in (params or {}).items():
+                if pnm in kv and not kv[pnm]:
+                    self.und = None
         self.bev_w = int((cal.get("bev") or {}).get("w", 640))
         self.bev_h = int((cal.get("bev") or {}).get("h", 480))
 
@@ -67,16 +102,44 @@ class Renderer:
         self.k_half = sg.get("half_width", "half_width_px")
         self.readout = r.get("readout", [])
 
+        # ── 거리 판정 화면 (있을 때만) ────────────────────────────
+        #   기준선·문턱의 ★현재 값★ 은 그 런이 실제로 쓴 파라미터에서 온다.
+        #   기본값으로 그리면 화면과 판정이 어긋나므로 params 를 먼저 본다.
+        self.bd = r.get("bev_dist") or None
+        self.bd_rows = []
+        self.bd_px2m = 0.0
+        if self.bd:
+            for key, t in (cal.get("targets") or {}).items():
+                kind = t.get("kind")
+                if kind not in ("bev_row", "bev_dist"):
+                    continue
+                v = _target_value(t, params)
+                if v is None:
+                    v = t.get("default")
+                if v is None:
+                    v = self.bev_h if kind == "bev_row" else None
+                if v is None:
+                    continue
+                self.bd_rows.append((key, kind, float(v)))
+            # 기준선 먼저, 그 다음 먼 문턱 → 가까운 문턱
+            self.bd_rows.sort(key=lambda x: (x[1] != "bev_row", -x[2]))
+            #  참고 미터 — ★판정에는 안 쓴다★. 노드에서도 0 이면 화면에도 안 붙는다.
+            for t in (cal.get("targets") or {}).values():
+                if t.get("kind") == "scale":
+                    v = _target_value(t, params)
+                    self.bd_px2m = float(v if v is not None else (t.get("default") or 0))
+
         # IPM 사각형 — 시나리오 params 가 덮어썼으면 그걸 쓴다
         quad = None
         tgt = (cal.get("targets") or {})
         for t in tgt.values():
-            if t.get("kind") == "quad":
-                nm = t.get("param")
-                for nid in t.get("nodes", []):
-                    v = (params or {}).get(nid, {}).get(nm)
-                    if v:
-                        quad = v
+            if t.get("kind") != "quad":
+                continue
+            v = _target_value(t, params)
+            #  런의 params 에 없으면 계약이 적어 둔 ★노드 기본값★ 을 쓴다.
+            #  (예전에는 여기서 None 이 되어 BEV 를 아예 못 그렸다 — 그러면 오버레이
+            #   없이 원본만 나와서 '왜 안 그려지지' 를 한참 찾게 된다)
+            quad = t.get("default") if v is None else v
         if quad is None:
             quad = r.get("ipm_src_pts")
         self.quad = (np.asarray(quad, np.float32).reshape(4, 2)
@@ -167,8 +230,73 @@ class Renderer:
                 out.append((x, float(y)))
         return out
 
+    # ── 거리 판정 화면 ──────────────────────────────────────────────
+    def _bumper_y(self):
+        for key, kind, v in self.bd_rows:
+            if kind == "bev_row":
+                return v
+        return float(self.bev_h)
+
+    def _row_y(self, kind, v):
+        return v if kind == "bev_row" else self._bumper_y() - v
+
+    def draw_bev_dist(self, frame_raw, row):
+        """★노드가 발행한 거리★ 를 BEV 와 원본 양쪽에 그린다."""
+        px2m = self.bd_px2m
+        src = self.und(frame_raw) if self.und else frame_raw
+        if self.M is None:
+            return src
+        bev = cv2.warpPerspective(src, self.M, (self.bev_w, self.bev_h))
+        src = src.copy()
+
+        q = self.quad.astype(np.int32)
+        cv2.polylines(src, [q.reshape(-1, 1, 2)], True, (90, 90, 90), 2, cv2.LINE_AA)
+
+        # 기준선·문턱 — BEV 에 그리고, 원본으로도 되돌려 그린다
+        lines = []
+        for i, (key, kind, v) in enumerate(self.bd_rows):
+            y = self._row_y(kind, v)
+            unit = "" if kind == "bev_row" else f" {v:.0f}px"
+            m = f" ({v * px2m:.2f}m)" if (px2m > 0 and kind != "bev_row") else ""
+            lines.append((key, y, key + unit + m))
+            self._project(src, [(0.0, y), (float(self.bev_w), y)],
+                          [(120, 220, 90), (60, 170, 255), (60, 60, 240),
+                           (200, 120, 240)][i % 4], 2)
+        draw_rows(bev, lines)
+
+        # ★판정값★ — 노드가 낸 거리가 놓이는 자리
+        key = (self.bd or {}).get("distance")
+        d = row.get(key)
+        miss = float((self.bd or {}).get("missing", -1.0))
+        seen = isinstance(d, (int, float)) and float(d) > miss + 1e-9
+        if seen:
+            y = self._bumper_y() - float(d)
+            cv2.line(bev, (0, int(y)), (self.bev_w, int(y)), C_MEAS, 3, cv2.LINE_AA)
+            put_text(bev, f"{key} {float(d):.0f}px", (8, max(14, int(y) - 8)),
+                     16, C_MEAS)
+            self._project(src, [(0.0, y), (float(self.bev_w), y)], C_MEAS, 3)
+
+        lines_txt = [f"frame {int(row.get('frame', -1))}"]
+        for k in (self.readout or [key]):
+            v = row.get(k)
+            lines_txt.append(f"{k:<16}" + (f"{v:+.1f}" if isinstance(v, float)
+                                           else f"{v}"))
+        lines_txt += ["", ("★ 자홍색 선이 노드가 잰 거리다 — 노면의 그것과 "
+                           "겹치는가" if seen else "★ 미검출 — 자홍색 선이 없다")]
+        panel_h = 22 * len(lines_txt) + 14
+        cv2.rectangle(src, (0, 0), (560, panel_h), (24, 24, 28), -1)
+        for i, t in enumerate(lines_txt):
+            put_text(src, t, (10, 24 + 22 * i), 16,
+                     C_MEAS if t.startswith("★") else (225, 225, 225))
+
+        sh = src.shape[0]
+        scale = sh / float(self.bev_h)
+        return np.hstack([src, cv2.resize(bev, (int(self.bev_w * scale), sh))])
+
     def draw(self, frame_raw, row, px2m=0.006, show_tangent=True):
         """원본 프레임 + BEV 를 가로로 붙인 오버레이 한 장을 만든다."""
+        if self.bd:
+            return self.draw_bev_dist(frame_raw, row)
         src = self.und(frame_raw) if self.und else frame_raw
         if self.M is None:
             return src
