@@ -41,7 +41,11 @@ HELP = [
 class Calib:
     """계약이 선언한 캘리브레이션 대상들의 현재 값."""
 
-    def __init__(self, contract, params):
+    def __init__(self, contract, params, ws_params=None):
+        #  ws_params : `tb.run params` 로 받아 둔 ★워크스페이스 기본값★
+        #    우선순위 = 시나리오/local params → 이것 → 계약의 default
+        #    (계약에 옮겨 적은 값은 갈라지므로 노드가 말한 값을 더 믿는다)
+        self.ws_params = ws_params or {}
         cal = contract.raw.get("calibration") or {}
         if not cal:
             raise SystemExit("[calibrate] 계약에 calibration: 블록이 없다.")
@@ -71,7 +75,7 @@ class Calib:
 
         for key, t in self.targets.items():
             kind = t["kind"]
-            got = self._param_value(params, t)
+            got = self._param_value(params, t, self.ws_params)
             if kind == "quad":
                 self.quad_key = key
                 self.quad = (np.asarray(got, np.float32).reshape(4, 2) if got
@@ -96,18 +100,24 @@ class Calib:
                 self.bev_rows[key] = float(got[0]) if got else dflt
 
     @staticmethod
-    def _param_value(params, t):
-        """시나리오 params 에 이미 값이 있으면 그걸 출발점으로 삼는다."""
+    def _param_value(params, t, ws_params=None):
+        """이 대상의 현재 값 — 앞에서부터 처음 있는 것을 쓴다.
+
+            ① 시나리오/local.yaml params  (사람이 이 시험을 위해 정한 값)
+            ② 워크스페이스 기본값 캐시    (노드가 스스로 선언한 값)
+            ③ 계약의 default:            (①②가 없을 때의 마지막 폴백)
+        """
         names = t.get("params") or ([t["param"]] if t.get("param") else [])
-        out = []
-        for nid in t.get("nodes", []):
-            kv = params.get(nid, {})
-            for n in names:
-                if n in kv:
-                    v = kv[n]
-                    out.extend(v if isinstance(v, (list, tuple)) else [v])
-            if out:
-                return out
+        for src in (params, ws_params or {}):
+            out = []
+            for nid in t.get("nodes", []):
+                kv = (src or {}).get(nid, {})
+                for n in names:
+                    if n in kv:
+                        v = kv[n]
+                        out.extend(v if isinstance(v, (list, tuple)) else [v])
+                if out:
+                    return out
         #  params 에 없으면 계약이 적어 둔 노드 기본값 — 그것도 없으면 None
         d = t.get("default")
         if d is None:
@@ -393,7 +403,8 @@ def main(argv=None):
     loc = local_overrides()
     contract = load_contract(_resolve_contract(args.contract or sc.get("contract")))
     params = _deep_merge(sc.get("params", {}), loc.get("params", {}))
-    cal = Calib(contract, params)
+    from .run import load_ws_params
+    cal = Calib(contract, params, load_ws_params(contract))
 
     video = args.video or resolve_video(sc, loc)
     if not video or not Path(video).exists():

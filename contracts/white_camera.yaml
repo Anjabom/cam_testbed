@@ -284,6 +284,24 @@ consumers:
         expr: "conf_eff > 0"
         why: "폭·점프·conf 중 하나라도 걸리면 conf_eff=0 → 융합에서 카메라 미반영"
 
+# ── 7.6 웹앱 화면 ─────────────────────────────────────────────────────
+#   ★프레임 탐색의 프리셋과 표의 열★ 을 여기 둔다. 예전에는 web/app.js 에 박혀
+#   있었는데, 그러면 다른 워크스페이스를 붙일 때마다 화면 코드를 고쳐야 하고
+#   신호 이름이 다르면 표가 통째로 빈다(계약 하나에 화면 하나가 아니다).
+frame_presets:
+  - {label: 전부,            where: ""}
+  - {label: 플래그 있음,     where: "int(flags) != 0", default: true}
+  - {label: 차선 없음,       where: "int(flags) % 2 == 1"}
+  - {label: 폭 게이트 탈락,  where: "int(flags) % 4 >= 2"}
+  - {label: 한쪽 차선만,     where: "int(flags) % 32 >= 16"}
+  - {label: conf 낮음,       where: "conf_raw < 0.3"}
+  - {label: θ 대역 밖,       where: "abs(theta_deg) > 15"}
+  - {label: 받는 쪽이 쓴 프레임,
+     where: "int(flags) == 0 and conf_eff >= 0.35 and abs(theta_deg) >= 0.5
+             and abs(theta_deg) <= 15"}
+#   표에 보일 열 (frame 과 플래그는 언제나 앞에 붙는다)
+frame_columns: [theta_deg, cte_rear_m, lane_width_m, conf_raw]
+
 # ── 8. 메타모픽 규칙 : 장면을 좌우 반전하면 부호만 뒤집혀야 하는 신호 ──
 #   robustness 시나리오의 `mirror: true` 변형에서 쓴다.
 #   여기 없는 신호(conf, lane_width_m 등)는 반전해도 ★값이 같아야★ 한다.

@@ -12,6 +12,7 @@ YAML 로 파싱해 검증하고, 실제 수정은 해당 줄만 텍스트로 갈
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from pathlib import Path
 
 import yaml
@@ -391,6 +392,63 @@ def new_scenario(name, contract, video, mode="lockstep", start=0, limit=0):
     yaml.safe_load(text)
     f.write_text(text)
     return {"file": f.name}
+
+
+def clone_scenario(src, name, video, start=None, limit=None, mode=None, note=""):
+    """★있는 시나리오를 본으로 떠서★ 새 시나리오를 만든다.
+
+    `new_scenario` 는 빈 틀을 만든다 — 새 워크스페이스를 붙일 때는 그게 맞지만,
+    이미 잘 정리된 시험(정지선처럼 판정 20여 개와 그 근거 주석이 들어 있는 것)을
+    ★새 영상에 옮길★ 때는 그 판정을 그대로 물려받아야 한다. 그래서 텍스트를 복사하고
+    바뀌는 줄(name·video·구간·모드)만 갈아 끼운다 — ★주석이 전부 남는다★.
+    """
+    src = str(src)
+    if not src.endswith(".yaml") or "/" in src or ".." in src:
+        raise ValueError(f"본이 될 시나리오 이름이 잘못됐다: {src}")
+    sp = ROOT / "scenarios" / src
+    if not sp.is_file():
+        raise ValueError(f"그런 시나리오가 없다: {src}")
+    if not NAME_RE.match(str(name)):
+        raise ValueError("이름은 영문·숫자·_·-·. 만 쓸 수 있다")
+    if not NAME_RE.match(str(video)):
+        raise ValueError("영상 이름은 영문·숫자·_·-·. 만 쓸 수 있다 (논리 이름)")
+    out = ROOT / "scenarios" / f"{name}.yaml"
+    if out.exists():
+        raise ValueError(f"이미 있다: scenarios/{out.name}")
+
+    lines = sp.read_text().splitlines()
+    subs = {"name": str(name), "video": str(video)}
+    if mode:
+        if mode not in ("lockstep", "realtime", "asfast"):
+            raise ValueError(f"모드가 잘못됐다: {mode}")
+        subs["mode"] = mode
+    if start is not None:
+        subs["start"] = str(int(start))
+    if limit is not None:
+        subs["limit"] = str(int(limit))
+    done = set()
+    for i, ln in enumerate(lines):
+        m = re.match(r"^([a-z_]+):(\s*)([^#]*?)(\s*#.*)?$", ln)
+        if not m:
+            continue
+        key = m.group(1)
+        if key not in subs or key in done:
+            continue
+        done.add(key)
+        lines[i] = f"{key}: {subs[key]}{m.group(4) or ''}"
+    missing = [k for k in subs if k not in done]
+    if missing:
+        raise ValueError(f"본에 그 항목이 없어 못 바꿨다: {', '.join(missing)}")
+
+    head = [f"# ★{name}★ — scenarios/{src} 를 본으로 떠서 만들었다 "
+            f"({datetime.now().strftime('%Y-%m-%d %H:%M')})"]
+    if note:
+        head += ["#   " + ln2 for ln2 in str(note).splitlines() if ln2.strip()]
+    head.append("#   ⚠️ 본의 판정 기준을 그대로 물려받았다 — 이 영상에 맞는지 확인할 것.")
+    text = "\n".join(head + lines) + "\n"
+    yaml.safe_load(text)                       # 깨진 YAML 을 쓰지 않는다
+    out.write_text(text)
+    return {"file": out.name, "from": src}
 
 
 # ══════════════════════════════════════════════════════════════════════

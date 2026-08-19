@@ -79,9 +79,25 @@
       });
   }
 
+  /* 작업이 끝날 때까지 기다린다. 화면을 떠나면 라우터가 세운다(__stopPoll).
+     짧게 도는 작업(파라미터 읽기 같은)을 한 줄로 기다리기 위한 것이다. */
+  function waitJob(done) {
+    var t = setInterval(function () {
+      get('/api/status').then(function (st) {
+        if (st && st.running) return;
+        clearInterval(t);
+        if (done) done(st);
+      }).catch(function () { clearInterval(t); });
+    }, 1500);
+    var prev = window.__stopPoll;
+    window.__stopPoll = function () { clearInterval(t); if (prev) prev(); };
+  }
+
   // ── 홈 — 무엇을 할지 고른다 ─────────────────────────────────────
   //   첫 화면이 곧바로 목록이면 "지금 뭘 하려던 거였지"를 화면이 안 도와준다.
   var HOME = [
+    ['#/newtest', '새 시험 시작',
+     '새로 찍은 영상으로 갈아탑니다 — 영상 등록 → 시나리오 → 카메라 맞추기 → 돌리기.'],
     ['#/exec', '테스트 실행',
      '시나리오를 골라 돌립니다. 진행률과 라이브 화면을 함께 봅니다.'],
     ['#/runs', '실행 기록',
@@ -444,6 +460,64 @@
       ]);
     }));
     return h('div', { class: 'tbl' }, [h('table', {}, [h('thead', {}, [thead]), body])]);
+  }
+
+  /* ── 단계 전이 — ★언제 물었나★ ──────────────────────────────────
+     계약의 events: 가 정한 신호가 언제 어느 값으로 바뀌었고, ★그 순간★ 다른
+     신호가 얼마였는지. 단계적으로 개입하는 노드(예비제동 → 확정 정지)는
+     이 표가 판정의 본체다 — 평균으로는 '언제' 를 말할 수 없다. */
+  function renderEvents(events) {
+    if (!events || !events.length) return null;
+    var wrap = h('div', {});
+    events.forEach(function (ev) {
+      var tr = ev.transitions || [];
+      wrap.appendChild(sectionTitle('단계 전이 — ' + (ev.label || ev.signal)));
+      if (ev.why) wrap.appendChild(h('p', { class: 'sub', text: ev.why }));
+      if (!tr.length) {
+        wrap.appendChild(h('div', { class: 'empty', text: '전이가 한 번도 없었습니다.' }));
+        return;
+      }
+      var at = ev.at || [];
+      var head = ['프레임', '시각[s]', '이전 → 이후'].concat(at);
+      var thead = h('tr', {}, head.map(function (t) { return h('th', { text: t }); }));
+      var body = h('tbody', {}, tr.map(function (t) {
+        var up = Number(t.to) > Number(t.from);
+        return h('tr', {}, [
+          h('td', { class: 'mono', text: String(t.frame) }),
+          h('td', { class: 'mono num', text: t.t_s == null ? '—' : t.t_s.toFixed(2) }),
+          h('td', {}, [badge(String(t.from) + ' → ' + String(t.to), up ? 'r' : 'g')]),
+        ].concat(at.map(function (k) {
+          return h('td', { class: 'mono num', text: f(t[k]) });
+        })));
+      }));
+      wrap.appendChild(h('div', { class: 'tbl' }, [
+        h('table', {}, [h('thead', {}, [thead]), body])]));
+    });
+    return wrap;
+  }
+
+  /* ── 노드 로그 — 토픽에 없는 근거 ──────────────────────────────────
+     기동 배너(어떤 가중치·캘리브를 읽었나)와 개입 사유([예비제동]/[정지선 앞]…)는
+     토픽으로 나오지 않는다. 계약의 log_events: 가 찾을 것을 정의하고, 여기서는
+     몇 번 나왔는지와 실제 줄 하나를 보여 준다. */
+  function renderLogEvents(le) {
+    if (!le || !Object.keys(le).length) return null;
+    var rows = Object.keys(le).map(function (k) { return [k, le[k]]; });
+    rows.sort(function (a, b) { return (b[1].count || 0) - (a[1].count || 0); });
+    var thead = h('tr', {}, ['이벤트', '횟수', '본 것'].map(function (t) {
+      return h('th', { text: t });
+    }));
+    var body = h('tbody', {}, rows.map(function (r) {
+      var e = r[1];
+      var note = e.sample || e.error || (e.log_missing ? '로그 파일 없음' : '—');
+      return h('tr', { title: e.why || '' }, [
+        h('td', { class: 'mono', text: r[0] }),
+        h('td', {}, [badge(String(e.count || 0), e.count ? 'g' : 'n')]),
+        h('td', { class: 'mono small', text: note.slice(0, 180) }),
+      ]);
+    }));
+    return h('div', { class: 'tbl' }, [
+      h('table', {}, [h('thead', {}, [thead]), body])]);
   }
 
   function renderGates(funnel) {
@@ -892,13 +966,18 @@
       var cards = [
         ['결과 행', s.rows,
          '넣은 프레임 ' + (s.frames_pushed == null ? '?' : s.frames_pushed) + '개 중'],
-        ['차선 인식률', s.valid_rate == null ? '—' : pct(s.valid_rate),
-         '차선을 본 프레임의 비율'],
+      ];
+      /* '차선 인식률' 은 플래그를 선언한 계약에서만 뜻이 있다 — 정지선 계약에는
+         차선이 없어서 늘 100% 로 보이고, 그게 더 헷갈린다. */
+      if (s.flag_rate) {
+        cards.push(['차선 인식률', s.valid_rate == null ? '—' : pct(s.valid_rate),
+                    '차선을 본 프레임의 비율']);
+      }
+      cards.push(
         ['유실률', s.drop_rate == null ? '—' : pct(s.drop_rate, 2),
          '넣었는데 결과가 안 나온 비율 (lockstep 이면 0)'],
         ['지연 p95', s.latency_p95_ms == null ? '—' : s.latency_p95_ms.toFixed(0) + ' ms',
-         '400ms 를 넘으면 받는 쪽이 그 값을 버립니다'],
-      ];
+         '400ms 를 넘으면 받는 쪽이 그 값을 버립니다']);
       pane.appendChild(h('div', { class: 'cards' }, cards.map(function (c) {
         return h('div', { class: 'card' }, [
           h('div', { class: 'k', text: c[0] }),
@@ -915,6 +994,13 @@
       }
       var ch = renderChecks(checks);
       if (ch) { pane.appendChild(sectionTitle('불변식 체크')); pane.appendChild(ch); }
+      var evp = renderEvents(s.events);
+      if (evp) pane.appendChild(evp);          // 제목을 자기가 붙인다
+      var lg = renderLogEvents(s.log_events);
+      if (lg) {
+        pane.appendChild(sectionTitle('노드 로그 — 토픽에 없는 근거'));
+        pane.appendChild(lg);
+      }
 
       pane.appendChild(sectionTitle('이어서 할 일'));
       pane.appendChild(h('div', { class: 'framebar' }, [
@@ -1137,32 +1223,34 @@
    * 조건으로 걸러 ★표★로 본다. 그림은 프레임 뷰어가 담당한다 —
    * 썸네일 그리드는 한 장씩 영상을 seek 해야 해서 느리고, 원본+BEV 를
    * 작게 욱여넣으면 정작 봐야 할 곡선이 안 보인다. */
-  var PRESETS = [
-    ['전부', ''],
-    ['플래그 있음', 'int(flags) != 0'],
-    ['차선 없음', 'int(flags) % 2 == 1'],
-    ['폭 게이트 탈락', 'int(flags) % 4 >= 2'],
-    ['한쪽 차선만', 'int(flags) % 32 >= 16'],
-    ['conf 낮음', 'conf_raw < 0.3'],
-    ['θ 대역 밖', 'abs(theta_deg) > 15'],
-    ['받는 쪽이 쓴 프레임', 'int(flags) == 0 and conf_eff >= 0.35 and abs(theta_deg) >= 0.5 and abs(theta_deg) <= 15'],
+  /* 프레임 탐색의 프리셋·표의 열·플래그 이름은 ★그 런의 계약★ 이 정한다
+     (`frame_presets:` `frame_columns:` `flag_bits:`). 계약이 아무것도 안 적었을
+     때만 아래 폴백을 쓴다 — 예전에는 이게 유일한 값이라 다른 워크스페이스를
+     붙이면 표가 통째로 '—' 가 됐다. */
+  var PRESETS_FALLBACK = [
+    { label: '전부', where: '' },
+    { label: '플래그 있음', where: 'int(flags) != 0', default: true },
   ];
-  var FLAGBITS = [[1, 'NO_LANE'], [2, 'WIDTH_BAD'], [4, 'CTE_JUMP'],
-                  [8, 'CONF_LOW'], [16, 'SINGLE']];
+  var FLAGBITS_FALLBACK = [[1, 'NO_LANE'], [2, 'WIDTH_BAD'], [4, 'CTE_JUMP'],
+                           [8, 'CONF_LOW'], [16, 'SINGLE']];
 
-  function flagNames(v) {
+  function flagNames(v, bits) {
     if (typeof v !== 'number') return '—';
+    var bb = (bits && bits.length) ? bits : FLAGBITS_FALLBACK;
     var iv = Math.round(v);
     if (iv === 0) return 'CLEAN';
-    return FLAGBITS.filter(function (b) { return iv & b[0]; })
-                   .map(function (b) { return b[1]; }).join(' ') || String(iv);
+    return bb.filter(function (b) { return iv & b[0]; })
+             .map(function (b) { return b[1]; }).join(' ') || String(iv);
   }
 
   /* 필터 결과를 기억해 프레임 뷰어의 ←→ 가 ★이 목록 안에서만★ 움직이게 한다.
      ±1 프레임으로 넘기면 방금 거른 조건 밖으로 새어 나간다. */
   var FRAMESET = { runId: null, where: '', frames: [] };
 
-  function renderFrames(id, state) {
+  function renderFrames(id, state, ui) {
+    ui = ui || {};
+    var PRESETS = (ui.frame_presets && ui.frame_presets.length)
+      ? ui.frame_presets : PRESETS_FALLBACK;
     clear(view);
     view.appendChild(h('a', { class: 'back', href: '#/run/' + encodeURIComponent(id),
                               text: '‹ ' + id }));
@@ -1185,9 +1273,10 @@
     input.addEventListener('keydown', function (e) { if (e.key === 'Enter') go(); });
 
     var presets = h('div', { class: 'plotbar' }, PRESETS.map(function (p2) {
-      return h('button', { class: 'sigbtn' + (p2[1] === state.where ? ' on' : ''),
-        text: p2[0], style: p2[1] === state.where ? 'background:var(--accent)' : '',
-        onclick: function () { input.value = p2[1]; go(); } });
+      var on = (p2.where || '') === state.where;
+      return h('button', { class: 'sigbtn' + (on ? ' on' : ''),
+        text: p2.label, style: on ? 'background:var(--accent)' : '',
+        onclick: function () { input.value = p2.where || ''; go(); } });
     }));
 
     view.appendChild(h('div', { class: 'framebar' }, [
@@ -1254,25 +1343,29 @@
           box.appendChild(h('div', { class: 'empty', text: '조건에 맞는 프레임이 없습니다.' }));
           return;
         }
-        var thead = h('tr', {}, [['frame', ''], ['플래그', '이 프레임에서 걸린 조건'],
-                                 ['θ [°]', '차선을 기준으로 차량이 틀어진 각도'],
-                                 ['cte [m]', '차선 중심에서 옆으로 벗어난 거리'],
-                                 ['폭 [m]', '좌우 차선 사이의 거리'],
-                                 ['conf', '인지가 매긴 신뢰도'], ['', '']]
-          .map(function (t) { return h('th', { text: t[0], title: t[1] || null }); }));
+        var cols = d.columns || [];
+        var head = [h('th', { text: 'frame' })];
+        if (d.flag_signal) {
+          head.push(h('th', { text: '플래그', title: '이 프레임에서 걸린 조건' }));
+        }
+        cols.forEach(function (c) { head.push(h('th', { text: c })); });
+        head.push(h('th', { text: '' }));
+        var thead = h('tr', {}, head);
         var body = h('tbody', {}, (d.frames || []).map(function (fr) {
-          var fn = flagNames(fr.flags);
+          var cells = [h('td', { class: 'mono', text: String(fr.frame) })];
+          if (d.flag_signal) {
+            var fn = flagNames(fr.flags, d.flag_bits);
+            cells.push(h('td', {}, [badge(fn, fn === 'CLEAN' ? 'g' : 'r')]));
+          }
+          cols.forEach(function (c) {
+            var v = fr[c];
+            cells.push(h('td', { class: 'mono num',
+                                 text: (typeof v === 'string') ? v : f(v) }));
+          });
+          cells.push(h('td', { class: 'mut', text: '›' }));
           return h('tr', { class: 'click', onclick: function () {
             location.hash = '#/run/' + encodeURIComponent(id) + '/frame/' + fr.frame;
-          } }, [
-            h('td', { class: 'mono', text: String(fr.frame) }),
-            h('td', {}, [badge(fn, fn === 'CLEAN' ? 'g' : 'r')]),
-            h('td', { class: 'mono num', text: f(fr.theta_deg) }),
-            h('td', { class: 'mono num', text: f(fr.cte_rear_m) }),
-            h('td', { class: 'mono num', text: f(fr.lane_width_m) }),
-            h('td', { class: 'mono num', text: f(fr.conf_raw) }),
-            h('td', { class: 'mut', text: '›' }),
-          ]);
+          } }, cells);
         }));
         box.appendChild(h('div', { class: 'tbl' }, [
           h('table', {}, [h('thead', {}, [thead]), body])]));
@@ -2397,6 +2490,62 @@
       }).catch(function (e) { say(e.message, true); });
     } });
 
+    /* ── ⓐ 워크스페이스 기본값 ─────────────────────────────────────
+       캘리브 값의 진짜 주인은 워크스페이스다. 그런데 white1 은 그것을 소스의
+       declare_parameter 기본값으로 갖고 있어서 계약에 옮겨 적을 수밖에 없었다.
+       `tb.run params` 가 노드에게 직접 물어 캐시해 두고, 여기서 그 값으로
+       되돌릴 수 있게 한다 — 「내가 지금 노드와 같은 값에서 출발했나」의 답이다. */
+    var wsBox = h('span', { class: 'mut' });
+    function wsLabel() {
+      wsBox.textContent = st.ws_stamp
+        ? ('워크스페이스 값 읽은 시각 ' + st.ws_stamp)
+        : '워크스페이스 값을 아직 안 읽었습니다';
+    }
+    wsLabel();
+    var wsLoad = h('button', {
+      text: '워크스페이스 기본값 불러오기',
+      title: '노드가 스스로 선언한 값으로 되돌립니다 (사다리꼴·범퍼선·문턱·px2m)',
+      onclick: function () {
+        var w = st.ws_values;
+        if (!w) return say('워크스페이스 값이 없습니다 — 먼저 «다시 읽기»', true);
+        S.quad = (w.quad || []).slice();
+        S.rects = JSON.parse(JSON.stringify(w.rects || {}));
+        S.bevRows = JSON.parse(JSON.stringify(w.bev_rows || {}));
+        if (w.px2m) S.px2m = w.px2m;
+        if (w.length_m) S.lengthM = w.length_m;
+        drawFields(); draw();
+        say('노드가 선언한 값으로 되돌렸습니다 (저장하지는 않았습니다)');
+      } });
+    var wsRead = h('button', {
+      text: '다시 읽기', title: '노드를 한 번 띄워 파라미터를 새로 받아 옵니다 (20~40초)',
+      onclick: function () {
+        say('노드를 띄워 파라미터를 묻습니다 — 20~40초');
+        postJSON('/api/calib/wsparams', { scenario: scSel.value })
+          .then(function () { waitJob(function () {
+            get('/api/calib?scenario=' + encodeURIComponent(scSel.value))
+              .then(function (s2) {
+                st.ws_values = s2.ws_values; st.ws_stamp = s2.ws_stamp;
+                wsLabel(); say('받아 왔습니다 — «불러오기» 로 적용하세요');
+              }).catch(function () {});
+          }); })
+          .catch(function (e) { say(e.message, true); });
+      } });
+
+    /* ── ⓑ 실차로 내보내기 ────────────────────────────────────────
+       맞춘 값이 테스트베드 안에만 남으면 실차 반영이 사람의 손 옮겨 적기로
+       남는다. 워크스페이스 파일은 건드리지 않고 붙여 넣을 것만 만들어 준다. */
+    var expBox = h('div', { class: 'md', style: 'max-height:220px' });
+    var expBtn = h('button', {
+      text: '실차 명령으로 내보내기',
+      title: '지금 값을 ros2 명령과 파라미터 yaml 로 — 워크스페이스 파일은 안 고칩니다',
+      onclick: function () {
+        expBox.textContent = '만드는 중…';
+        postJSON('/api/calib/export', body()).then(function (d) {
+          if (d.error) { expBox.textContent = '오류: ' + d.error; return; }
+          expBox.textContent = d.launch + '\n\n# ── 파라미터 파일 ──\n' + d.params_yaml;
+        }).catch(function (e) { expBox.textContent = '오류: ' + e.message; });
+      } });
+
     var runSel = h('select', {}, (st.runs || []).map(function (r) {
       return h('option', { value: r, text: r });
     }));
@@ -2433,6 +2582,10 @@
       h('span', { class: 'spacer' }),
       h('button', { text: '되돌리기', title: '파일에 있던 값으로 (r)', onclick: reset }),
     ])));
+    /* ⓐ 워크스페이스 기본값 — 「노드와 같은 값에서 출발했나」 */
+    view.appendChild(h('div', { class: 'framebar' }, [
+      wsLoad, wsRead, wsBox,
+    ]));
     view.appendChild(hintEl2);
     view.appendChild(fields);
     view.appendChild(img);
@@ -2451,6 +2604,17 @@
     ]));
     view.appendChild(yamlBox);
 
+    /* ⓑ 실차로 내보내기 */
+    view.appendChild(sectionTitle('실차로 내보내기'));
+    view.appendChild(h('p', { class: 'help', html:
+      '맞춘 값을 <b>실차에서 그대로 쓸 수 있는 형태</b>로 만듭니다 — '
+      + '<code>ros2</code> 명령과 <code>--params-file</code> 용 yaml. '
+      + '<b>워크스페이스 파일은 고치지 않습니다.</b><br>'
+      + '⚠️ 이 값은 <b>맞출 때 쓴 영상의 카메라 설정</b>입니다. 그 영상이 실차 카메라로 '
+      + '찍힌 것이 아니면 실차에 그대로 쓰면 안 됩니다.' }));
+    view.appendChild(h('div', { class: 'framebar' }, [expBtn]));
+    view.appendChild(expBox);
+
     view.appendChild(sectionTitle('노드와 대조'));
     view.appendChild(h('p', { class: 'help', html:
       '여기서 그리는 BEV 가 <b>노드가 실제로 만드는 BEV</b> 와 같은지 확인합니다. '
@@ -2466,6 +2630,154 @@
     setMode(S.mode);
     syncBar();
     refreshYaml();
+  }
+
+  /* ── 새 시험 시작 — 새로 찍은 영상으로 갈아타는 길 ────────────────────
+   * ★왜 마법사인가★ 새 영상으로 시험을 옮기는 일은 화면 네 곳을 순서대로 거쳐야
+   * 한다(영상 등록 → 구간 고르기 → 카메라 맞추기 → 돌리기). 그 순서를 기억하는
+   * 것이 사람 몫이면 반드시 한 단계를 빼먹는다 — 특히 ★카메라 맞추기★ 를 빼먹고
+   * 남의 영상 값으로 판정하게 된다. 그래서 순서를 화면이 들고 있는다.
+   *
+   * 여기서 새로 하는 일은 ★영상 등록★ 과 ★본 떠서 시나리오 만들기★ 둘뿐이고,
+   * 나머지는 이미 있는 화면으로 보낸다(같은 일을 두 번 짜지 않는다). */
+  var WIZ = { video: '', path: '', real: true, src: '', name: '', scen: '' };
+
+  function renderNewTest(meta) {
+    clear(view);
+    view.appendChild(h('h1', { text: '새 시험 시작' }));
+    view.appendChild(h('p', { class: 'sub',
+      text: '새로 찍은 영상으로 시험을 옮깁니다. 네 단계를 순서대로 거치면 됩니다 — '
+            + '특히 3단계(카메라 맞추기)를 빼먹으면 남의 영상 값으로 판정하게 됩니다.' }));
+
+    var scens = (meta.scenarios || []);
+    var stopline = scens.filter(function (f2) { return f2.indexOf('stopline') === 0; });
+    WIZ.src = WIZ.src || (stopline.indexOf('stopline_field.yaml') >= 0
+                          ? 'stopline_field.yaml' : (stopline[0] || scens[0] || ''));
+
+    function stepBox(n, title, desc, body) {
+      var b = h('div', { class: 'card wizstep' }, [
+        h('div', { class: 'k', text: n + '. ' + title }),
+        h('div', { class: 'd', text: desc }),
+      ]);
+      (body || []).forEach(function (x) { b.appendChild(x); });
+      return b;
+    }
+
+    // ── 1) 영상 등록 ────────────────────────────────────────────
+    var vName = h('input', { type: 'text', placeholder: '논리 이름 — 예: field_0820',
+                             value: WIZ.video, size: '20' });
+    var vPath = h('input', { type: 'text', placeholder: '/home/…/촬영본.mp4',
+                             value: WIZ.path, size: '44' });
+    var vReal = h('input', { type: 'checkbox', checked: WIZ.real ? 'checked' : null });
+    var vOut2 = h('div', { class: 'mut' });
+    var vBtn2 = h('button', { class: 'primary', text: '등록하고 열어 보기',
+      onclick: function () {
+        WIZ.video = vName.value.trim(); WIZ.path = vPath.value.trim();
+        WIZ.real = vReal.checked;
+        if (!WIZ.video || !WIZ.path) { vOut2.textContent = '이름과 경로를 모두 적으세요'; return; }
+        vOut2.textContent = '등록 중…';
+        postJSON('/api/config/video', { name: WIZ.video, path: WIZ.path })
+          .then(function (d) {
+            if (d.error) { vOut2.textContent = '오류: ' + d.error; return; }
+            var v = d.video || {};
+            vOut2.textContent = v.exists
+              ? ('✅ ' + v.frames + '프레임 · ' + (v.size_mb || '?') + 'MB · '
+                 + (v.fps ? v.fps.toFixed(1) + 'fps' : '?fps'))
+              : '⛔ 그 경로에 파일이 없습니다';
+          }).catch(function (e) { vOut2.textContent = '오류: ' + e.message; });
+      } });
+
+    view.appendChild(stepBox('1', '영상 등록',
+      '실제 경로는 local.yaml 에 두고, 시나리오에는 논리 이름만 씁니다.', [
+        h('div', { class: 'framebar' }, [
+          h('span', { class: 'mut', text: '이름' }), vName,
+          h('span', { class: 'mut', text: '경로' }), vPath, vBtn2]),
+        h('div', { class: 'framebar' }, [
+          h('label', { class: 'toolflag' }, [vReal,
+            h('span', { text: '실차 카메라로 찍은 영상이다' }),
+            h('span', { class: 'mut',
+              text: '— 아니면 여기서 맞춘 BEV 값을 실차에 쓰면 안 됩니다' })])]),
+        vOut2,
+      ]));
+
+    // ── 2) 시나리오 만들기 ──────────────────────────────────────
+    var srcSel = h('select', {}, scens.map(function (f2) {
+      return h('option', { value: f2, selected: f2 === WIZ.src ? 'selected' : null,
+                           text: f2 });
+    }));
+    var sName = h('input', { type: 'text', placeholder: '새 시나리오 이름 — 예: sl_0820',
+                             size: '22' });
+    var sStart = h('input', { type: 'number', placeholder: '0', style: 'width:100px' });
+    var sLimit = h('input', { type: 'number', placeholder: '0 = 전체', style: 'width:110px' });
+    var sOut = h('div', { class: 'mut' });
+    var sBtn = h('button', { class: 'primary', text: '본 떠서 만들기',
+      onclick: function () {
+        if (!WIZ.video) { sOut.textContent = '먼저 1단계에서 영상을 등록하세요'; return; }
+        var nm = sName.value.trim();
+        if (!nm) { sOut.textContent = '새 시나리오 이름을 적으세요'; return; }
+        postJSON('/api/config/scenario/clone', {
+          src: srcSel.value, name: nm, video: WIZ.video,
+          start: sStart.value ? Number(sStart.value) : 0,
+          limit: sLimit.value ? Number(sLimit.value) : 0,
+          note: '영상 ' + WIZ.video + ' (' + WIZ.path + ')\n'
+                + '실차 카메라로 촬영: ' + (WIZ.real ? '예' : '★아니오 — BEV 값을 실차에 쓰지 말 것★'),
+        }).then(function (d) {
+          if (d.error) { sOut.textContent = '오류: ' + d.error; return; }
+          WIZ.scen = d.file; WIZ.name = nm;
+          sOut.textContent = '✅ scenarios/' + d.file + ' 를 만들었습니다 ('
+                             + d.from + ' 의 판정을 그대로 물려받았습니다)';
+          renderNewTest(meta);
+        }).catch(function (e) { sOut.textContent = '오류: ' + e.message; });
+      } });
+
+    view.appendChild(stepBox('2', '시나리오 만들기',
+      '있는 시험을 본으로 떠서 영상만 갈아 끼웁니다 — 판정 기준과 그 근거 주석을 '
+      + '그대로 물려받습니다. 구간은 비워 두고(전체) 3·4단계에서 좁히면 됩니다.', [
+        h('div', { class: 'framebar' }, [
+          h('span', { class: 'mut', text: '본' }), srcSel,
+          h('span', { class: 'mut', text: '새 이름' }), sName, sBtn]),
+        h('div', { class: 'framebar' }, [
+          h('span', { class: 'mut', text: 'start' }), sStart,
+          h('span', { class: 'mut', text: 'limit' }), sLimit,
+          h('span', { class: 'mut', text: '(비우면 영상 전체)' })]),
+        sOut,
+        WIZ.scen ? h('p', { class: 'help', html:
+          '만든 것: <code>scenarios/' + WIZ.scen + '</code>' }) : h('span', {}),
+      ]));
+
+    // ── 3) 카메라 맞추기 ────────────────────────────────────────
+    view.appendChild(stepBox('3', '카메라 맞추기 (STOPLINE_TEST 단계 2)',
+      '사다리꼴 → 범퍼선 → 두 문턱 순서로. ★«워크스페이스 기본값 불러오기» 로 '
+      + '노드가 선언한 값에서 출발하세요★ — 그러면 실차와 같은 자리에서 시작합니다.', [
+        h('div', { class: 'framebar' }, [
+          h('a', { class: 'gobtn',
+                   href: '#/calib' + (WIZ.scen ? '?s=' + encodeURIComponent(WIZ.scen) : ''),
+                   text: '카메라 보정으로 ›' }),
+          h('span', { class: 'mut',
+            text: '맞춘 뒤 «저장» → local.yaml (또는 이 시나리오)' })]),
+        h('p', { class: 'help', html:
+          '자로 재야 하는 것은 두 가지입니다 — <b>범퍼선</b>(앞범퍼 바로 앞 노면에 테이프)과 '
+          + '<b>px2m</b>(BEV 에서 실측 길이를 아는 두 점). 이 둘 없이는 두 문턱을 미터로 '
+          + '환산할 수 없습니다.' }),
+      ]));
+
+    // ── 4) 돌리고 보기 ─────────────────────────────────────────
+    view.appendChild(stepBox('4', '돌리고 보기',
+      '먼저 «정지선이 잡히는가»(관문)를 봅니다. 잡히지 않으면 그 뒤 단계는 의미가 없습니다.', [
+        h('div', { class: 'framebar' }, [
+          h('a', { class: 'gobtn', href: '#/exec', text: '테스트 실행으로 ›' }),
+          h('a', { class: 'gobtn', href: '#/runs', text: '실행 기록 ›' })]),
+        h('p', { class: 'help', html:
+          '결과에서 순서대로 볼 것 — ① <b>프레임 탐색 → «정지선 검출»</b> 로 '
+          + '<b>정말 정지선을 잡았는지</b> 눈으로 (차체·횡단보도 오검출) '
+          + '② 요약의 <b>단계 전이 표</b> 로 0단→1단→2단이 언제·어느 거리에서 '
+          + '③ <b>시각화</b> 에서 자홍색 거리선이 노면의 정지선과 겹치는지.' }),
+      ]));
+
+    view.appendChild(h('p', { class: 'help', html:
+      '⚠️ <b>지그 시나리오와 섞지 마세요.</b> <code>stopline_demo_*</code> 는 '
+      + '<code>track_record.mp4</code> 전용이고 합성 목업·그 영상용 문턱이 박혀 있습니다. '
+      + '새 영상은 <code>stopline_field.yaml</code> 를 본으로 쓰세요.' }));
   }
 
   /* ── 도구 : 터미널에서 되는 것을 전부 여기서 ──────────────────────
@@ -2927,6 +3239,47 @@
      * 새 용어를 화면에 쓰기 시작하면 ★여기에 한 줄 늘린다★. 뜻이 두 곳에
      * 따로 적히면 반드시 어긋나므로, 설명의 출처는 여기 하나로 둔다. */
     var GLOSSARY = [
+      ['정지선 앞 정지 (white1)', [
+        ['sl_px',
+         '<b>이 시험의 판정값.</b> BEV(위에서 내려다본 화면)에서 <b>정지선 → 앞범퍼</b> ' +
+         '픽셀 거리. <b>가까울수록 작다</b> · <code>-1</code> = 미검출 · ' +
+         '<code>0</code> = 범퍼선 도달(또는 지나침).'],
+        ['B1 · B2 (두 문턱)',
+         '<code>sl_brake1_px</code>(1단 예비제동) · <code>sl_brake2_px</code>(2단 확정 정지). ' +
+         '정지선이 B1 안으로 들어오면 부드럽게 줄이고, B2 안이면 세운다. ' +
+         '<b>둘 다 실측값이다</b> — 기본값은 근거가 없다(절차서 단계 2).'],
+        ['1단 예비제동',
+         '리니어 1/3 행정 + 구동 차단. 실측 감속도 1.30 m/s². ' +
+         '<b>1단을 물면 차는 스스로 기어가지 못한다</b> — 그래서 대기 상한이 필요하다.'],
+        ['2단 확정 정지',
+         '리니어 전행정. 실측 감속도 2.2~3.8 m/s² — 1초 안에 세우는 힘이다.'],
+        ['대기 (sl_wait)',
+         '빨간불은 확정됐는데 정지선이 아직 멀어 <b>아무 단계도 안 건</b> 구간. ' +
+         '이 시험에서 <b>유일하게 참는 경우</b>다.'],
+        ['놓침',
+         '정지선을 봤다가 <code>sl_stale_s</code>(0.5초) 동안 못 본 것. ' +
+         '접근하면 정지선은 차체에 가려 <b>반드시</b> 사라지므로, 그것을 ' +
+         '「이미 선 위」로 읽고 즉시 2단이다.'],
+        ['근접도 (tl_near)',
+         '빨간 박스의 <b>높이[px]</b>. 「얼마나 가까운가」의 대리값이고, ' +
+         '이 값이 게이트를 넘어야 RED, 못 넘으면 RED_FAR(멀다)다.'],
+        ['범퍼행 (bev_bumper_y_px)',
+         'BEV 에서 <b>거리 0 의 기준선</b>. 앞범퍼 바로 앞 노면에 테이프를 붙여 잰다. ' +
+         '차체에 가려 안 보이면 BEV 높이보다 큰 값이 된다.'],
+        ['합성 자극 (overlay)',
+         '목업 신호등 그림을 화면에 얹는 것. 영상에 신호등이 없으면 정지선 추론이 ' +
+         '아예 안 돌기 때문이다. <b>판정을 통과시키는 장치가 아니다</b> — ' +
+         '노드의 YOLO 가 실제로 검출해야 아무 일이든 일어난다.'],
+        ['단계 전이 표',
+         '리니어 단계가 <b>언제·어느 거리에서</b> 올라갔는지. ' +
+         '평균으로는 「언제」를 말할 수 없어서 따로 재는 표다.'],
+        ['워크스페이스 기본값',
+         '<b>노드가 스스로 선언한 값</b>(<code>ros2 param dump</code>). ' +
+         '캘리브를 여기서 출발해야 실차와 같은 자리에서 시작한다.'],
+        ['지그 (demo) 시나리오',
+         '<code>stopline_demo_*</code> 는 <code>track_record.mp4</code> 전용이다. ' +
+         '구간·목업 크기·문턱이 그 영상에서 뽑은 값이므로 <b>실차 판정에 쓰면 안 된다</b>.'],
+      ]],
       ['결과를 읽는 말', [
         ['실질 기여율',
          '카메라가 낸 프레임 중 <b>받는 쪽이 게이트를 모두 통과시켜 실제로 쓴</b> 비율. ' +
@@ -3109,9 +3462,17 @@
       return get('/api/trash').then(renderTrash).catch(fail);
     }
     if (hash === '/help') { setNav('help'); renderHelp(); return null; }
-    if (hash === '/calib') {
+    if (hash === '/newtest') {
+      setNav('newtest');
+      return get('/api/meta').then(renderNewTest).catch(fail);
+    }
+    var mc = hash.match(/^\/calib(?:\?s=([^&]+))?$/);
+    if (mc) {
       setNav('calib');
-      return get('/api/calib').then(renderCalib).catch(fail);
+      //  «새 시험 시작» 이 방금 만든 시나리오로 곧바로 열 수 있게 (?s=…)
+      var want = mc[1] ? decodeURIComponent(mc[1]) : '';
+      return get('/api/calib' + (want ? '?scenario=' + encodeURIComponent(want) : ''))
+        .then(renderCalib).catch(fail);
     }
     var mt2 = hash.match(/^\/tools(?:\/([A-Za-z0-9_-]+))?$/);
     if (mt2) {
@@ -3163,9 +3524,17 @@
     var mf = hash.match(/^\/run\/([^/]+)\/frames$/);
     if (mf) {
       setNav('runs');
-      renderFrames(decodeURIComponent(mf[1]),
-                   { where: 'int(flags) != 0', limit: 24 });
-      return null;
+      var fid = decodeURIComponent(mf[1]);
+      /* 기본 조건도 계약이 정한다 — 전에는 'int(flags) != 0' 이 박혀 있어서
+         플래그가 없는 계약에서는 빈 목록으로 열렸다. */
+      return get('/api/runs/' + encodeURIComponent(fid)).then(function (data) {
+        var ui = data.ui || {};
+        var def = (ui.frame_presets || []).filter(function (p2) { return p2.default; })[0]
+                  || (ui.frame_presets || [])[0] || { where: 'int(flags) != 0' };
+        renderFrames(fid, { where: def.where || '', limit: 24 }, ui);
+      }).catch(function () {
+        renderFrames(fid, { where: '', limit: 24 }, null);
+      });
     }
     var m = hash.match(/^\/run\/([^/]+)(?:\/(summary|visual|detail|raw|feedback))?$/);
     if (m) {

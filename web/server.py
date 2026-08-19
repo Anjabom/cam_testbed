@@ -324,7 +324,7 @@ def _calib_env(scenario=""):
     from tb.calibrate import Calib                  # noqa: PLC0415
     from tb.contract import load as _load           # noqa: PLC0415
     from tb.run import (_deep_merge, _resolve_contract,     # noqa: PLC0415
-                        local_overrides, resolve_video)
+                        load_ws_params, local_overrides, resolve_video)
 
     sc = {}
     if scenario:
@@ -338,7 +338,10 @@ def _calib_env(scenario=""):
         raise ValueError("계약 파일을 찾지 못했습니다")
     contract = _load(cf)
     params = _deep_merge(sc.get("params", {}), loc.get("params", {}))
-    cal = Calib(contract, params)          # 계약에 calibration: 이 없으면 SystemExit
+    #  ★워크스페이스 기본값★ — `tb.run params` 로 노드에게 물어 둔 캐시.
+    #  시나리오가 값을 안 정한 항목은 이것으로 출발한다(계약의 default 보다 앞).
+    ws = load_ws_params(contract)
+    cal = Calib(contract, params, ws)       # 계약에 calibration: 이 없으면 SystemExit
     # 왜곡보정을 켜고 볼지도 시나리오가 정한다 — CLI 와 같은 규칙이다.
     # (perception 이 남긴 영상은 이미 보정된 뒤라 끄고 봐야 이중보정이 안 된다)
     und = True
@@ -346,7 +349,8 @@ def _calib_env(scenario=""):
         und = bool(params.get(contract.nodes[0]["id"], {}).get(cal.und_param, True))
     env = {"cal": cal, "contract": contract, "scenario": scenario,
            "video": resolve_video(sc, loc) or "", "undistort": und,
-           "start": int(sc.get("start", 0) or 0)}
+           "start": int(sc.get("start", 0) or 0),
+           "ws_params": ws, "scen_params": sc.get("params") or {}}
     _CALIB_ENV["val"][scenario] = env
     return env
 
@@ -378,6 +382,7 @@ def _cal_work(env, body):
     cal.quad = env["cal"].quad.copy()
     cal.rects = {k: v.copy() for k, v in env["cal"].rects.items()}
     cal.bev_rows = dict(env["cal"].bev_rows)
+    cal.ws_params = env["cal"].ws_params
 
     q = body.get("quad")
     if q:
@@ -437,9 +442,31 @@ def calib_state(scenario=""):
                            "nodes": v.get("nodes", [])}
                        for k, v in cal.targets.items()},
            "runs": [d.name for d in sorted(_run_dirs(), reverse=True)
-                    if find_video(d) is not None]}
+                    if find_video(d) is not None],
+           # ★워크스페이스 기본값★ — 있으면 화면이 «불러오기» 를 띄운다
+           "ws_params": env.get("ws_params") or {},
+           "ws_stamp": _ws_params_stamp(c),
+           "workspace": str(c.workspace or "")}
     out.update(_cal_dump(cal))
+    #  같은 계약을 ★워크스페이스 값만★ 으로 읽은 것 — «불러오기» 가 이 값으로 되돌린다
+    try:
+        from tb.calibrate import Calib as _C                # noqa: PLC0415
+        out["ws_values"] = _cal_dump(_C(c, {}, env.get("ws_params") or {}))
+    except Exception:                                       # noqa: BLE001
+        out["ws_values"] = None
     return out
+
+
+def _ws_params_stamp(contract):
+    """워크스페이스 파라미터 캐시를 언제 받아 왔나 (없으면 빈 문자열)."""
+    import sys
+    sys.path.insert(0, str(ROOT))
+    from tb.run import params_cache_path                    # noqa: PLC0415
+    f = params_cache_path(contract)
+    if not f.exists():
+        return ""
+    import datetime as _dt
+    return _dt.datetime.fromtimestamp(f.stat().st_mtime).isoformat(timespec="minutes")
 
 
 def calib_yaml(scenario, body):
@@ -448,6 +475,55 @@ def calib_yaml(scenario, body):
     cal = _cal_work(_calib_env(scenario), body)
     return yaml.safe_dump({"params": cal.to_params()}, allow_unicode=True,
                           sort_keys=False, default_flow_style=None)
+
+
+def calib_export(scenario, body):
+    """맞춘 값을 ★실차에서 그대로 쓸 수 있는 형태★ 로 만든다.
+
+    ★왜 필요한가★ 캘리브 결과가 테스트베드 안(local.yaml·시나리오)에만 남으면,
+    실차에 반영하는 일이 사람의 손 옮겨 적기로 남는다 — 그 지점에서 단계 2 실측이
+    흐지부지된다. 워크스페이스 파일은 건드리지 않고, 붙여 넣을 것만 만들어 준다.
+
+    돌려주는 것 : launch(런치 명령 한 줄) · params_yaml(--params-file 용 한 장)
+    """
+    env = _calib_env(scenario)
+    cal = _cal_work(env, body)
+    c = env["contract"]
+    vals = cal.to_params()                       # {노드id: {파라미터: 값}}
+
+    def fmt(v):
+        if isinstance(v, bool):
+            return "true" if v else "false"
+        if isinstance(v, (list, tuple)):
+            return "\"[" + ", ".join(f"{float(x)}" for x in v) + "]\""
+        return f"{v}"
+
+    #  런치 파일 이름은 계약이 알려 준다(없으면 노드 실행 명령으로 떨어진다)
+    lk = (c.raw.get("deploy") or {}).get("launch")
+    lines, pkg = [], (c.nodes[0]["package"] if c.nodes else "")
+    if lk:
+        args = " ".join(f"{k}:={fmt(v)}" for kv in vals.values() for k, v in kv.items())
+        lines.append(f"ros2 launch {pkg} {lk} \\\n     {args}")
+    for n in c.nodes:
+        kv = vals.get(n["id"]) or {}
+        if not kv:
+            continue
+        args = " ".join(f"-p {k}:={fmt(v)}" for k, v in kv.items())
+        lines.append(f"ros2 run {pkg} {n['executable']} --ros-args {args}")
+
+    import yaml as _y                                       # noqa: PLC0415
+    ros = {}
+    for n in c.nodes:
+        kv = vals.get(n["id"]) or {}
+        if kv:
+            ros[f"/{n.get('node_name') or n['executable']}"] = {"ros__parameters": kv}
+    py = ("# 테스트베드에서 맞춘 카메라 설정 — `--params-file` 로 그대로 먹인다\n"
+          f"#   ros2 run {pkg} <노드> --ros-args --params-file <이 파일>\n"
+          "# ⚠️ 이 값은 ★맞출 때 쓴 영상의 카메라 설정★ 이다. 그 영상이 실차 카메라로\n"
+          "#    찍힌 것이 아니면 실차에 그대로 쓰면 안 된다.\n"
+          + _y.safe_dump(ros, allow_unicode=True, sort_keys=False,
+                         default_flow_style=None))
+    return {"launch": "\n\n".join(lines), "params_yaml": py, "params": vals}
 
 
 def calib_save(scenario, body):
@@ -575,6 +651,18 @@ def _calib_post(hnd, what, body):
     if what == "yaml":
         return hnd._json({"yaml": calib_yaml(scen, body)})
 
+    if what == "export":
+        # ⓑ 맞춘 값을 ★실차에서 쓸 형태★ 로. 워크스페이스 파일은 건드리지 않는다.
+        return hnd._json(calib_export(scen, body))
+
+    if what == "wsparams":
+        # ⓐ 노드에게 파라미터를 물어 캐시에 받아 둔다(20~40초). 작업으로 돌린다 —
+        #    노드를 띄우므로 실행 중이면 도메인이 겹칠 수 있다.
+        if job_running():
+            return hnd._err(409, "다른 작업이 돌고 있습니다")
+        cf = (_calib_env(scen)["contract"]).path
+        return hnd._json(start_job("params", ["--contract", str(cf)]))
+
     if what == "save":
         if job_running():
             return hnd._err(409, "실행 중에는 설정을 바꿀 수 없습니다")
@@ -600,11 +688,42 @@ def _calib_post(hnd, what, body):
     return hnd._err(404, f"없는 캘리브레이션 항목입니다: {what}")
 
 
+def contract_ui(contract):
+    """웹 화면이 계약에서 읽어 가는 것 — ★프리셋·표의 열·플래그 이름★.
+
+    예전에는 이 셋이 web/app.js 에 박혀 있었다. 그러면 계약을 하나 더 붙일 때마다
+    화면 코드를 고쳐야 하고, 신호 이름이 다르면 표가 통째로 빈다(정지선 계약에서
+    실제로 그랬다 — θ·cte·차선폭 열이 전부 '—' 였다).
+    """
+    if contract is None:
+        return {}
+    raw = contract.raw
+    pres = []
+    for p in (raw.get("frame_presets") or []):
+        pres.append({"label": str(p.get("label", "")),
+                     "where": str(p.get("where", "") or ""),
+                     "default": bool(p.get("default"))})
+    cols = [str(c) for c in (raw.get("frame_columns") or [])]
+    if not cols:                       # 선언이 없으면 회귀 비교 대상 앞쪽을 쓴다
+        cols = list(contract.compare_signals)[:4]
+    fb = raw.get("flag_bits") or {}
+    return {
+        "frame_presets": pres,
+        "frame_columns": cols,
+        "flag_signal": fb.get("signal") or "",
+        "flag_bits": [[int(k), str(v)] for k, v in sorted((fb.get("bits") or {}).items())],
+        "events": [{"signal": e.get("signal"), "label": e.get("label", e.get("signal")),
+                    "at": [str(x) for x in (e.get("at") or [])],
+                    "why": e.get("why", "")}
+                   for e in ([raw["events"]] if isinstance(raw.get("events"), dict)
+                             else (raw.get("events") or []))],
+    }
+
+
 def pick_frames(run_dir, where, limit):
-    """조건에 맞는 프레임 목록 + 플래그별 집계."""
+    """조건에 맞는 프레임 목록 + 집계. ★열은 계약이 정한다★"""
     import sys
     sys.path.insert(0, str(ROOT))
-    from tb.contract import load as _load          # noqa: PLC0415
     from tb.harvest import read_signals, select, summarize   # noqa: PLC0415
     rows = read_signals(run_dir)
     picked = select(rows, where)
@@ -612,28 +731,26 @@ def pick_frames(run_dir, where, limit):
     if limit and total > limit:
         step = total / float(limit)
         picked = [picked[int(i * step)] for i in range(limit)]
-    # 이 런이 쓴 계약을 이름으로 찾는다 (그냥 첫 파일을 쓰면 엉뚱한 flag_bits 가 붙는다)
-    want = ((_read_json(Path(run_dir) / "summary.json", {}) or {})
-            .get("summary", {}).get("meta", {}).get("contract"))
-    contract = None
-    for f in sorted((ROOT / "contracts").glob("*.yaml")):
-        try:
-            c = _load(f)
-        except Exception:      # noqa: BLE001
+    contract = _contract_for(run_dir)      # 이름으로 그 런의 계약을 찾는다
+    ui = contract_ui(contract)
+    cols = ui.get("frame_columns") or []
+    fsig = ui.get("flag_signal") or ""
+    out = []
+    for r in picked:
+        if not isinstance(r.get("frame"), (int, float)):
             continue
-        if contract is None:
-            contract = c
-        if want and c.name == want:
-            contract = c
-            break
+        item = {"frame": int(r["frame"])}
+        if fsig:
+            item["flags"] = r.get(fsig)
+        for c in cols:
+            item[c] = r.get(c)
+        out.append(item)
     return {
-        "total_rows": len(rows), "matched": total, "shown": len(picked),
+        "total_rows": len(rows), "matched": total, "shown": len(out),
         "counts": summarize(picked, contract),
-        "frames": [{"frame": int(r["frame"]),
-                    "flags": r.get("flags"), "conf_raw": r.get("conf_raw"),
-                    "theta_deg": r.get("theta_deg"), "cte_rear_m": r.get("cte_rear_m"),
-                    "lane_width_m": r.get("lane_width_m")}
-                   for r in picked if isinstance(r.get("frame"), (int, float))],
+        "columns": cols, "flag_signal": fsig,
+        "flag_bits": ui.get("flag_bits") or [],
+        "frames": out,
     }
 
 
@@ -778,6 +895,16 @@ COMMANDS = {
         "args": [
             {"flag": "--vs", "type": "run", "help": "이전 실행과 개선 전/후를 비교"},
             {"flag": "--note", "type": "text", "help": "사람이 본 것을 함께 적는다"},
+        ]},
+
+    "params": {
+        "title": "워크스페이스 파라미터 읽기", "module": ["tb.run", "params"],
+        "desc": "대상 노드를 한 번 띄워 ★노드가 스스로 선언한 값★ 을 받아 적는다. "
+                "카메라 보정의 «워크스페이스 기본값 불러오기» 가 이 결과를 쓴다.",
+        "pos": [], "args": [
+            _ARG_SCEN, _ARG_CONT,
+            {"flag": "--out", "type": "path", "help": "쓸 파일 (비우면 runs/_params/)"},
+            {"flag": "--timeout", "type": "float", "help": "몇 초까지 기다릴 것인가"},
         ]},
 
     "list": {
@@ -1158,6 +1285,8 @@ class Handler(BaseHTTPRequestHandler):
                 if not sj:
                     return self._err(404, "summary.json 이 없습니다")
                 sj["id"] = d.name
+                #  ★이 런의 계약이 정한 화면 설정★ (프리셋·열·플래그 이름·전이 표)
+                sj["ui"] = contract_ui(_contract_for(d))
                 v = find_video(d)
                 if v:
                     sj["video"] = {"name": v.name, "size": v.stat().st_size}
@@ -1293,6 +1422,13 @@ def _do_post(self):
             if what == "contract/workspace":
                 return self._json({"ok": True, **cfg.set_contract_workspace(
                     body.get("file", ""), body.get("workspace", ""))})
+            if what == "scenario/clone":
+                #  ★있는 시나리오를 본으로 떠서★ — 판정과 그 근거 주석을 물려받는다
+                return self._json({"ok": True, **cfg.clone_scenario(
+                    body.get("src", ""), body.get("name", ""),
+                    body.get("video", ""),
+                    body.get("start"), body.get("limit"),
+                    body.get("mode") or None, body.get("note", ""))})
             if what == "scenario":
                 return self._json({"ok": True, **cfg.new_scenario(
                     body.get("name", ""), body.get("contract", ""),

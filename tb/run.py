@@ -393,6 +393,13 @@ def _one_run(sc, contract_path, variant, run_dir, domain_id, args):
         wall, rc = e.wall, 0
     finally:
         time.sleep(1.0)
+        # ★이 런이 실제로 어떤 값으로 돌았나★ — 노드가 아직 살아 있는 동안 묻는다.
+        #   테스트베드가 준 것만 적으면 노드 기본값(카메라 기하 대부분)이 안 보인다.
+        if not contract.attach:
+            try:
+                _dump_running_params(contract, run_dir, env, pref)
+            except Exception as e:                      # noqa: BLE001
+                print(f"  ·  파라미터 기록 실패(무해): {e}")
         if probe:
             probe.stop(signal.SIGTERM)
         for p in procs:
@@ -459,6 +466,32 @@ def _one_run(sc, contract_path, variant, run_dir, domain_id, args):
     (run_dir / "report.md").write_text(
         analyze.report_run(summary, checks, drift, contract))
     return summary, checks, run_dir
+
+
+def _dump_running_params(contract, run_dir, env, pref):
+    """돌고 있는 노드들의 파라미터를 런 디렉터리에 남긴다(params_actual.yaml)."""
+    got = {}
+    for n in contract.nodes:
+        node = n.get("node_name") or n["executable"]
+        r = subprocess.run(["bash", "-c", f"{pref}ros2 param dump /{node} --print"],
+                           capture_output=True, text=True, env=env, timeout=30)
+        if r.returncode != 0 or not r.stdout.strip():
+            continue
+        try:
+            y = yaml.safe_load(r.stdout) or {}
+        except yaml.YAMLError:
+            continue
+        for _k, v in y.items():
+            kv = (v or {}).get("ros__parameters") or {}
+            kv.pop("use_sim_time", None)
+            if kv:
+                got[n["id"]] = kv
+    if got:
+        (run_dir / "params_actual.yaml").write_text(
+            "# ★이 런이 실제로 돌았을 때 노드가 들고 있던 값★ (ros2 param dump)\n"
+            "# 테스트베드가 준 것 + 노드 기본값이 합쳐진 실효값이다.\n"
+            + yaml.safe_dump({"params": got}, allow_unicode=True, sort_keys=False,
+                             default_flow_style=None))
 
 
 def _video_fps(path):
@@ -808,6 +841,123 @@ def cmd_inject(args):
     return 0 if n_ok == len(results) else 1
 
 
+# ══════════════════════════════════════════════════════════════════════
+#  워크스페이스의 카메라 설정 — ★노드에게 직접 물어본다★
+# ══════════════════════════════════════════════════════════════════════
+#  캘리브 값의 진짜 주인은 워크스페이스다. 그런데 노드가 그것을 파일이 아니라
+#  ★소스의 declare_parameter 기본값★ 으로 갖고 있으면(white1/camera_model.py 가
+#  그렇다) 계약에 옮겨 적을 수밖에 없고, 옮겨 적은 값은 반드시 갈라진다.
+#
+#  그래서 소스를 파싱하거나 import 하지 않고 ★ros2 param dump★ 으로 묻는다.
+#  노드를 한 번 띄우고 자기가 선언한 값을 그대로 받아 오는 것이므로
+#    · 계약의 결합 규칙을 깨지 않는다(노드 이름만 계약에서 온다)
+#    · camera_model.py 의 기본값이 바뀌면 ★다음 dump 에서 저절로 따라온다★
+#
+#  ⚠️ ★시나리오 params 는 주지 않는다★ 그건 시험용 지그 값이라 '워크스페이스
+#     기본값' 이 아니다. 가중치·device 처럼 ★기계에 묶인 것만★ local.yaml 에서 준다
+#     (안 주면 .engine 을 찾다 실패해 기동이 느려진다).
+def params_cache_path(contract):
+    return ROOT / "runs" / "_params" / f"{contract.name}.yaml"
+
+
+def load_ws_params(contract):
+    """`tb.run params` 가 받아 둔 ★워크스페이스 기본값★ 캐시. 없으면 {}.
+
+    캘리브 화면과 도구가 '노드가 실제로 쓰는 값' 에서 출발할 수 있게 하는 것이
+    목적이다. 값의 우선순위는 ★시나리오/local params → 이 캐시 → 계약의 default★ 다.
+    """
+    f = params_cache_path(contract)
+    if not f.exists():
+        return {}
+    try:
+        return (load_yaml(f).get("params") or {})
+    except (yaml.YAMLError, OSError):
+        return {}
+
+
+def dump_node_params(contract_path, timeout=90.0, local_only=True):
+    """대상 노드들의 파라미터를 그대로 받아 온다. {노드id: {이름: 값}}"""
+    contract = load_contract(contract_path)
+    if contract.attach:
+        raise SystemExit("[params] attach 계약은 돌고 있는 시스템에서 직접 dump 할 것")
+    loc = local_overrides()
+    lp = (loc.get("params") or {}) if local_only else {}
+    env = dict(os.environ)
+    env["ROS_DOMAIN_ID"] = str(random.randint(30, 200))
+    env.setdefault("QT_QPA_PLATFORM", "offscreen")
+    for k, v in (loc.get("env") or {}).items():
+        env[str(k)] = str(v)
+    pref = ws_prefix(contract)
+    out, procs = {}, []
+    tmp = ROOT / "runs" / "_params"
+    tmp.mkdir(parents=True, exist_ok=True)
+    try:
+        for n in contract.nodes:
+            merged = _deep_merge(n.get("params") or {}, lp.get(n["id"], {}))
+            pargs = " ".join(f"-p {_param_arg(k, v)}" for k, v in merged.items())
+            rename = f"-r __node:={n['node_name']}" if n.get("node_name") else ""
+            cmd = (f"{pref}exec ros2 run {n['package']} {n['executable']} "
+                   f"--ros-args {rename} {pargs}")
+            procs.append((n, Proc(f"params_{n['id']}", cmd,
+                                  tmp / f"{n['id']}.log", env)))
+        # 노드가 파라미터를 선언하고 그래프에 올라올 때까지 기다린다
+        for n, _pr in procs:
+            node = n.get("node_name") or n["executable"]
+            t0 = time.time()
+            while time.time() - t0 < timeout:
+                r = subprocess.run(["bash", "-c",
+                                    f"{pref}ros2 param dump /{node} --print"],
+                                   capture_output=True, text=True, env=env)
+                if r.returncode == 0 and r.stdout.strip():
+                    try:
+                        y = yaml.safe_load(r.stdout) or {}
+                    except yaml.YAMLError:
+                        y = {}
+                    # {/node: {ros__parameters: {...}}}
+                    for _k, v in y.items():
+                        kv = (v or {}).get("ros__parameters") or {}
+                        kv.pop("use_sim_time", None)
+                        if kv:
+                            out[n["id"]] = kv
+                    if out.get(n["id"]):
+                        break
+                time.sleep(1.0)
+    finally:
+        for _n, pr in procs:
+            pr.stop()
+    return out
+
+
+def cmd_params(args):
+    """대상 노드의 파라미터를 받아 적어 둔다 — 캘리브의 ★출발점★ 이 된다."""
+    cpath = _resolve_contract(args.contract or
+                              (load_yaml(args.scenario).get("contract")
+                               if args.scenario else None))
+    contract = load_contract(cpath)
+    print(f"노드를 띄워 파라미터를 묻는다 — {contract.name} "
+          f"(노드 {len(contract.nodes)}개, 최대 {args.timeout:.0f}초)")
+    got = dump_node_params(cpath, timeout=args.timeout)
+    if not got:
+        print("⛔ 받아 오지 못했다 — runs/_params/*.log 를 볼 것 "
+              "(가중치 경로·GPU 문제일 수 있다)")
+        return 1
+    body = yaml.safe_dump({"params": got}, allow_unicode=True, sort_keys=False,
+                          default_flow_style=None)
+    out = Path(args.out) if args.out else params_cache_path(contract)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(
+        f"# {contract.name} — ★노드가 스스로 선언한 파라미터★ (ros2 param dump)\n"
+        f"# {datetime.now().isoformat(timespec='seconds')} · 워크스페이스 "
+        f"{contract.workspace}\n"
+        "# 이 파일은 캐시다. 시나리오·local.yaml 에 자동으로 반영되지 않는다 —\n"
+        "# 캘리브 화면의 «워크스페이스 기본값 불러오기» 가 여기서 읽어 간다.\n"
+        + body)
+    for nid, kv in got.items():
+        print(f"  {nid}: 파라미터 {len(kv)}개")
+    print(f"→ {out}")
+    return 0
+
+
 def cmd_reanalyze(args):
     """raw.jsonl 만 다시 읽어 신호/리포트를 재생성한다.
 
@@ -1112,6 +1262,14 @@ def main(argv=None):
     fb.add_argument("--note-file", default="", help="메모를 파일에서 읽는다")
     fb.add_argument("--quiet", action="store_true", help="경로만 출력")
     fb.set_defaults(fn=cmd_feedback)
+
+    pr = sub.add_parser("params",
+                        help="대상 노드의 파라미터를 받아 적는다 (캘리브의 출발점)")
+    pr.add_argument("--scenario", default="")
+    pr.add_argument("--contract", default="")
+    pr.add_argument("--out", default="", help="쓸 파일 (비우면 runs/_params/<계약>.yaml)")
+    pr.add_argument("--timeout", type=float, default=90.0)
+    pr.set_defaults(fn=cmd_params)
 
     ls = sub.add_parser("list"); ls.set_defaults(fn=cmd_list)
 

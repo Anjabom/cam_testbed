@@ -3,3 +3,6 @@ local.yaml
 __pycache__/
 *.pyc
 web/__pycache__/
+
+# 스크래치 로그 (실수로 들어가지 않게)
+*.log

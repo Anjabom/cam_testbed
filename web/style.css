@@ -326,3 +326,10 @@ textarea.note{width:100%;font-family:var(--sans);font-size:13px;color:var(--ink)
   padding:8px 11px;resize:vertical}
 textarea.note:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 .md.fb{max-height:none;color:var(--ink);font-size:12.5px}
+
+/* 새 시험 시작 — 단계 카드. 순서를 화면이 들고 있으므로 번호가 크게 보여야 한다 */
+.wizstep { margin: 14px 0; padding: 14px 16px; }
+.wizstep .k { font-size: 15px; font-weight: 600; color: var(--fg); }
+.wizstep .d { margin: 4px 0 10px; }
+.wizstep .framebar { margin: 6px 0; }
+.wizstep .help { margin: 8px 0 0; }

@@ -629,6 +629,81 @@ def t_bev_rows():
     eq("순서는 기준선 먼저", cal.bev_keys()[0], "bump")
 
 
+def t_webapp_js():
+    """웹앱 스크립트가 ★문법상 성한가★.
+
+    이 앱은 브라우저가 실행하므로 여기서 안 보고 넘기면 화면이 통째로 백지가 된다
+    (서버는 정상이라 로그에도 안 남는다). esprima 가 있으면 파싱해 본다.
+    """
+    try:
+        import esprima
+    except ImportError:
+        return                                     # 없으면 조용히 건너뛴다
+    root = Path(__file__).resolve().parent.parent
+    for name in ("app.js", "plot.js"):
+        f = root / "web" / name
+        if not f.exists():
+            continue
+        try:
+            esprima.parseScript(f.read_text())
+        except Exception as e:                      # noqa: BLE001
+            FAILS.append(f"web/{name} 문법 오류: {e}")
+
+
+def t_contract_ui():
+    """웹 화면 설정이 계약에서 나오는가 — 박아 두면 계약마다 화면을 고쳐야 한다."""
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from web.server import contract_ui
+    c = _contract(frame_presets=[{"label": "전부", "where": ""},
+                                 {"label": "튀는 값", "where": "a > 1", "default": True}],
+                  frame_columns=["a", "th"],
+                  events={"signal": "st", "at": ["a"], "label": "상태"})
+    ui = contract_ui(c)
+    eq("프리셋 수", len(ui["frame_presets"]), 2)
+    eq("기본 프리셋", [p["label"] for p in ui["frame_presets"] if p["default"]], ["튀는 값"])
+    eq("표의 열", ui["frame_columns"], ["a", "th"])
+    eq("플래그 신호", ui["flag_signal"], "a")
+    eq("전이 대상", ui["events"][0]["signal"], "st")
+    #  선언이 없으면 회귀 비교 대상에서 뽑는다 (빈 표가 되지 않게)
+    eq("열 폴백", contract_ui(_contract())["frame_columns"], ["a", "th"])
+
+
+def t_clone_scenario():
+    """★있는 시나리오를 본으로 떠서★ 영상만 갈아 끼우는가 (주석이 남아야 한다)."""
+    import shutil
+    from . import config as C
+    src = C.ROOT / "scenarios" / "_selftest_src.yaml"
+    out = C.ROOT / "scenarios" / "_selftest_out.yaml"
+    src.write_text("# 본의 주석 — 이게 남아야 한다\n"
+                   "name: src\ncontract: contracts/x.yaml\n"
+                   "video: old            # 논리 이름\n"
+                   "mode: lockstep\nstart: 0\nlimit: 0\n"
+                   "checks:\n  - {stat: drop_rate, max: 0.02, why: '판정도 남아야 한다'}\n")
+    try:
+        C.clone_scenario("_selftest_src.yaml", "_selftest_out", "newvid",
+                         start=100, limit=50, mode="realtime", note="메모 한 줄")
+        t = out.read_text()
+        eq("이름 교체", "name: _selftest_out" in t, True)
+        eq("영상 교체", "video: newvid" in t, True)
+        eq("영상 주석 유지", "# 논리 이름" in t, True)
+        eq("구간 교체", ("start: 100" in t and "limit: 50" in t), True)
+        eq("모드 교체", "mode: realtime" in t, True)
+        eq("본의 주석 유지", "# 본의 주석" in t, True)
+        eq("판정 유지", "drop_rate" in t, True)
+        eq("메모 기록", "메모 한 줄" in t, True)
+        try:
+            C.clone_scenario("_selftest_src.yaml", "_selftest_out", "v2")
+            FAILS.append("이미 있는 이름을 덮어썼다")
+        except ValueError:
+            pass
+    finally:
+        for f in (src, out):
+            if f.exists():
+                f.unlink()
+        del shutil
+
+
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("t_")]
     for t in tests:
