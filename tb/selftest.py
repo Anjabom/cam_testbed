@@ -322,6 +322,33 @@ def t_funnel():
     eq("받는 쪽 없음", A.funnel(rows, Contract({"name": "t"}, "mem")), [])
 
 
+def t_params_typing():
+    """웹이 보낸 문자열이 ★원래 종류★로 돌아가는가.
+
+    여기가 틀리면 `show_window: "false"` 처럼 문자열로 저장돼 노드가 참으로 읽는다
+    (빈 문자열이 아니므로) — 파일에 쓰기 전에 한 번만 판단하는 자리다.
+    """
+    from .config import clean_params
+
+    got = clean_params({"n": {"b": "false", "B": "True", "i": "50", "f": "3.0",
+                              "dev": "cuda:0", "p": "/a/b.pt", "keep": 7}})["n"]
+    eq("bool false", got["b"], False)
+    eq("bool true", got["B"], True)
+    eq("int", got["i"], 50)
+    eq("float", got["f"], 3.0)
+    eq("문자열은 그대로", got["dev"], "cuda:0")
+    eq("경로도 문자열", got["p"], "/a/b.pt")
+    eq("숫자는 손대지 않는다", got["keep"], 7)
+
+    for bad in ({}, {"n": {}}, {"n": {"k": [1, 2]}}, {"n": {"k": "a" * 400}},
+                {"n": {"k": "a\nb"}}):
+        try:
+            clean_params(bad)
+            eq(f"거절해야 한다: {bad}", True, False)
+        except ValueError:
+            pass
+
+
 def t_geometry():
     """BEV 기하 — 왕복 변환과 사각형 검사. 여기가 틀리면 캘리브레이션 전체가 틀린다."""
     import numpy as np
@@ -702,6 +729,144 @@ def t_clone_scenario():
             if f.exists():
                 f.unlink()
         del shutil
+
+
+def t_commands_wired():
+    """웹의 허용 명령이 ★실제로 존재하는 CLI★ 를 가리키는가.
+
+    허용 목록(web/server.py 의 COMMANDS)과 CLI 가 어긋나면 화면에는 버튼이 보이는데
+    누르면 죽는다 — 서버는 백그라운드로 띄우고 끝이라 오류가 로그에만 남는다.
+    """
+    import importlib.util
+    import re as R
+    root = Path(__file__).resolve().parent.parent
+    spec = importlib.util.spec_from_file_location("_srv", root / "web" / "server.py")
+    srv = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(srv)
+
+    #  tb.run 이 실제로 받는 서브커맨드 (파서를 세우지 않고 소스에서 읽는다 —
+    #  파서를 세우면 ROS 가 없는 기계에서 import 가 무거워진다)
+    src = (root / "tb" / "run.py").read_text()
+    subs = set(R.findall(r'sub\.add_parser\(\s*"([a-z_]+)"', src))
+    for cid, c in srv.COMMANDS.items():
+        mod = c["module"]
+        if mod[0] != "tb.run":
+            eq(f"{cid} 모듈 파일", (root / "tb" / f"{mod[0].split('.')[-1]}.py").exists(), True)
+            continue
+        eq(f"{cid} → tb.run {mod[1]}", mod[1] in subs, True)
+
+    #  ★고치고 다시 돌리는 고리★ 가 웹에서 전부 되는가 (빌드 → 점검 → 실행)
+    for need in ("build", "doctor", "run"):
+        eq(f"웹에 {need} 가 있다", need in srv.COMMANDS, True)
+
+
+def t_needs_rebuild():
+    """★빌드가 정말 필요한 것★ 만 가려내는가 — 아니면 코드 고칠 때마다 거짓 경보다."""
+    from .config import needs_rebuild
+    #  심볼릭 링크로 그대로 반영되는 것들 (빌드 불필요)
+    eq("모듈 파이썬", needs_rebuild(["white1/traffic_light.py"]), [])
+    eq("런치 파이썬", needs_rebuild(["white1/launch/master.launch.py"]), [])
+    eq("데이터 yaml", needs_rebuild(["white1/calibration/cam.yaml"]), [])
+    #  링크로 해결되지 않는 것들 (빌드 필요)
+    eq("setup.py", needs_rebuild(["white1/setup.py"]), ["white1/setup.py"])
+    eq("package.xml", needs_rebuild(["white1/package.xml"]), ["white1/package.xml"])
+    eq("C++", needs_rebuild(["nxde/src/a.cpp"]), ["nxde/src/a.cpp"])
+    #  섞여 있으면 빌드가 필요한 것만 골라낸다
+    eq("섞임", needs_rebuild(["a/traffic_light.py", "a/setup.py", "b/x.hpp"]),
+       ["a/setup.py", "b/x.hpp"])
+
+
+def t_progress_total():
+    """진행률 분모 — ★오버레이의 '다가오는 속도' 가 이걸 쓴다★ (표시만이 아니다)."""
+    from .player import progress_total
+    #  limit 은 이미 ★투입 장수★ 라 stride 로 나누면 안 된다 (robustness.yaml)
+    eq("limit+stride", progress_total(200, 780, 2, 2191), 200)
+    eq("limit+stride1", progress_total(90, 1340, 1, 2191), 90)
+    #  limit 이 없을 때만 남은 원본 프레임을 투입 장수로 환산한다
+    eq("limit 없음+stride", progress_total(0, 780, 2, 2191), (2191 - 780) // 2)
+    eq("limit 없음", progress_total(0, 0, 1, 2191), 2191)
+    eq("start 가 영상보다 뒤", progress_total(0, 9999, 1, 2191), 0)
+
+
+def t_scenario_of_run():
+    """런이 ★자기가 쓴 시나리오★ 를 기억하는가 — 못 찾으면 판정이 통째로 사라진다."""
+    import json as J
+    from . import run as R
+    d = Path(tempfile.mkdtemp()) / "r"
+    d.mkdir()
+    sp = R.ROOT / "scenarios" / "_selftest_scen.yaml"
+    sp.write_text("name: _selftest_scen\ncontract: contracts/x.yaml\n")
+    try:
+        #  ① meta 에 경로가 있으면 그것을 쓴다
+        (d / "summary.json").write_text(J.dumps(
+            {"summary": {"meta": {"scenario_file": str(sp)}}}))
+        eq("경로로 찾는다", R.scenario_of_run(d), str(sp))
+        #  ② 옛 런은 경로가 없다 — 이름으로 되찾는다
+        (d / "summary.json").write_text(J.dumps(
+            {"summary": {"meta": {"scenario": "_selftest_scen"}}}))
+        eq("이름으로 되찾는다", R.scenario_of_run(d), str(sp))
+        #  ③ 이름이 바뀌어 못 찾으면 None — 부르는 쪽이 경고를 띄운다
+        (d / "summary.json").write_text(J.dumps(
+            {"summary": {"meta": {"scenario": "없는이름"}}}))
+        eq("못 찾으면 None", R.scenario_of_run(d), None)
+    finally:
+        if sp.exists():
+            sp.unlink()
+
+
+def t_lint():
+    """이름 오타를 ★실행 전에★ 잡는가 — 잡히면 그 판정이 조용히 사라지지 않는다."""
+    from .lint import lint
+    from . import config as C
+    c = Contract({
+        "name": "t", "version": 1,
+        "signals": {"sl_px": {"topic": "/a", "path": ["data"]},
+                    "tl_state": {"topic": "/b", "path": ["data"]}},
+        "hold_signals": ["sl_px", "sl_pix"],           # 오타 1
+        "log_events": {"boot_ok": {"node": "n", "pattern": "x"}},
+        "consumers": [{"id": "gate", "stages": [{"name": "s", "expr": "sl_px >= 0"}]}],
+        "frame_presets": [{"label": "p", "where": "sl_pxx >= 0"}],   # 오타 2
+    }, "mem")
+    got = lint(c, {"checks": [
+        {"signal": "sl_p", "stat": "mean"},            # 오타 3
+        {"where": "sl_wait", "stat": "frac"},          # 오타 4
+        {"stat": "drop_ratio", "max": 0.02},           # 오타 5 (요약 지표)
+        {"stat": "log:boot_okk", "min": 1},            # 오타 6
+        {"stat": "contribution:gate2", "min": 0.3},    # 오타 7
+        {"where": "sl_px >= 0", "stat": "mean"},       # 오타 8 (구간에 mean 은 없다)
+        # ↓ 전부 정상이라 걸리면 안 된다
+        {"stat": "drop_rate", "max": 0.02},
+        {"where": "tl_state == 'RED' and sl_px < 0", "stat": "frac", "min": 0.1},
+        {"signal": "sl_px", "where": "sl_px >= 0", "stat": "p95_abs_diff", "max": 60},
+        {"event": "sl_px:0->1", "stat": "at:tl_state"},
+    ], "compare_tol": {"_default": 1e-6, "sl_px": 1.0}})
+    eq("오타 8건을 전부 잡는가", len(got), 8)
+    #  문자열 리터럴('RED')을 신호로 오인하면 정상 시나리오가 통째로 경고가 된다
+    eq("문자열 리터럴은 신호가 아니다", any("RED" in m for m in got), False)
+    #  계약 쪽 오타는 빼고 본다 — 이 계약에는 일부러 심어 둔 것이 둘 있다
+    from .lint import lint_scenario
+    eq("내장 열은 신호로 친다", lint_scenario(c, {"checks": [
+        {"signal": "latency_ms", "stat": "p95"}]}), [])
+
+    #  ★이 저장소의 계약·시나리오는 전부 깨끗해야 한다★ — 여기가 빨개지면 방금
+    #  고친 YAML 이 판정을 조용히 잃은 것이다(린터가 틀린 것이 아니라).
+    for f in sorted((C.ROOT / "scenarios").glob("*.yaml")):
+        r = C.resolve_scenario(f.name)
+        bad = [m for m in (r.get("warn") or []) if m.startswith("이름이 안 맞는다")]
+        eq(f"{f.name} 이름 정합", bad, [])
+
+
+def t_scenario_template():
+    """빈 틀로 만든 시나리오에도 판정이 있는가 (없으면 리포트가 늘 초록이다)."""
+    import yaml as Y
+    from . import config as C
+    txt = C.SCEN_TMPL.format(name="x", contract="c.yaml", video="v",
+                             mode="lockstep", start=0, limit=0)
+    d = Y.safe_load(txt)
+    eq("판정이 비어 있지 않다", len(d.get("checks") or []) >= 2, True)
+    #  이 둘은 ★요약 지표★ 라 신호 이름을 안 쓴다 — 어느 계약에 붙여도 유효하다
+    eq("신호 이름을 안 쓴다",
+       all("signal" not in c and "where" not in c for c in d["checks"]), True)
 
 
 def main():

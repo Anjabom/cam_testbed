@@ -107,6 +107,21 @@ class Overlay:
         return frame
 
 
+def progress_total(limit, start, stride, total):
+    """진행률·오버레이 진행도의 분모 — ★단위는 「투입 장수」다★.
+
+    정지 조건이 `pushed >= limit` 이므로 limit 은 ★이미 투입 장수★ 다. 예전에는
+    이걸 stride 로 또 나눠서, stride 2 · limit 200 이면 분모가 100 이 되어
+    진행률이 200% 까지 갔다. 오버레이(합성 목업)의 '다가오는 속도' 가 이 값을
+    쓰기 때문에 ★표시만의 문제가 아니다★ — 분모가 절반이면 목업이 두 배로 빨리
+    커진다. limit 이 없을 때만 '남은 원본 프레임' 을 투입 장수로 환산한다.
+    """
+    if limit:
+        return limit
+    left = max(0, total - start)
+    return left // stride if stride > 1 else left
+
+
 def make_perturb(spec):
     """'gamma:0.6' 같은 문자열 → 프레임 변환 함수. 여러 개는 '+' 로 잇는다."""
     if not spec or spec == "none":
@@ -293,10 +308,7 @@ def main(argv=None):
 
     perturb = make_perturb(args.perturb)
     overlay = Overlay(json.loads(args.overlay_json or "{}"))
-    # 진행률 분모 — limit 이 있으면 그것, 없으면 남은 프레임 수
-    total_target = args.limit if args.limit else max(0, total - args.start)
-    if args.stride > 1 and total_target:
-        total_target = total_target // args.stride
+    total_target = progress_total(args.limit, args.start, args.stride, total)
 
     rclpy.init(args=ros_argv)
     node = Player(args, aux_specs)

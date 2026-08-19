@@ -907,6 +907,17 @@ COMMANDS = {
             {"flag": "--timeout", "type": "float", "help": "몇 초까지 기다릴 것인가"},
         ]},
 
+    "build": {
+        "title": "워크스페이스 빌드", "module": ["tb.run", "build"],
+        "desc": "대상 워크스페이스를 colcon build 합니다. ★대상 코드를 고쳤으면 이걸 "
+                "먼저★ — 이 워크스페이스는 파이썬 모듈이 사본이라, 빌드 전에는 고치기 "
+                "전 코드가 돕니다. 빌드할 곳과 패키지는 계약이 정합니다.",
+        "pos": [], "args": [
+            _ARG_SCEN, _ARG_CONT,
+            {"flag": "--all", "type": "flag",
+             "help": "계약의 패키지만이 아니라 워크스페이스 전체를 빌드"},
+        ]},
+
     "list": {
         "title": "목록", "module": ["tb.run", "list"], "quick": True,
         "desc": "지금까지의 실행과 리포트를 한 줄씩 훑는다. (같은 내용을 «실행 기록» 탭이 표로 보여 준다)",
@@ -1429,6 +1440,13 @@ def _do_post(self):
                     body.get("video", ""),
                     body.get("start"), body.get("limit"),
                     body.get("mode") or None, body.get("note", ""))})
+            if what == "params":
+                #  ★파라미터를 고쳐 가며 다시 돌리는 고리★ 를 웹에서 닫는다.
+                #  기준 자동 비교에는 ⚠ 가 붙는다(params 는 provenance 다) —
+                #  파라미터를 바꾼 것끼리는 «결과 비교» 로 런 대 런으로 본다.
+                return self._json({"ok": True, "path": cfg.set_params(
+                    cfg.clean_params(body.get("params")),
+                    body.get("target") or "local")})
             if what == "scenario":
                 return self._json({"ok": True, **cfg.new_scenario(
                     body.get("name", ""), body.get("contract", ""),

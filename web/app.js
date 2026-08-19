@@ -97,9 +97,11 @@
   //   첫 화면이 곧바로 목록이면 "지금 뭘 하려던 거였지"를 화면이 안 도와준다.
   var HOME = [
     ['#/newtest', '새 시험 시작',
-     '새로 찍은 영상으로 갈아탑니다 — 영상 등록 → 시나리오 → 카메라 맞추기 → 돌리기.'],
+     '돌리기 전에 등록하는 것은 전부 여기 — 워크스페이스 · 영상 · 시나리오, '
+     + '그다음 카메라 맞추기.'],
     ['#/exec', '테스트 실행',
-     '시나리오를 골라 돌립니다. 진행률과 라이브 화면을 함께 봅니다.'],
+     '있는 시나리오를 골라 돌립니다. 무엇이 쓰일지 먼저 펼쳐 보여 주고, '
+     + '파라미터도 여기서 고칩니다.'],
     ['#/runs', '실행 기록',
      '지난 결과를 모아 봅니다. 검색·고정·메모·삭제, 그리고 클로드 코드에 넘길 피드백 만들기.'],
     ['#/compare', '결과 비교',
@@ -1482,7 +1484,7 @@
     var cmdPrev = h('div', {});
     var runBar = h('div', { class: 'framebar' });
     var liveBox = h('div', {});
-    var regBox = h('div', {});
+    var parBox = h('div', {});
 
     view.appendChild(h('div', { class: 'framebar' }, [
       h('span', { class: 'mut', text: '시나리오' }), scSel,
@@ -1492,11 +1494,11 @@
         [recCb, h('span', { text: '디버그 영상 기록' })]),
     ]));
     view.appendChild(planBox);
+    view.appendChild(parBox);
     view.appendChild(advBox);
     view.appendChild(runBar);
     view.appendChild(cmdPrev);
     view.appendChild(liveBox);
-    view.appendChild(regBox);
 
     // ── 2) 해석 결과 — 무엇이 쓰이는가 ──────────────────────────
     function row(k, v, cls) {
@@ -1513,12 +1515,10 @@
 
     function drawPlan(p) {
       state.plan = p;
-      if (state.regContractSel && p.contract_file && !state.regTouched) {
-        state.regContractSel.value = p.contract_file;
-      }
       clear(planBox);
       if (p.error) {
         planBox.appendChild(h('div', { class: 'empty', text: p.error }));
+        clear(parBox);                 // 앞 시나리오의 파라미터가 남으면 안 된다
         drawRunBar(); return;
       }
       var t = h('table', { class: 'tbl' });
@@ -1563,17 +1563,6 @@
           (p.sim_time ? ' · sim_time' : '') +
           (p.variants && p.variants.length > 1 ? ' · 변형 ' + p.variants.join(',') : '') })])));
 
-      var pk = Object.keys(p.params || {});
-      if (pk.length) {
-        var flat = [];
-        pk.forEach(function (nid) {
-          Object.keys(p.params[nid]).forEach(function (k) {
-            flat.push(nid + '.' + k + '=' + p.params[nid][k]);
-          });
-        });
-        tb.appendChild(row('덮어쓰는 값', h('span', { class: 'mono mut',
-          text: flat.join('  ·  ') })));
-      }
       t.appendChild(tb);
       planBox.appendChild(t);
 
@@ -1586,8 +1575,106 @@
           html: '<b class="wn">⚠</b> ' + m }));
       });
       planBox.appendChild(cli(p.cmd || ''));
+      drawParams(p);
       drawAdv();
       drawRunBar();
+    }
+
+    /* ── 덮어쓰는 값 — ★고치고 다시 돌리는 고리★ 를 화면 안에서 닫는다 ──
+     * 노드가 선언한 기본값 위에 시나리오·local.yaml 이 덮어쓰는 것들이다.
+     * ★값의 종류(참·거짓/수/문자열)는 엔진(tb.config)이 판단한다★ — 여기서 한 벌 더
+     * 판단하면 `show_window: "false"` 같은 것을 문자열로 써서 노드가 참으로
+     * 읽는다. 리스트(IPM 4점 등)는 «카메라 보정» 이 맡으므로 잠가 둔다. */
+    function drawParams(p) {
+      clear(parBox);
+      var nodes = (p.nodes || []).map(function (n) { return n.id; });
+      if (!nodes.length) return;                 // attach 계약 — 띄우는 노드가 없다
+      var flat = [];
+      Object.keys(p.params || {}).forEach(function (nid) {
+        Object.keys(p.params[nid]).forEach(function (k) {
+          flat.push([nid, k, p.params[nid][k]]);
+        });
+      });
+      var det = h('details', { class: 'reg' });
+      det.appendChild(h('summary', { text: '덮어쓰는 값 — '
+        + (flat.length
+           ? flat.map(function (f2) { return f2[0] + '.' + f2[1] + '=' + f2[2]; })
+               .join('  ·  ')
+           : '없음 (노드가 선언한 기본값 그대로)') }));
+      var b = h('div', { class: 'regbody' });
+      b.appendChild(h('p', { class: 'help', html:
+        '여기서 고치면 <b>파일에 그대로 저장</b>되고(주석 보존) 다음 실행부터 적용됩니다. '
+        + '⚠ 파라미터를 바꾸면 기준 자동 비교에는 «조건이 다르다» 경고가 붙습니다 — '
+        + '기준은 조건을 고정한 것이라서입니다. 파라미터를 바꾼 것끼리는 '
+        + '<a href="#/compare">결과 비교</a> 로 <b>런 대 런</b>으로 보세요. '
+        + '한 번에 둘을 나란히 보고 싶으면 시나리오의 <code>variants:</code> 를 씁니다. '
+        + '<b>출처</b> 열은 지금 그 값이 어느 파일에서 왔는지입니다 — 시나리오에서 온 값을 '
+        + 'local.yaml 에 저장하면 그 뒤로는 <b>local.yaml 이 이깁니다</b>(우선순위가 뒤다).' }));
+
+      var edit = {};
+      var ptb = h('tbody', {});
+      flat.forEach(function (f2) {
+        var key = f2[0] + '.' + f2[1];
+        var locked = f2[2] !== null && typeof f2[2] === 'object';
+        var inp = h('input', { type: 'text', size: '34',
+          value: locked ? JSON.stringify(f2[2]) : String(f2[2]),
+          disabled: locked ? 'disabled' : null });
+        if (!locked) {
+          inp.addEventListener('input', function () { edit[key] = inp.value; });
+        }
+        //  local.yaml 의 params 는 계약을 가리지 않고 전부 실린다 — 이 계약이
+        //  안 띄우는 노드의 값은 고쳐도 이 시험에 아무 영향이 없다. 그걸 말해 준다.
+        var mine = nodes.indexOf(f2[0]) >= 0;
+        var loc2 = ((p.params_local || {})[f2[0]] || {});
+        ptb.appendChild(h('tr', {}, [
+          h('td', { class: 'mono mut', text: f2[0] }),
+          h('td', { class: 'mono', text: f2[1] }),
+          h('td', {}, [inp]),
+          h('td', { class: 'mut',
+                    text: loc2[f2[1]] !== undefined ? 'local.yaml' : '시나리오' }),
+          h('td', { class: 'mut', text: locked ? '→ «카메라 보정» 에서'
+                                       : (mine ? '' : '⚠ 이 계약이 안 띄우는 노드') }),
+        ]));
+      });
+      if (flat.length) {
+        b.appendChild(h('div', { class: 'tbl' }, [h('table', {}, [
+          h('thead', {}, [h('tr', {}, ['노드', '파라미터', '값', '출처', '']
+            .map(function (t2) { return h('th', { text: t2 }); }))]), ptb])]));
+      }
+
+      var aNid = h('select', {}, nodes.map(function (n) {
+        return h('option', { value: n, text: n });
+      }));
+      var aKey = h('input', { type: 'text', placeholder: '파라미터 이름', size: '22' });
+      var aVal = h('input', { type: 'text', placeholder: '값', size: '18' });
+      var tgt = h('select', {}, [
+        h('option', { value: 'local', text: 'local.yaml — 이 PC 에만' }),
+        h('option', { value: scSel.value,
+                      text: 'scenarios/' + scSel.value + ' — 시험에 굳힌다' })]);
+      b.appendChild(h('div', { class: 'framebar' }, [
+        h('span', { class: 'mut', text: '추가' }), aNid, aKey, aVal]));
+      b.appendChild(h('div', { class: 'framebar' }, [
+        h('span', { class: 'mut', text: '저장할 곳' }), tgt,
+        h('button', { class: 'primary', text: '저장하고 다시 읽기', onclick: function () {
+          var body2 = {};
+          function put(nid, k, v) {
+            body2[nid] = body2[nid] || {};
+            body2[nid][k] = v;
+          }
+          Object.keys(edit).forEach(function (k2) {
+            var i = k2.indexOf('.');
+            put(k2.slice(0, i), k2.slice(i + 1), edit[k2]);
+          });
+          if (aKey.value.trim()) put(aNid.value, aKey.value.trim(), aVal.value);
+          if (!Object.keys(body2).length) { say({}, '바뀐 값이 없습니다'); return; }
+          post('/api/config/params', { params: body2, target: tgt.value })
+            .then(function (j) { if (say(j, j.path + ' 에 저장했습니다')) load(); });
+        } }),
+        h('span', { class: 'mut',
+          text: '값을 지우려면 파일에서 그 줄을 직접 지웁니다 (여기서는 덮어쓰기만)' }),
+      ]));
+      det.appendChild(b);
+      parBox.appendChild(det);
     }
 
     // ── 3) 실행 버튼 ────────────────────────────────────────────
@@ -1650,6 +1737,12 @@
         onclick: function () { start('inject', ['--scenario', 'scenarios/' + scSel.value]); } }));
       runBar.appendChild(h('button', { text: '환경 점검',
         onclick: function () { start('doctor', ['--scenario', 'scenarios/' + scSel.value]); } }));
+      //  ★고치고 다시 돌리는 고리의 첫 칸★ 위의 ⚠ '소스가 빌드보다 새롭다' 를 본
+      //  자리에서 바로 누를 수 있어야 한다 — 안 그러면 터미널로 나가야 하고,
+      //  그 사이에 그냥 «실행» 을 눌러 ★고치기 전 코드★ 를 재게 된다.
+      runBar.appendChild(h('button', { text: '워크스페이스 빌드',
+        title: '대상 코드를 고쳤으면 먼저 빌드해야 그 변경이 반영됩니다',
+        onclick: function () { start('build', ['--scenario', 'scenarios/' + scSel.value]); } }));
       runBar.appendChild(h('span', { class: 'spacer' }));
       runBar.appendChild(h('button', { text: '중지', onclick: stop }));
       syncCmd();
@@ -1698,13 +1791,8 @@
       execTimer = setInterval(tick, 1200);
     }
 
-    // ── 5) 등록 — 워크스페이스·영상·시나리오 ────────────────────
-    function reload() {
-      get('/api/config').then(function (c2) {
-        c2.baselines = cfg.baselines || [];
-        renderExec(c2);
-      });
-    }
+    // ── 5) 저장 — 파라미터만. 등록(영상·계약·시나리오)은 «새 시험 시작» 이 한다
+    //   같은 폼을 두 화면에 두면 한쪽만 고쳐진다. 이 화면은 고르고 돌리기만 한다.
     function post(url, body2) {
       return fetch(url, { method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1714,127 +1802,6 @@
       hintEl.textContent = j.error ? ('오류: ' + j.error) : okmsg;
       setTimeout(function () { hintEl.textContent = ''; }, 5000);
       return !j.error;
-    }
-
-    function drawReg() {
-      clear(regBox);
-      // 등록된 게 없으면(처음 쓰는 사람) 펴 둔다. 그다음부터는 접힌 채로 둔다.
-      var nvid = Object.keys(cfg.videos || {}).length;
-      var det = h('details', { class: 'reg', open: nvid ? null : 'open' });
-      det.appendChild(h('summary', { text: '워크스페이스 · 영상 등록' }));
-      var body2 = h('div', { class: 'regbody' });
-
-      // 영상
-      body2.appendChild(h('h3', { text: '영상' }));
-      body2.appendChild(h('p', { class: 'help',
-        html: '시나리오에는 <b>별칭</b>만 적고 실제 경로는 여기서 등록합니다 — ' +
-              '그래야 다른 PC 로 옮겨도 시나리오를 고치지 않아도 됩니다.' }));
-      var vt = h('table', { class: 'tbl' });
-      var vtb = h('tbody', {});
-      Object.keys(cfg.videos || {}).forEach(function (k) {
-        var v = cfg.videos[k];
-        vtb.appendChild(h('tr', {}, [
-          h('td', { class: 'mono', text: k }),
-          h('td', { class: 'mono mut', text: v.path }),
-          h('td', { class: 'mono', text: v.exists ? (v.frames + '프레임 · ' + v.w + '×' + v.h) : '' }),
-          h('td', {}, [v.exists ? h('b', { class: 'ok', text: '✅' })
-                                : h('b', { class: 'no', text: '⛔ 파일 없음' })]),
-          h('td', {}, [h('button', { text: '삭제', onclick: function () {
-            post('/api/config/video', { name: k, delete: true })
-              .then(function (j) { if (say(j, k + ' 삭제됨')) reload(); });
-          } })]),
-        ]));
-      });
-      vt.appendChild(vtb);
-      body2.appendChild(vt);
-      var vn = h('input', { type: 'text', placeholder: '별칭 (예: track_2026)', size: '22' });
-      var vp = h('input', { type: 'text', placeholder: '/home/me/영상.mp4', size: '42' });
-      body2.appendChild(h('div', { class: 'framebar' }, [
-        vn, vp,
-        h('button', { class: 'primary', text: '영상 등록', onclick: function () {
-          post('/api/config/video', { name: vn.value.trim(), path: vp.value.trim() })
-            .then(function (j) {
-              if (say(j, vn.value + ' 등록됨 (' + ((j.video || {}).frames || '?') + '프레임)')) reload();
-            });
-        } }),
-      ]));
-
-      // 워크스페이스(계약)
-      body2.appendChild(h('h3', { text: '워크스페이스' }));
-      body2.appendChild(h('p', { class: 'help',
-        html: '워크스페이스 하나 = 계약 파일 하나입니다. 테스트베드를 복사하지 않고 ' +
-              '계약만 늘립니다. 새로 만들면 <b>노드·토픽은 TODO 로 비어 있으니</b> ' +
-              '대상 시스템을 띄운 뒤 <b>환경 점검</b> 탭의 <code>discover</code> 로 채웁니다.' }));
-      var ct = h('table', { class: 'tbl' });
-      var ctb = h('tbody', {});
-      (cfg.contracts || []).forEach(function (c) {
-        var wi = h('input', { type: 'text', value: c.workspace || '', size: '34' });
-        ctb.appendChild(h('tr', {}, [
-          h('td', { class: 'mono', text: c.file }),
-          h('td', {}, [wi]),
-          h('td', {}, [c.attach ? h('span', { class: 'mut', text: 'attach' })
-                       : (c.setup_ok ? h('b', { class: 'ok', text: '✅ 빌드됨' })
-                          : h('b', { class: 'no',
-                              text: c.ws_exists ? '⛔ 빌드 안 됨' : '⛔ 경로 없음' }))]),
-          h('td', { class: 'mono mut', text: (c.nodes || []).join(' · ') }),
-          h('td', {}, [h('button', { text: '경로 저장', onclick: function () {
-            post('/api/config/contract/workspace', { file: c.file, workspace: wi.value.trim() })
-              .then(function (j) { if (say(j, c.file + ' 갱신됨')) reload(); });
-          } })]),
-        ]));
-      });
-      ct.appendChild(ctb);
-      body2.appendChild(ct);
-      var cn = h('input', { type: 'text', placeholder: '계약 이름 (예: other_ws)', size: '22' });
-      var cw = h('input', { type: 'text', placeholder: '/home/me/other_ws', size: '32' });
-      var ca = h('input', { type: 'checkbox' });
-      body2.appendChild(h('div', { class: 'framebar' }, [
-        cn, cw,
-        h('label', { class: 'mut', style: 'display:flex;gap:5px;align-items:center' },
-          [ca, h('span', { text: 'attach (관찰만)' })]),
-        h('button', { class: 'primary', text: '계약 만들기', onclick: function () {
-          post('/api/config/contract', { name: cn.value.trim(), workspace: cw.value.trim(),
-                                         attach: ca.checked })
-            .then(function (j) { if (say(j, 'contracts/' + j.file + ' 생성됨')) reload(); });
-        } }),
-      ]));
-
-      // 시나리오
-      body2.appendChild(h('h3', { text: '시나리오' }));
-      body2.appendChild(h('p', { class: 'help',
-        html: '<b>무엇을 어떻게 돌릴지</b>입니다. 계약(대상)과 분리돼 있어 같은 워크스페이스에 ' +
-              '구간·모드가 다른 시나리오를 여러 개 둘 수 있습니다.' }));
-      var sn = h('input', { type: 'text', placeholder: '이름 (예: reg_2026)', size: '18' });
-      var sc2 = h('select', {}, (cfg.contracts || []).map(function (c) {
-        return h('option', { value: c.file, text: c.file });
-      }));
-      // 시나리오 해석이 끝나면 그 계약을 기본으로 맞춰 준다.
-      // 단 사람이 한 번 고른 뒤에는 건드리지 않는다.
-      sc2.addEventListener('change', function () { state.regTouched = true; });
-      state.regContractSel = sc2;
-      if (state.plan && state.plan.contract_file) sc2.value = state.plan.contract_file;
-      var sv = h('select', {}, Object.keys(cfg.videos || {}).map(function (k) {
-        return h('option', { value: k, text: k });
-      }));
-      var sm = h('select', {}, ['lockstep', 'realtime'].map(function (k) {
-        return h('option', { value: k, text: k });
-      }));
-      var ss = h('input', { type: 'number', value: '0', size: '6', style: 'width:80px' });
-      var sl = h('input', { type: 'number', value: '400', size: '6', style: 'width:80px' });
-      body2.appendChild(h('div', { class: 'framebar' }, [
-        sn, sc2, sv, sm,
-        h('span', { class: 'mut', text: '시작 프레임' }), ss,
-        h('span', { class: 'mut', text: '프레임 수' }), sl,
-        h('button', { class: 'primary', text: '시나리오 만들기', onclick: function () {
-          post('/api/config/scenario', { name: sn.value.trim(), contract: sc2.value,
-                                         video: sv.value, mode: sm.value,
-                                         start: Number(ss.value), limit: Number(sl.value) })
-            .then(function (j) { if (say(j, 'scenarios/' + j.file + ' 생성됨')) reload(); });
-        } }),
-      ]));
-
-      det.appendChild(body2);
-      regBox.appendChild(det);
     }
 
     function load() {
@@ -1850,8 +1817,10 @@
     scSel.addEventListener('change', load);
     if (scenarios.length) load();
     else planBox.appendChild(h('div', { class: 'empty',
-      text: 'scenarios/ 가 비어 있습니다 — 아래에서 시나리오를 만드세요.' }));
-    drawReg();
+      text: 'scenarios/ 가 비어 있습니다 — «새 시험 시작» 에서 하나 만드세요.' }));
+    view.appendChild(h('p', { class: 'sub', html:
+      '영상·워크스페이스·시나리오를 등록하거나 새로 만들려면 '
+      + '<a href="#/newtest">새 시험 시작</a> 으로. 이 화면은 있는 시나리오를 돌립니다.' }));
     poll();
   }
 
@@ -2416,7 +2385,7 @@
     function draw() {
       if (yamlTimer) clearTimeout(yamlTimer);
       yamlTimer = setTimeout(refreshYaml, 500);
-      if (!S.video) { meta.textContent = '먼저 영상을 등록하세요 (테스트 실행 화면)'; return; }
+      if (!S.video) { meta.textContent = '먼저 영상을 등록하세요 («새 시험 시작» 1단계)'; return; }
       if (S.busy) { S.dirty = true; return; }
       S.busy = true;
       postJSON('/api/calib/view', body()).then(function (d) {
@@ -2632,66 +2601,142 @@
     refreshYaml();
   }
 
-  /* ── 새 시험 시작 — 새로 찍은 영상으로 갈아타는 길 ────────────────────
-   * ★왜 마법사인가★ 새 영상으로 시험을 옮기는 일은 화면 네 곳을 순서대로 거쳐야
-   * 한다(영상 등록 → 구간 고르기 → 카메라 맞추기 → 돌리기). 그 순서를 기억하는
-   * 것이 사람 몫이면 반드시 한 단계를 빼먹는다 — 특히 ★카메라 맞추기★ 를 빼먹고
-   * 남의 영상 값으로 판정하게 된다. 그래서 순서를 화면이 들고 있는다.
+  /* ── 새 시험 시작 — 돌리기 전에 등록하는 것은 전부 여기 ────────────────
+   * ★왜 마법사인가★ 시험을 새로 차리는 일은 순서가 있다(워크스페이스 → 영상 →
+   * 시나리오 → 카메라 맞추기 → 돌리기). 그 순서를 기억하는 것이 사람 몫이면
+   * 반드시 한 단계를 빼먹는다 — 특히 ★카메라 맞추기★ 를 빼먹고 남의 영상 값으로
+   * 판정하게 된다. 그래서 순서를 화면이 들고 있는다.
    *
-   * 여기서 새로 하는 일은 ★영상 등록★ 과 ★본 떠서 시나리오 만들기★ 둘뿐이고,
-   * 나머지는 이미 있는 화면으로 보낸다(같은 일을 두 번 짜지 않는다). */
+   * ★쓰기는 여기, 실행은 «테스트 실행»★ 등록 폼이 두 화면에 있으면 같은 것을
+   * 두 벌 짜게 되고 한쪽만 고쳐진다. 그래서 local.yaml·contracts·scenarios 를
+   * 건드리는 폼은 전부 이 화면에만 있고, 실행 화면은 고르고 돌리기만 한다.
+   * 카메라 맞추기(3)와 돌리기(4)는 이미 있는 화면으로 보낸다. */
   var WIZ = { video: '', path: '', real: true, src: '', name: '', scen: '' };
 
-  function renderNewTest(meta) {
+  function renderNewTest(cfg) {
     clear(view);
     view.appendChild(h('h1', { text: '새 시험 시작' }));
     view.appendChild(h('p', { class: 'sub',
-      text: '새로 찍은 영상으로 시험을 옮깁니다. 네 단계를 순서대로 거치면 됩니다 — '
-            + '특히 3단계(카메라 맞추기)를 빼먹으면 남의 영상 값으로 판정하게 됩니다.' }));
+      text: '돌리기 전에 등록하는 것은 전부 여기 있습니다 — 워크스페이스 · 영상 · 시나리오. '
+            + '순서대로 거치면 됩니다. 특히 3단계(카메라 맞추기)를 빼먹으면 '
+            + '남의 영상 값으로 판정하게 됩니다.' }));
 
-    var scens = (meta.scenarios || []);
+    var scens = (cfg.scenarios || []).map(function (s) { return s.file; });
     var stopline = scens.filter(function (f2) { return f2.indexOf('stopline') === 0; });
     WIZ.src = WIZ.src || (stopline.indexOf('stopline_field.yaml') >= 0
                           ? 'stopline_field.yaml' : (stopline[0] || scens[0] || ''));
 
+    function reload() { return get('/api/config').then(renderNewTest).catch(fail); }
+    function say(j, okmsg) {
+      hintEl.textContent = j.error ? ('오류: ' + j.error) : okmsg;
+      setTimeout(function () { hintEl.textContent = ''; }, 5000);
+      return !j.error;
+    }
     function stepBox(n, title, desc, body) {
       var b = h('div', { class: 'card wizstep' }, [
         h('div', { class: 'k', text: n + '. ' + title }),
         h('div', { class: 'd', text: desc }),
       ]);
-      (body || []).forEach(function (x) { b.appendChild(x); });
+      (body || []).forEach(function (x) { if (x) b.appendChild(x); });
       return b;
     }
 
+    // ── 0) 워크스페이스 붙이기 ──────────────────────────────────
+    //   테스트베드를 복사하지 않는다 — 계약 파일만 하나 더 만든다.
+    var ctb = h('tbody', {});
+    (cfg.contracts || []).forEach(function (c) {
+      var wi = h('input', { type: 'text', value: c.workspace || '', size: '34' });
+      ctb.appendChild(h('tr', {}, [
+        h('td', { class: 'mono', text: c.file }),
+        h('td', {}, [wi]),
+        h('td', {}, [c.attach ? h('span', { class: 'mut', text: 'attach' })
+                     : (c.setup_ok ? h('b', { class: 'ok', text: '✅ 빌드됨' })
+                        : h('b', { class: 'no',
+                            text: c.ws_exists ? '⛔ 빌드 안 됨' : '⛔ 경로 없음' }))]),
+        h('td', { class: 'mono mut', text: (c.nodes || []).join(' · ') }),
+        h('td', {}, [h('button', { text: '경로 저장', onclick: function () {
+          postJSON('/api/config/contract/workspace',
+                   { file: c.file, workspace: wi.value.trim() })
+            .then(function (j) { if (say(j, c.file + ' 갱신됨')) reload(); });
+        } })]),
+      ]));
+    });
+    var cn = h('input', { type: 'text', placeholder: '계약 이름 (예: other_ws)', size: '22' });
+    var cw = h('input', { type: 'text', placeholder: '/home/me/other_ws', size: '32' });
+    var ca = h('input', { type: 'checkbox' });
+
+    view.appendChild(stepBox('0', '워크스페이스 붙이기 (새 대상일 때만)',
+      '워크스페이스 하나 = 계약 파일 하나입니다. 테스트베드를 복사하지 않고 계약만 늘립니다.', [
+        h('div', { class: 'tbl' }, [h('table', {}, [ctb])]),
+        h('div', { class: 'framebar' }, [
+          cn, cw,
+          h('label', { class: 'mut', style: 'display:flex;gap:5px;align-items:center' },
+            [ca, h('span', { text: 'attach (관찰만)' })]),
+          h('button', { text: '계약 만들기', onclick: function () {
+            postJSON('/api/config/contract', { name: cn.value.trim(),
+                                               workspace: cw.value.trim(),
+                                               attach: ca.checked })
+              .then(function (j) { if (say(j, 'contracts/' + j.file + ' 생성됨')) reload(); });
+          } })]),
+        h('p', { class: 'help', html:
+          '새로 만든 계약은 <b>노드·토픽이 TODO 로 비어 있습니다</b> — 대상 시스템을 '
+          + '평소처럼 띄운 뒤 <b>환경 점검</b> 탭의 <code>discover</code> 가 돌고 있는 '
+          + '토픽·타입·필드 배치를 읽어 채워 줍니다. ⛔ <b>빌드 안 됨</b> 이면 대상에서 '
+          + '<code>colcon build</code> 부터.' }),
+      ]));
+
     // ── 1) 영상 등록 ────────────────────────────────────────────
+    var vtb = h('tbody', {});
+    Object.keys(cfg.videos || {}).forEach(function (k) {
+      var v = cfg.videos[k];
+      vtb.appendChild(h('tr', {}, [
+        h('td', { class: 'mono', text: k }),
+        h('td', { class: 'mono mut', text: v.path }),
+        h('td', { class: 'mono', text: v.exists
+                  ? (v.frames + '프레임 · ' + v.w + '×' + v.h) : '' }),
+        h('td', {}, [v.exists ? h('b', { class: 'ok', text: '✅' })
+                              : h('b', { class: 'no', text: '⛔ 파일 없음' })]),
+        h('td', {}, [h('button', { text: '삭제', onclick: function () {
+          postJSON('/api/config/video', { name: k, delete: true })
+            .then(function (j) { if (say(j, k + ' 삭제됨')) reload(); });
+        } })]),
+      ]));
+    });
     var vName = h('input', { type: 'text', placeholder: '논리 이름 — 예: field_0820',
                              value: WIZ.video, size: '20' });
     var vPath = h('input', { type: 'text', placeholder: '/home/…/촬영본.mp4',
-                             value: WIZ.path, size: '44' });
+                             value: WIZ.path, size: '40' });
     var vReal = h('input', { type: 'checkbox', checked: WIZ.real ? 'checked' : null });
     var vOut2 = h('div', { class: 'mut' });
-    var vBtn2 = h('button', { class: 'primary', text: '등록하고 열어 보기',
-      onclick: function () {
-        WIZ.video = vName.value.trim(); WIZ.path = vPath.value.trim();
-        WIZ.real = vReal.checked;
-        if (!WIZ.video || !WIZ.path) { vOut2.textContent = '이름과 경로를 모두 적으세요'; return; }
-        vOut2.textContent = '등록 중…';
-        postJSON('/api/config/video', { name: WIZ.video, path: WIZ.path })
-          .then(function (d) {
-            if (d.error) { vOut2.textContent = '오류: ' + d.error; return; }
-            var v = d.video || {};
-            vOut2.textContent = v.exists
-              ? ('✅ ' + v.frames + '프레임 · ' + (v.size_mb || '?') + 'MB · '
-                 + (v.fps ? v.fps.toFixed(1) + 'fps' : '?fps'))
-              : '⛔ 그 경로에 파일이 없습니다';
-          }).catch(function (e) { vOut2.textContent = '오류: ' + e.message; });
-      } });
 
     view.appendChild(stepBox('1', '영상 등록',
-      '실제 경로는 local.yaml 에 두고, 시나리오에는 논리 이름만 씁니다.', [
+      '실제 경로는 local.yaml 에 두고, 시나리오에는 논리 이름만 씁니다 — '
+      + '그래야 다른 PC 로 옮겨도 시나리오를 고치지 않습니다.', [
+        Object.keys(cfg.videos || {}).length
+          ? h('div', { class: 'tbl' }, [h('table', {}, [vtb])]) : null,
         h('div', { class: 'framebar' }, [
           h('span', { class: 'mut', text: '이름' }), vName,
-          h('span', { class: 'mut', text: '경로' }), vPath, vBtn2]),
+          h('span', { class: 'mut', text: '경로' }), vPath,
+          h('button', { class: 'primary', text: '등록하고 열어 보기', onclick: function () {
+            WIZ.video = vName.value.trim(); WIZ.path = vPath.value.trim();
+            WIZ.real = vReal.checked;
+            if (!WIZ.video || !WIZ.path) {
+              vOut2.textContent = '이름과 경로를 모두 적으세요'; return;
+            }
+            vOut2.textContent = '등록 중…';
+            postJSON('/api/config/video', { name: WIZ.video, path: WIZ.path })
+              .then(function (d) {
+                if (d.error) { vOut2.textContent = '오류: ' + d.error; return; }
+                var v = d.video || {};
+                var msg = v.exists
+                  ? ('✅ ' + v.frames + '프레임 · ' + (v.size_mb || '?') + 'MB · '
+                     + (v.fps ? v.fps.toFixed(1) + 'fps' : '?fps'))
+                  : '⛔ 그 경로에 파일이 없습니다';
+                vOut2.textContent = msg;
+                //  다시 그리면 이 줄이 사라지므로 위쪽 알림줄에도 남긴다
+                if (v.exists) { say({}, WIZ.video + ' 등록됨 — ' + msg); reload(); }
+              }).catch(function (e) { vOut2.textContent = '오류: ' + e.message; });
+          } })]),
         h('div', { class: 'framebar' }, [
           h('label', { class: 'toolflag' }, [vReal,
             h('span', { text: '실차 카메라로 찍은 영상이다' }),
@@ -2701,48 +2746,91 @@
       ]));
 
     // ── 2) 시나리오 만들기 ──────────────────────────────────────
+    //   두 갈래다 — ★본 떠서★(있는 시험을 새 영상으로) 와 ★빈 틀★(새 워크스페이스).
+    //   본 떠서가 기본이다: 판정과 그 근거 주석을 통째로 물려받는다.
+    var how = h('select', {}, [
+      h('option', { value: 'clone', text: '있는 시험을 본 떠서 (권장)' }),
+      h('option', { value: 'new', text: '빈 틀에서 새로 (새 워크스페이스)' })]);
     var srcSel = h('select', {}, scens.map(function (f2) {
       return h('option', { value: f2, selected: f2 === WIZ.src ? 'selected' : null,
                            text: f2 });
     }));
     var sName = h('input', { type: 'text', placeholder: '새 시나리오 이름 — 예: sl_0820',
                              size: '22' });
+    var sCont = h('select', {}, (cfg.contracts || []).map(function (c) {
+      return h('option', { value: c.file, text: c.file });
+    }));
+    var sVid = h('select', {}, Object.keys(cfg.videos || {}).map(function (k) {
+      return h('option', { value: k, selected: k === WIZ.video ? 'selected' : null, text: k });
+    }));
+    var sMode = h('select', {}, ['lockstep', 'realtime'].map(function (k) {
+      return h('option', { value: k, text: k });
+    }));
     var sStart = h('input', { type: 'number', placeholder: '0', style: 'width:100px' });
     var sLimit = h('input', { type: 'number', placeholder: '0 = 전체', style: 'width:110px' });
     var sOut = h('div', { class: 'mut' });
-    var sBtn = h('button', { class: 'primary', text: '본 떠서 만들기',
-      onclick: function () {
-        if (!WIZ.video) { sOut.textContent = '먼저 1단계에서 영상을 등록하세요'; return; }
-        var nm = sName.value.trim();
-        if (!nm) { sOut.textContent = '새 시나리오 이름을 적으세요'; return; }
-        postJSON('/api/config/scenario/clone', {
-          src: srcSel.value, name: nm, video: WIZ.video,
-          start: sStart.value ? Number(sStart.value) : 0,
-          limit: sLimit.value ? Number(sLimit.value) : 0,
-          note: '영상 ' + WIZ.video + ' (' + WIZ.path + ')\n'
-                + '실차 카메라로 촬영: ' + (WIZ.real ? '예' : '★아니오 — BEV 값을 실차에 쓰지 말 것★'),
-        }).then(function (d) {
-          if (d.error) { sOut.textContent = '오류: ' + d.error; return; }
-          WIZ.scen = d.file; WIZ.name = nm;
-          sOut.textContent = '✅ scenarios/' + d.file + ' 를 만들었습니다 ('
-                             + d.from + ' 의 판정을 그대로 물려받았습니다)';
-          renderNewTest(meta);
-        }).catch(function (e) { sOut.textContent = '오류: ' + e.message; });
-      } });
+    var cloneBar = h('div', { class: 'framebar' }, [
+      h('span', { class: 'mut', text: '본' }), srcSel,
+      h('span', { class: 'mut', text: '— 이 시험의 판정을 그대로 물려받습니다' })]);
+    var newBar = h('div', { class: 'framebar' }, [
+      h('span', { class: 'mut', text: '계약' }), sCont,
+      h('span', { class: 'mut', text: '모드' }), sMode]);
+    function syncHow() {
+      cloneBar.style.display = how.value === 'clone' ? '' : 'none';
+      newBar.style.display = how.value === 'new' ? '' : 'none';
+    }
+    how.addEventListener('change', syncHow);
+    syncHow();
 
     view.appendChild(stepBox('2', '시나리오 만들기',
-      '있는 시험을 본으로 떠서 영상만 갈아 끼웁니다 — 판정 기준과 그 근거 주석을 '
+      '무엇을 어떻게 돌릴지입니다. 본 떠서 만들면 판정 기준과 그 근거 주석을 '
       + '그대로 물려받습니다. 구간은 비워 두고(전체) 3·4단계에서 좁히면 됩니다.', [
         h('div', { class: 'framebar' }, [
-          h('span', { class: 'mut', text: '본' }), srcSel,
-          h('span', { class: 'mut', text: '새 이름' }), sName, sBtn]),
+          how, h('span', { class: 'mut', text: '새 이름' }), sName,
+          h('span', { class: 'mut', text: '영상' }), sVid,
+          h('button', { class: 'primary', text: '만들기', onclick: function () {
+            var nm = sName.value.trim();
+            if (!nm) { sOut.textContent = '새 시나리오 이름을 적으세요'; return; }
+            if (!sVid.value) { sOut.textContent = '먼저 1단계에서 영상을 등록하세요'; return; }
+            var st = sStart.value ? Number(sStart.value) : 0;
+            var li = sLimit.value ? Number(sLimit.value) : 0;
+            if (how.value === 'new') {
+              postJSON('/api/config/scenario', {
+                name: nm, contract: sCont.value, video: sVid.value,
+                mode: sMode.value, start: st, limit: li,
+              }).then(function (d) {
+                if (d.error) { sOut.textContent = '오류: ' + d.error; return; }
+                WIZ.scen = d.file; WIZ.name = nm;
+                sOut.textContent = '✅ scenarios/' + d.file + ' 를 만들었습니다 '
+                                   + '(빈 틀입니다 — checks: 를 채워야 판정이 생깁니다)';
+                reload();
+              }).catch(function (e) { sOut.textContent = '오류: ' + e.message; });
+              return;
+            }
+            //  ★실차 카메라 여부는 시나리오 머리말에 박아 둔다★ — 여기서 맞춘 BEV 값을
+            //  실차에 쓸 수 있는지가 그 한 줄에 걸린다(§13.11).
+            postJSON('/api/config/scenario/clone', {
+              src: srcSel.value, name: nm, video: sVid.value, start: st, limit: li,
+              note: '영상 ' + sVid.value + ' ('
+                    + ((cfg.videos || {})[sVid.value] || {}).path + ')\n'
+                    + '실차 카메라로 촬영: '
+                    + (vReal.checked ? '예' : '★아니오 — BEV 값을 실차에 쓰지 말 것★'),
+            }).then(function (d) {
+              if (d.error) { sOut.textContent = '오류: ' + d.error; return; }
+              WIZ.scen = d.file; WIZ.name = nm;
+              sOut.textContent = '✅ scenarios/' + d.file + ' 를 만들었습니다 ('
+                                 + d.from + ' 의 판정을 그대로 물려받았습니다)';
+              reload();
+            }).catch(function (e) { sOut.textContent = '오류: ' + e.message; });
+          } })]),
+        cloneBar, newBar,
         h('div', { class: 'framebar' }, [
           h('span', { class: 'mut', text: 'start' }), sStart,
           h('span', { class: 'mut', text: 'limit' }), sLimit,
           h('span', { class: 'mut', text: '(비우면 영상 전체)' })]),
         sOut,
         WIZ.scen ? h('p', { class: 'help', html:
-          '만든 것: <code>scenarios/' + WIZ.scen + '</code>' }) : h('span', {}),
+          '만든 것: <code>scenarios/' + WIZ.scen + '</code>' }) : null,
       ]));
 
     // ── 3) 카메라 맞추기 ────────────────────────────────────────
@@ -2767,6 +2855,10 @@
         h('div', { class: 'framebar' }, [
           h('a', { class: 'gobtn', href: '#/exec', text: '테스트 실행으로 ›' }),
           h('a', { class: 'gobtn', href: '#/runs', text: '실행 기록 ›' })]),
+        h('p', { class: 'help', html:
+          '실행 화면은 <b>고르고 돌리기만</b> 합니다 — 무엇이 쓰일지(계약·워크스페이스·'
+          + '영상 파일·구간·덮어쓰는 값)를 먼저 펼쳐 보여 주고, ⛔ 가 있으면 버튼이 잠깁니다. '
+          + '파라미터는 그 화면의 <b>«덮어쓰는 값»</b> 에서 고쳐 다시 돌립니다.' }),
         h('p', { class: 'help', html:
           '결과에서 순서대로 볼 것 — ① <b>프레임 탐색 → «정지선 검출»</b> 로 '
           + '<b>정말 정지선을 잡았는지</b> 눈으로 (차체·횡단보도 오검출) '
@@ -3054,6 +3146,35 @@
       }));
     }
 
+    /*  ★한 흐름으로 보이는 순서★ 아래 §0~§11 은 화면별 설명이라, 처음 켠 사람이
+     *  "그래서 뭘 먼저 누르나" 를 알 수 없었다. 그 답을 맨 위에 둔다. */
+    view.appendChild(sec('처음 켰다면 — 이 순서대로'));
+    view.appendChild(h('div', { class: 'md', text:
+      '  ┌ 첫 설정 (한 번) ───────────────────────────────────┐\n' +
+      '    «새 시험 시작»  0 워크스페이스 → 1 영상 → 2 시나리오\n' +
+      '                    3 카메라 맞추기 → 4 돌리기\n' +
+      '  └────────────────────────────────────────────────────┘\n' +
+      '  ┌ 평소 루프 (매번) ──────────────────────────────────┐\n' +
+      '    대상 코드 수정\n' +
+      '        ↓\n' +
+      '    «테스트 실행» → [워크스페이스 빌드] → [환경 점검] → [실행]\n' +
+      '        ↓\n' +
+      '    결과 판단 ① 성립했나 ② 정말 봤나(프레임 탐색) ③ 언제 물었나\n' +
+      '              ④ 받는 쪽이 썼나 ⑤ 어제와 달라졌나\n' +
+      '        ↓\n' +
+      '    파라미터만 고칠 때는 «덮어쓰는 값» 에서 고쳐 바로 다시 실행 (빌드 불필요)\n' +
+      '  └────────────────────────────────────────────────────┘' }));
+    view.appendChild(para(
+      '원칙 하나만 알면 헤맬 일이 없다 — <b>파일을 쓰는 일은 «새 시험 시작», ' +
+      '돌리는 일은 «테스트 실행»</b>. 등록 폼이 두 화면에 있으면 같은 것을 두 벌 짜게 되고 ' +
+      '한쪽만 고쳐진다. 그래서 <code>local.yaml</code>·<code>contracts/</code>·' +
+      '<code>scenarios/</code> 를 건드리는 폼은 전부 «새 시험 시작» 에만 있고, ' +
+      '실행 화면은 고르고 돌리기만 한다.'));
+    view.appendChild(para(
+      '<b>어느 화면도 대상 워크스페이스의 파일은 고치지 않는다.</b> ' +
+      '«워크스페이스 빌드» 만이 예외로 대상의 <code>build/</code>·<code>install/</code> 에 쓴다 — ' +
+      '그래서 어디에 무엇을 빌드할지는 <b>계약</b>이 정하고 임의 경로를 받지 않는다.'));
+
     view.appendChild(sec('0. 구조 — 파일 세 종류가 전부다'));
     view.appendChild(para(
       '테스트베드는 <b>워크스페이스 밖</b>에 따로 있고(현재 <code>~/cam_testbed</code>), ' +
@@ -3078,10 +3199,11 @@
           'git 에 안 올린다. 그래서 시나리오는 다른 PC 에서도 그대로 돈다.' })]),
     ])]));
 
-    view.appendChild(sec('1. 등록하기 — 테스트 실행 탭 아래 \'워크스페이스 · 영상 등록\''));
+    view.appendChild(sec('1. 등록하기 — «새 시험 시작» 탭'));
     view.appendChild(para(
-      '<b>테스트 실행</b> 탭 맨 아래 접힌 칸을 펴면 셋 다 여기서 등록된다. ' +
-      '파일을 직접 열어도 되고(오른쪽 칸이 그 파일이다) 화면에서 해도 된다 — 같은 결과다.'));
+      '<b>파일을 건드리는 일은 전부 «새 시험 시작» 탭에 있다</b> — 워크스페이스(0) · ' +
+      '영상(1) · 시나리오(2). 실행 화면은 있는 것을 고르고 돌리기만 한다. ' +
+      '파일을 직접 열어도 되고 화면에서 해도 된다 — 같은 결과다.'));
     view.appendChild(steps([
       ['① 영상 등록', '<b>별칭</b>과 <b>실제 경로</b>를 넣고 <code>영상 등록</code>. ' +
        '등록할 때 파일을 실제로 열어 보고 <b>프레임 수·해상도·fps</b> 를 확인해 준다 — ' +
@@ -3096,7 +3218,9 @@
        '돌고 있는 토픽·타입·필드 배치를 읽어 <code>signals:</code> 초안을 뽑아 준다. ' +
        '숫자 배열은 의미를 알 수 없으니 이름만 사람이 붙인다 ' +
        '(<code>nav_state_data0</code> → <code>cte_m</code>).'],
-      ['④ 시나리오 만들기', '계약·영상·모드·구간을 고르고 <code>시나리오 만들기</code>. ' +
+      ['④ 시나리오 만들기', '두 갈래다. <b>본 떠서</b>는 있는 시험을 새 영상으로 옮기는 것이라 ' +
+       '<b>판정과 그 근거 주석을 그대로 물려받는다</b> — 새 영상은 이쪽이다. ' +
+       '<b>빈 틀</b>은 새 워크스페이스를 붙일 때. ' +
        '<b>lockstep</b> 은 한 프레임씩 밀어 넣어 결정적이라 회귀 비교용, ' +
        '<b>realtime</b> 은 실제 fps 로 밀어 타이밍·유실을 보는 용도다.'],
     ]));
@@ -3114,7 +3238,10 @@
         h('td', { html: '어느 계약이 뽑혔는지. 시나리오의 <code>contract:</code> → ' +
           '<code>local.yaml</code> 의 <code>default_contract</code> 순으로 정해진다.' })]),
       h('tr', {}, [h('td', { html: '<b>워크스페이스</b>' }),
-        h('td', { html: '경로와 <b>빌드 여부</b>. ⛔ 면 대상에서 <code>colcon build</code> 부터.' })]),
+        h('td', { html: '경로와 <b>빌드 여부</b>. ⛔ 면 «워크스페이스 빌드» 를 먼저 누른다. ' +
+          '⚠ <b>소스가 빌드보다 새롭다</b> 는 mtime 만 비교한 것이라 ' +
+          '<b>파이썬만 고쳤을 때도 뜬다</b> — 그때는 그냥 돌려도 된다(심볼릭 링크라 ' +
+          '고친 코드가 그대로 돈다).' })]),
       h('tr', {}, [h('td', { html: '<b>띄울 노드</b>' }),
         h('td', { html: '실제로 실행될 <code>ros2 run …</code> 줄. 여기 없는 노드는 안 뜬다.' })]),
       h('tr', {}, [h('td', { html: '<b>영상</b>' }),
@@ -3124,7 +3251,10 @@
         h('td', { html: 'start~limit 과 모드. <b>구간이 영상보다 길면</b> 미리 경고한다.' })]),
       h('tr', {}, [h('td', { html: '<b>덮어쓰는 값</b>' }),
         h('td', { html: '시나리오·local.yaml 이 노드 기본 파라미터 위에 덮어쓰는 것. ' +
-          '가중치 경로가 여기 나온다.' })]),
+          '가중치 경로가 여기 나온다. <b>펴면 그 자리에서 고쳐 저장할 수 있다</b> — ' +
+          '고치고 다시 돌리는 고리를 화면 안에서 닫으려는 것이다(주석은 보존된다). ' +
+          '단 <b>기준 비교에는 «조건이 다르다» 경고가 붙는다</b> — ' +
+          '파라미터를 바꾼 것끼리는 «결과 비교» 로 런 대 런으로 본다.' })]),
     ])]));
     view.appendChild(para(
       '<b>⛔ 가 하나라도 있으면 실행 버튼이 잠긴다.</b> 못 돌 것을 돌려 놓고 ' +
@@ -3133,6 +3263,16 @@
 
     view.appendChild(sec('3. 실행 · 진행 상황'));
     view.appendChild(steps([
+      ['워크스페이스 빌드', '<b>파이썬 코드만 고쳤다면 누를 필요가 없다</b> — ' +
+       '<code>--symlink-install</code> 이라 <code>ros2 run</code> 이 읽는 파일이 ' +
+       '곧 <code>src/</code> 의 그 파일이다(<code>build/&lt;pkg&gt;/&lt;pkg&gt;</code> 가 ' +
+       'src 를 가리키는 심볼릭 링크). <b>빌드가 필요한 때는 넷</b>: 새 실행파일' +
+       '(<code>setup.py</code> 의 <code>entry_points</code>) · <code>package.xml</code> 의 ' +
+       '의존성 · C++ 패키지 · <b>처음 한 번</b>. 빌드할 곳과 패키지는 <b>계약</b>이 정한다 ' +
+       '(<code>--packages-up-to</code> 라 의존 패키지까지 함께 선다).'],
+      ['환경 점검', '<code>doctor</code> 를 그 자리에서 돌린다 — 계약·영상·가중치에 더해 ' +
+       '<b>이름 정합</b>(체크가 가리키는 신호가 계약에 실제로 있는가)까지 본다. ' +
+       '오타는 예전에 런을 다 돌린 뒤에야 ⚠ 로 드러났다.'],
       ['주입 검증만', '영상·YOLO 없이 <b>변환 수학만</b> 몇 초에 확인한다. ' +
        '입력을 직접 만들어 참값을 알고 있으므로 여기서 실패하면 인지가 아니라 <b>계산</b>이 틀린 것이다. ' +
        '<b>실행 전에 이걸 먼저 돌리는 습관을 권한다.</b>'],
@@ -3464,7 +3604,8 @@
     if (hash === '/help') { setNav('help'); renderHelp(); return null; }
     if (hash === '/newtest') {
       setNav('newtest');
-      return get('/api/meta').then(renderNewTest).catch(fail);
+      //  등록 폼이 통째로 여기 있으므로 계약·영상 목록까지 필요하다(/api/config).
+      return get('/api/config').then(renderNewTest).catch(fail);
     }
     var mc = hash.match(/^\/calib(?:\?s=([^&]+))?$/);
     if (mc) {

@@ -246,6 +246,17 @@ def cmd_doctor(args):
                     continue
                 if v.endswith(".pt") or v.endswith(".engine"):
                     chk(f"{nid}.{k}", Path(v).exists(), v)
+
+    # ── 이름 정합 ────────────────────────────────────────────────────
+    #   체크가 없는 신호를 가리켜도 런은 죽지 않는다 — ok:None(⚠️ 값 없음)으로
+    #   조용히 빠지고 리포트는 초록으로 나온다. 그걸 ★런을 돌리기 전에★ 묻는다.
+    print("── 이름 정합 ──")
+    from .lint import lint
+    problems = lint(c, sc)
+    chk("계약·시나리오의 이름 참조", not problems,
+        "" if not problems else f"{len(problems)}건")
+    for m in problems:
+        print(f"     · {m}")
     print()
     print("판정:", "OK" if ok else "문제 있음")
     return 0 if ok else 1
@@ -422,6 +433,11 @@ def _one_run(sc, contract_path, variant, run_dir, domain_id, args):
         #   어느 계약으로 봐야 하는지 알 수 없다(기본 계약으로 잘못 열면 신호가
         #   전부 결측인 그림이 조용히 나온다 — 실제로 겪었다).
         "contract_file": str(Path(contract_path).resolve()),
+        # ★시나리오 파일 경로★ 같은 이유다 — `reanalyze` 가 이걸 못 찾으면
+        #   `checks:` 를 통째로 못 읽어 ★판정 0 개짜리 초록 리포트★ 를 만든다.
+        #   이름(`scenario`)만으로는 못 찾는다: 시나리오 name 은 나중에 바뀐다.
+        "scenario_file": (str(Path(getattr(args, "scenario", "") or "").resolve())
+                          if getattr(args, "scenario", "") else ""),
         "video": pstats.get("video"), "video_key": sc.get("video"),
         "perturb": variant.get("perturb", "none"),
         "overlay": _deep_merge(sc.get("overlay") or {},
@@ -968,7 +984,11 @@ def cmd_reanalyze(args):
     rd = _resolve_run(args.run)
     sj = rd / "summary.json"
     old = json.loads(sj.read_text())["summary"]["meta"] if sj.exists() else {}
-    sc = load_yaml(args.scenario) if args.scenario else {}
+    #  ★시나리오를 못 찾으면 판정이 통째로 사라진다★ — `checks:` 는 시나리오에만
+    #  있어서, 예전에는 `--scenario` 를 빼면 리포트가 판정 0 개로 다시 쓰였다
+    #  (13개 → 0개, 그런데 초록으로 보인다). 그 런이 실제로 쓴 시나리오를 되찾는다.
+    spath = args.scenario or scenario_of_run(rd)
+    sc = load_yaml(spath) if spath else {}
     cpath = _resolve_contract(args.contract or sc.get("contract")
                               or contract_of_run(rd))
     contract = load_contract(cpath)
@@ -982,7 +1002,17 @@ def cmd_reanalyze(args):
                  "reanalyzed": datetime.now().isoformat(timespec="seconds")})
     summary = analyze.summarize(rows, contract, meta)
     summary["log_events"] = analyze.log_events(rd, contract)
-    checks = analyze.run_checks(summary, rows, contract, sc.get("checks"))
+    #  ★변형의 checks 도 함께★ 런 하나는 변형 하나다 — 그 변형에만 걸린 판정을
+    #  빼면 재분석 결과가 원래 런과 개수부터 달라진다.
+    vname = old.get("variant") or "base"
+    vchecks = next((v.get("checks") or [] for v in (sc.get("variants") or [])
+                    if v.get("name") == vname), [])
+    checks = analyze.run_checks(summary, rows, contract,
+                                (sc.get("checks") or []) + list(vchecks))
+    #  그래도 0 개면 조용히 넘기지 않는다 — 옛 런은 meta 에 시나리오가 없다.
+    if not checks and (json.loads(sj.read_text()).get("checks") if sj.exists() else None):
+        print("⚠️  판정이 하나도 없다 — 시나리오를 못 찾았다. "
+              "`--scenario scenarios/<파일>.yaml` 을 붙여 다시 돌릴 것.")
     drift = contract.drift_report()
     (rd / "summary.json").write_text(json.dumps(
         {"summary": summary, "checks": checks, "drift": drift},
@@ -1035,6 +1065,13 @@ def cmd_baseline(args):
             print("    조건이 달라졌다 — 이전 기준과는 비교가 불가능해진다:")
             for k, va, vb in d:
                 print(f"      {k}: {va!r} → {vb!r}")
+        # ★웹앱에서 부를 때는 물어볼 상대가 없다★ — stdin 이 터미널이 아니면
+        #   기다리다 멈춰 버린다(작업 하나만 돌 수 있어 그 뒤가 전부 막힌다).
+        #   그럴 때는 되묻지 않고 거절한다 — `--force` 를 붙이라고 말해 준다.
+        if not sys.stdin.isatty():
+            print(f"    ⛔ 되물을 수 없는 자리다 — 덮어쓰려면 `--force` 를 붙일 것 "
+                  f"(python3 -m tb.run baseline {rd.name} --name {name} --force)")
+            return 1
         if input("    계속할까? [y/N] ").strip().lower() not in ("y", "yes"):
             print("    취소했다.")
             return 1
@@ -1091,6 +1128,35 @@ def contract_of_run(run_dir):
     return None
 
 
+def scenario_of_run(run_dir):
+    """그 런이 ★실제로 쓴★ 시나리오 파일. 없으면 None.
+
+    `contract_of_run` 과 같은 이유로 있다. 이게 없으면 `reanalyze` 가 `checks:` 를
+    못 읽어 ★판정이 통째로 사라진 초록 리포트★ 가 나온다(실측: 13개 → 0개).
+    이름으로 찾는 것은 마지막 수단이다 — 시나리오 name 은 나중에 바뀐다.
+    """
+    sj = Path(run_dir) / "summary.json"
+    if not sj.exists():
+        return None
+    try:
+        meta = json.loads(sj.read_text())["summary"]["meta"]
+    except (KeyError, ValueError):
+        return None
+    f = meta.get("scenario_file")
+    if f and Path(f).exists():
+        return f
+    want = meta.get("scenario")
+    if not want:
+        return None
+    for cand in sorted((ROOT / "scenarios").glob("*.yaml")):
+        try:
+            if (load_yaml(cand) or {}).get("name") == want:
+                return str(cand)
+        except Exception:                                  # noqa: BLE001
+            continue
+    return None
+
+
 def _resolve_run(x):
     p = Path(x)
     if p.is_dir():
@@ -1126,6 +1192,70 @@ def cmd_feedback(args):
     else:
         print(out.read_text())
         print(f"\n[feedback] {out}")
+    return 0
+
+
+def cmd_build(args):
+    """대상 워크스페이스를 빌드한다 — ★고치고 다시 돌리는 고리의 첫 칸★.
+
+    ★언제 필요한가★ ★파이썬 코드만 고쳤으면 필요 없다★ — `--symlink-install` 이라
+    `build/<pkg>/<pkg>` 가 `src/<pkg>/<pkg>` 를 가리키는 심볼릭 링크고, `ros2 run` 이
+    읽는 파일이 곧 편집하는 파일이다. 빌드가 필요한 때는 넷뿐이다:
+      · `setup.py` 의 entry_points 를 바꿨다 (console_scripts 를 다시 만들어야 한다)
+      · `package.xml` 의 의존성을 바꿨다
+      · C++ 패키지다 / 새 파일을 launch·resource 처럼 ★실제 디렉터리★ 쪽에 넣었다
+      · 처음 한 번 (install/setup.bash 가 아직 없다)
+    ⚠️ `stale_sources()` 의 경고는 mtime 만 비교하므로 ★파이썬만 고쳐도 뜬다★ —
+    그건 무시해도 되는 경고다. 그래도 이 명령을 두는 것은 위 넷일 때 터미널로
+    나가지 않게 하려는 것이다.
+
+    ★워크스페이스 이름이 여기 안 들어온다★ 경로도 패키지도 전부 계약에서 나온다.
+    """
+    contract_path = _resolve_contract(
+        args.contract or (load_yaml(args.scenario).get("contract")
+                          if args.scenario else None))
+    if not (contract_path and Path(contract_path).exists()):
+        print("계약을 찾을 수 없다 — --contract 나 --scenario 로 지정할 것")
+        return 1
+    c = load_contract(contract_path)
+    if c.attach:
+        print("attach 계약이다 — 테스트베드가 노드를 띄우지 않으므로 빌드할 것도 없다")
+        return 0
+    ws = Path(c.workspace) if c.workspace else None
+    if not (ws and ws.is_dir()):
+        print(f"워크스페이스가 없다: {c.workspace}")
+        return 1
+
+    cmd = ["colcon", "build", "--symlink-install"]
+    pkgs = sorted({str(n["package"]) for n in c.nodes if n.get("package")})
+    if args.all or not pkgs:
+        print(f"빌드: {ws} (전체)")
+    else:
+        # ★--packages-select 가 아니라 -up-to★ 인 이유: 대상 패키지가 다른 패키지를
+        #   exec_depend 로 걸고 있으면 select 로는 그 의존이 안 서서 실행이 실패한다.
+        cmd += ["--packages-up-to"] + pkgs
+        print(f"빌드: {ws} ({', '.join(pkgs)} + 의존)")
+    print("  $ " + " ".join(cmd))
+    # ★버퍼를 비우고 넘긴다★ 안 그러면 colcon 출력이 먼저 나오고 우리 머리말이
+    #   뒤에 붙는다 — 웹의 로그 창에서 무엇을 빌드하는지 끝나야 알게 된다.
+    sys.stdout.flush()
+    # shell=False. 환경은 그대로 물려준다 — 웹 서버도 CLI 도 ROS 언더레이만
+    # source 된 상태이고, 대상의 install 은 안 물려 있다(빌드에 맞는 환경이다).
+    rc = subprocess.run(cmd, cwd=str(ws)).returncode
+    if rc != 0:
+        print(f"\n빌드 실패 (종료코드 {rc}) — 위 오류를 먼저 고칠 것")
+        return rc
+    # ★빌드가 정말 최신이 됐는가★ 를 되재서 확인한다. colcon 이 0 을 냈어도
+    #   패키지를 잘못 골랐으면 고친 파일이 그대로 남는다.
+    from .config import stale_sources
+    left = stale_sources(ws)
+    if left:
+        print("\n⚠️  아직 빌드보다 새로운 소스가 있다 — 다른 패키지의 파일이다:")
+        for f in left:
+            print(f"      {f}")
+        print("      `--all` 로 전체를 빌드하거나, 그 패키지를 계약의 nodes 에 넣을 것")
+    else:
+        print("\n빌드 완료 — 소스와 빌드가 같다")
     return 0
 
 
@@ -1270,6 +1400,13 @@ def main(argv=None):
     pr.add_argument("--out", default="", help="쓸 파일 (비우면 runs/_params/<계약>.yaml)")
     pr.add_argument("--timeout", type=float, default=90.0)
     pr.set_defaults(fn=cmd_params)
+
+    bd = sub.add_parser("build", help="대상 워크스페이스를 colcon build")
+    bd.add_argument("--scenario", default="")
+    bd.add_argument("--contract", default="")
+    bd.add_argument("--all", action="store_true",
+                    help="계약의 패키지만이 아니라 워크스페이스 전체를 빌드")
+    bd.set_defaults(fn=cmd_build)
 
     ls = sub.add_parser("list"); ls.set_defaults(fn=cmd_list)
 

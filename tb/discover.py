@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import argparse
+import pathlib
 import sys
 import time
 
@@ -151,6 +152,16 @@ def main(argv=None):
     ap.add_argument("--include", default="", help="이 문자열이 든 토픽만 (쉼표)")
     ap.add_argument("--exclude", default="", help="이 문자열이 든 토픽 제외 (쉼표)")
     args, ros_argv = ap.parse_known_args(argv)
+
+    # ★있는 계약을 덮어쓰지 않는다★ 초안은 통째로 새로 쓰는 것이라, 웹의 0단계로
+    #   만들어 둔 계약에 같은 이름으로 내보내면 `workspace:` 와 손으로 적은 주석
+    #   (= 시험 근거 문서)이 전부 날아간다. 옆에 초안을 두고 사람이 옮겨 붙인다.
+    if args.out and pathlib.Path(args.out).exists():
+        alt = pathlib.Path(args.out).with_suffix(".draft.yaml")
+        print(f"[discover] 이미 있는 파일을 덮어쓰지 않는다: {args.out}\n"
+              f"           초안은 통째로 새로 쓰는 것이라 workspace: 와 주석이 날아간다.\n"
+              f"           → --out {alt} 로 뽑아 필요한 줄만 옮겨 붙일 것.", file=sys.stderr)
+        return 2
 
     rclpy.init(args=ros_argv)
     node = Scout([s for s in args.include.split(",") if s],

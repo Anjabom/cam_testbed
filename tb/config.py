@@ -121,6 +121,53 @@ def snapshot():
             "has_local": (ROOT / "local.yaml").exists()}
 
 
+#  빌드보다 새로운 소스 — 고쳐 놓고 빌드를 잊으면 ★옛 바이너리★가 돈다.
+#  colcon 은 빌드할 때마다 install/setup.bash 를 다시 쓴다 → 그것을 빌드 시각으로 본다.
+#  (install/ 전체를 훑지 않는 이유: 패키지 디렉터리 mtime 은 안쪽 파일을 고쳐도 안 바뀐다)
+SRC_EXT = {".py", ".cpp", ".cc", ".c", ".hpp", ".h", ".xml", ".yaml", ".launch", ".cfg"}
+
+
+#  ★빌드가 정말 필요한 것과 아닌 것★ `--symlink-install` 이면 패키지의 파이썬 모듈은
+#  build/<pkg>/<pkg> 가 src 를 가리키는 ★심볼릭 링크★ 라 고치면 바로 반영된다. 그래서
+#  "소스가 빌드보다 새롭다"만으로 빌드하라고 하면 ★대부분 거짓 경보★ 다(코드를 고칠
+#  때마다 뜬다). 다시 빌드해야 하는 것은 링크로 해결되지 않는 것들뿐이다:
+#    · setup.py    entry_points 가 바뀌면 console_scripts 를 다시 만들어야 한다
+#    · package.xml / CMakeLists.txt  의존성·빌드 규칙
+#    · C/C++ 소스  컴파일 산출물이 install 에 들어간다
+REBUILD_NAMES = {"setup.py", "package.xml", "setup.cfg", "CMakeLists.txt"}
+REBUILD_EXT = {".cpp", ".cc", ".c", ".hpp", ".h"}
+
+
+def needs_rebuild(paths):
+    """이 중 ★정말 빌드가 필요한★ 것만. 나머지는 심볼릭 링크로 그대로 반영된다."""
+    out = []
+    for s in paths:
+        f = Path(s)
+        if f.name in REBUILD_NAMES or f.suffix in REBUILD_EXT:
+            out.append(s)
+    return out
+
+
+def stale_sources(ws, limit=5):
+    """install/setup.bash 보다 새로운 소스 파일들 (상대 경로, limit 개까지)."""
+    setup = Path(ws) / "install" / "setup.bash"
+    src = Path(ws) / "src"
+    if not setup.exists() or not src.is_dir():
+        return []
+    t = setup.stat().st_mtime
+    out = []
+    for f in src.rglob("*"):
+        if f.suffix not in SRC_EXT or not f.is_file():
+            continue
+        try:
+            if f.stat().st_mtime > t:
+                out.append(str(f.relative_to(src)))
+        except OSError:
+            pass
+    out.sort()
+    return out[:limit] if limit else out
+
+
 def resolve_scenario(fname):
     """★이 시나리오를 지금 돌리면 실제로 무엇이 쓰이는가★.
 
@@ -181,6 +228,21 @@ def resolve_scenario(fname):
     elif not (Path(c.workspace) / "install" / "setup.bash").exists():
         out["block"].append(f"빌드가 안 돼 있다 — {c.workspace}/install/setup.bash 가 없다. "
                             "대상 워크스페이스에서 `colcon build` 를 먼저 한다")
+    else:
+        stale = stale_sources(c.workspace)
+        hard = needs_rebuild(stale)
+        if hard:
+            out["warn"].append(
+                "★빌드가 필요한 파일이 바뀌었다★ — 지금 돌리면 고치기 ★전★ 것이 돈다. "
+                f"«워크스페이스 빌드» 를 먼저 누를 것 ({', '.join(hard)}"
+                + (" …" if len(hard) >= 5 else "") + ")")
+        elif stale:
+            #  파이썬 모듈은 심볼릭 링크라 그대로 반영된다 — 빌드하라고 하지 않는다.
+            #  그래도 알려는 주는 것은 "내가 고친 게 맞나"를 확인시켜 주기 때문이다.
+            out["warn"].append(
+                "소스가 빌드보다 새롭다 — 파이썬 모듈은 심볼릭 링크라 ★그대로 반영된다★ "
+                f"(빌드 불필요): {', '.join(stale)}"
+                + (" …" if len(stale) >= 5 else ""))
 
     key = loc.get("video") or sc.get("video") or ""
     out["video_key"] = key
@@ -206,8 +268,17 @@ def resolve_scenario(fname):
                 f"start+limit({out['start'] + out['limit']}) 가 영상 길이"
                 f"({out['video'].get('frames')})를 넘는다 — 짧게 끝난다")
 
+    #  ★이름 오타는 실행 뒤에 ⚠️ 로만 드러난다★ — checks 의 신호 이름을 하나
+    #  잘못 적으면 그 판정이 조용히 사라진 채 리포트가 초록으로 나온다. 런까지
+    #  가기 전에 여기서 묻는다(판정을 막지는 않으므로 block 이 아니라 warn 이다).
+    from .lint import lint
+    out["warn"] += [f"이름이 안 맞는다 — {m}" for m in lint(c, sc)]
+
     params = r._deep_merge(sc.get("params", {}), loc.get("params", {}))
     out["params"] = params
+    #  ★어느 파일에서 온 값인가★ — 화면이 「고치면 어디가 바뀌는지」를 말할 수 있게.
+    #  둘 다에 있으면 local 이 이긴다(우선순위가 시나리오 < local 이다).
+    out["params_local"] = loc.get("params", {}) or {}
     out["cmd"] = f"python3 -m tb.run run --scenario scenarios/{fname}"
     return out
 
@@ -374,6 +445,18 @@ limit: {limit}          # 0 = 끝까지
 
 # 노드 파라미터를 여기서 덮어쓴다 (런치 파일은 건드리지 않는다)
 params: {{}}
+
+# ── 판정 ───────────────────────────────────────────────────────────────
+#   ★빈 틀로 두면 판정이 0 개라 리포트가 늘 초록이다★ — 그래서 어느 계약에서나
+#   성립하는 두 줄만 미리 깔아 둔다. 이 둘은 신호 이름을 안 쓰므로(요약 지표)
+#   워크스페이스가 달라도 그대로 유효하다.
+#   ⚠️ 여기부터는 사람이 채운다. 신호를 쓰는 판정을 붙일 때는 계약의 signals:
+#      에 있는 이름만 쓴다 — 오타는 `tb.run doctor` 가 실행 전에 잡아 준다.
+checks:
+  - {{stat: drop_rate, max: 0.02,
+     why: "lockstep 인데 프레임이 새면 동기 실패 — 판정 이전의 문제다"}}
+  - {{stat: latency_p95_ms, max: 1000,
+     why: "프레임당 처리 지연. ★이 값은 이 대상에 맞게 실측으로 고칠 것★"}}
 """
 
 
@@ -549,6 +632,49 @@ def _leaves(obj, prefix=()):
             yield from _leaves(v, prefix + (str(k),))
     else:
         yield prefix, obj
+
+
+def _typed(v):
+    """화면은 값을 문자열로 보낸다 — 원래 종류로 되돌린다.
+
+    ★왜 여기서 하는가★ `device: "cuda:0"` 은 문자열이지만 `show_window: "false"`
+    를 문자열로 쓰면 노드가 참으로 읽는다(빈 문자열이 아니므로). 종류를 웹의 JS 가
+    한 벌 더 판단하면 반드시 어긋나므로 파일에 쓰는 쪽에서 한 번만 한다.
+    """
+    if not isinstance(v, str):
+        return v
+    s = v.strip()
+    if s.lower() in ("true", "false"):
+        return s.lower() == "true"
+    for cast in (int, float):
+        try:
+            return cast(s)
+        except ValueError:
+            pass
+    return s
+
+
+def clean_params(raw):
+    """화면이 보낸 파라미터를 거른다 — 파일에 쓰기 전의 문지방.
+
+    리스트·사전은 받지 않는다 — IPM 4점 같은 것은 «카메라 보정» 이 맡는다.
+    이름 검사와 되읽어 확인은 `set_params` 가 이어서 한다.
+    """
+    if not isinstance(raw, dict) or not raw:
+        raise ValueError("저장할 파라미터가 없습니다")
+    out = {}
+    for nid, kv in raw.items():
+        if not isinstance(kv, dict) or not kv:
+            raise ValueError(f"{nid} 아래에 값이 없습니다")
+        vals = {}
+        for k, v in kv.items():
+            if isinstance(v, (list, dict)):
+                raise ValueError(f"{nid}.{k} 는 여기서 못 고칩니다 — «카메라 보정» 에서")
+            if isinstance(v, str) and ("\n" in v or len(v) > 300):
+                raise ValueError(f"{nid}.{k} 값이 한 줄이 아니거나 너무 깁니다")
+            vals[str(k)] = _typed(v)
+        out[str(nid)] = vals
+    return out
 
 
 def set_params(node_params, target="local"):
