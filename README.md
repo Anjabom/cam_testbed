@@ -61,6 +61,7 @@ theta_deg: { topic: /lane_metrics, path: [theta_lane_deg, "data[2]"] }
 ├── fastdds_profile.xml            1080p 무손실 전송용 DDS 설정 (아래 §10)
 ├── web/                           로컬 웹앱 (표준 라이브러리만 — 의존성 0)
 │   ├── server.py                  runs/ 를 읽어 JSON 으로 · 작업 실행 API
+│   ├── shell.py                   같은 화면을 ★별도의 창★으로 (아래 §3.5)
 │   ├── index.html · app.js        단일 페이지 · 해시 라우팅
 │   ├── plot.js                    캔버스 시계열 (라이브러리 없음)
 │   └── style.css
@@ -139,13 +140,32 @@ python3 -m tb.run feedback <런> --vs <이전 런> # 결과 → 코드 개선 �
 ## 3.5 웹앱 — 모든 기능이 여기 있다
 
 ```bash
-python3 -m tb.run web            # http://127.0.0.1:8770
+python3 -m tb.run app            # ★별도의 창★ — 주소를 칠 필요가 없다
+python3 -m tb.run app --page exec  # 바로 '테스트 실행' 화면으로
+
+python3 -m tb.run web            # 서버만 (http://127.0.0.1:8770)
 python3 -m tb.run web --open     # 브라우저도 함께
 ```
 
 **외부 의존성 0 · 인터넷 불필요.** 표준 라이브러리만 쓰고 CDN·웹폰트·JS 라이브러리를
 하나도 안 씁니다. 대회 현장에서 네트워크가 없어도 그대로 돕니다.
-원격에서 볼 때만 SSH 포트포워딩(`ssh -L 8770:localhost:8770 …`).
+
+### `app` — 같은 화면, 별도의 창
+
+`app` 은 서버를 띄운 뒤 **주소창·탭·북마크가 없는 전용 창**을 열고, 그 창을 닫으면
+서버도 함께 내린다. 이미 `web` 이 그 포트에서 돌고 있으면 서버를 새로 띄우지 않고
+창만 붙는다.
+
+- **화면은 완전히 같다.** `web/app.js` 를 그대로 쓴다 — 창을 여는 방식만 다르다
+- **의존성은 여전히 0.** 이미 깔려 있는 크로미움 계열 브라우저(`google-chrome`,
+  `chromium`, `microsoft-edge`, `brave-browser`)의 앱 모드를 쓴다. Electron 도 Qt 도
+  설치하지 않는다. **하나도 없으면 안내하고 기본 브라우저로 내려간다** — 창을 못 띄운다고
+  아무것도 못 쓰게 두지 않는다
+- 전용 프로필(`~/.cache/cam-testbed/window/`)을 써서 **평소 쓰는 브라우저 세션과 섞이지
+  않고**, 작업표시줄에 별도 항목으로 잡히며, 창 크기·줌을 자기가 기억한다
+
+**원격(SSH)에서는 `web` 을 쓴다** — 별도 창은 화면이 있는 기계에서만 의미가 있다.
+`ssh -L 8770:localhost:8770 …` 로 포워딩한 뒤 손 안의 브라우저로 연다.
 
 | 화면 | 하는 일 |
 |---|---|

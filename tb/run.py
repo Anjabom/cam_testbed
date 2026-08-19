@@ -675,6 +675,14 @@ def cmd_web(args):
     return web_server.serve(args.host, args.port, args.open)
 
 
+def cmd_app(args):
+    """같은 화면을 ★별도의 창★으로 띄운다 (주소창·탭 없음)."""
+    import sys as _sys
+    _sys.path.insert(0, str(ROOT / "web"))
+    import shell as web_shell            # noqa: E402
+    return web_shell.launch(args.host, args.port, args.page, args.size)
+
+
 def cmd_inject(args):
     """합성 신호를 쏘아 변환 수학만 검사한다 (영상·YOLO 없음)."""
     from . import inject as INJ
@@ -962,6 +970,15 @@ def main(argv=None):
     w.add_argument("--port", type=int, default=8770)
     w.add_argument("--open", action="store_true", help="브라우저를 함께 연다")
     w.set_defaults(fn=cmd_web)
+
+    ap_ = sub.add_parser("app", help="같은 화면을 별도의 창으로 (주소창·탭 없음)")
+    ap_.add_argument("--host", default="127.0.0.1")
+    ap_.add_argument("--port", type=int, default=8770)
+    ap_.add_argument("--page", default="",
+                     help="열 화면. 예: exec, runs, calib (기본: 홈)")
+    ap_.add_argument("--size", default="1600,1000",
+                     help="첫 실행 때의 창 크기 W,H (그 뒤엔 창이 기억한다)")
+    ap_.set_defaults(fn=cmd_app)
 
     ij = sub.add_parser("inject",
                         help="합성 신호로 변환 수학만 검사 (영상·YOLO 없음)")
