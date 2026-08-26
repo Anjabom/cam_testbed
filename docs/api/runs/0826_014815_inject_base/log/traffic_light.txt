@@ -1,0 +1,36 @@
+~/yolo_env/lib/python3.10/site-packages/matplotlib/projections/__init__.py:63: UserWarning: Unable to import Axes3D. This may be due to multiple versions of Matplotlib being installed (e.g. as a system package and as a pip package). As a result, the 3D projection is not available.
+  warnings.warn("Unable to import Axes3D. This may be due to multiple versions of "
+[INFO] [1787676497.467595691] [traffic_light]: 신호등 엔진 클래스 = {0: 'GREEN', 1: 'RED'} (허용 [0, 1])
+[INFO] [1787676497.486479193] [traffic_light]: 정지선 엔진 클래스 = {0: 'crosswalk', 1: 'lain_lines', 2: 'stop-line'} (사용 id=2)
+[INFO] [1787676497.491962030] [traffic_light]: 🚦 traffic_light | img=/image_raw dev=cuda:0 conf=0.35 interval=1 ROI=(0, 0, 1920, 600) | 근접도 게이트=박스높이≥25px(물고 있는 동안 ×0.70) | 확정 hold=0.4s grace=0.3s age≤3.0s | 정지=리니어 2단 + /cmd_vel_raw 0/0 @30Hz | latch=OFF(빨간불 동안만) 허락=/tl_enable(master 체크박스) 또는 /tl_permit(driving DRIVE_RUN)
+   🛑 정지선: ★BEV 픽셀 거리★ 1단 ≤470px(3.85m) → 2단 ≤300px(2.46m) | conf=0.3 interval=1 확정 0.2s / 신선도 0.5s | 대기 상한 8.0s 또는 근접도 ×1.6 | ★정지선을 못 보면 종전대로 즉시 2단★
+   📐 카메라 보정 ON alpha=0 (usb_cam_calibration.yaml) | BEV 640x480 범퍼행=645px 사다리꼴 (730,650) (1190,650) (1720,1080) (200,1080) (0.0082 m/px)
+[WARN] [1787676498.493930991] [traffic_light]: ⏳ /image_raw 수신 대기 (usb_cam 미기동?)
+[WARN] [1787676503.494349470] [traffic_light]: ⏳ /image_raw 수신 대기 (usb_cam 미기동?)
+[WARN] [1787676509.493874594] [traffic_light]: ⏳ /image_raw 수신 대기 (usb_cam 미기동?)
+[WARN] [1787676512.577472661] [traffic_light]: 🧪 신호등 주입 ON (박스높이 15px) — ★인지는 시험되지 않는다★
+[WARN] [1787676513.515800312] [traffic_light]: 🧪 신호등 주입 모드 ON (15px) — 실차 금지
+[WARN] [1787676519.494365066] [traffic_light]: 🧪 신호등 주입 모드 ON (15px) — 실차 금지
+[WARN] [1787676525.494028941] [traffic_light]: 🧪 신호등 주입 모드 ON (15px) — 실차 금지
+[WARN] [1787676531.494090717] [traffic_light]: 🧪 신호등 주입 모드 ON (15px) — 실차 금지
+[WARN] [1787676537.493443964] [traffic_light]: 🧪 신호등 주입 모드 ON (15px) — 실차 금지
+[WARN] [1787676542.494005497] [traffic_light]: 🧪 신호등 주입 모드 ON (15px) — 실차 금지
+[WARN] [1787676548.493593427] [traffic_light]: 🧪 신호등 주입 모드 ON (15px) — 실차 금지
+[WARN] [1787676553.502043170] [traffic_light]: 🧪 신호등 주입 모드 ON (15px) — 실차 금지
+[WARN] [1787676559.494686476] [traffic_light]: 🧪 신호등 주입 모드 ON (15px) — 실차 금지
+[WARN] [1787676565.495400645] [traffic_light]: 🧪 신호등 주입 모드 ON (15px) — 실차 금지
+[WARN] [1787676571.504057410] [traffic_light]: 🧪 신호등 주입 모드 ON (15px) — 실차 금지
+[WARN] [1787676577.494187137] [traffic_light]: 🧪 신호등 주입 모드 ON (15px) — 실차 금지
+[WARN] [1787676583.496988974] [traffic_light]: 🧪 신호등 주입 모드 ON (15px) — 실차 금지
+[WARN] [1787676589.497944458] [traffic_light]: 🧪 신호등 주입 모드 ON (15px) — 실차 금지
+[WARN] [1787676595.493939044] [traffic_light]: 🧪 신호등 주입 모드 ON (15px) — 실차 금지
+[WARN] [1787676601.494294167] [traffic_light]: 🧪 신호등 주입 모드 ON (15px) — 실차 금지
+[WARN] [1787676607.493883515] [traffic_light]: 🧪 신호등 주입 모드 ON (15px) — 실차 금지
+[WARN] [1787676612.494765576] [traffic_light]: 🧪 신호등 주입 모드 ON (15px) — 실차 금지
+[WARN] [1787676618.493415133] [traffic_light]: 🧪 신호등 주입 모드 ON (15px) — 실차 금지
+[WARN] [1787676623.494713814] [traffic_light]: 🧪 신호등 주입 모드 ON (15px) — 실차 금지
+[WARN] [1787676629.494011532] [traffic_light]: 🧪 신호등 주입 모드 ON (15px) — 실차 금지
+[WARN] [1787676633.494136387] [traffic_light]: ⛔ /image_raw 3.0s 두절 — 카메라 확인!  ※ 신호등 개입은 하지 않는다
+[WARN] [1787676635.493572377] [traffic_light]: 🧪 신호등 주입 모드 ON (15px) — 실차 금지
+terminate called without an active exception
+[ros2run]: Aborted

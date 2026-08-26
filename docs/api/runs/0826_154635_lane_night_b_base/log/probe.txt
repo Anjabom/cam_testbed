@@ -1,0 +1,9 @@
+[INFO] [1787726796.004868445] [testbed_probe]: 구독: /lane/state [std_msgs/msg/Float32MultiArray]
+[INFO] [1787726796.006312611] [testbed_probe]: 구독: /lane_metrics [std_msgs/msg/Float32MultiArray]
+[INFO] [1787726796.007122524] [testbed_probe]: 구독: /tl/state [std_msgs/msg/String]
+[INFO] [1787726796.007649976] [testbed_probe]: 구독: /stop_line_dist [std_msgs/msg/Float32]
+[INFO] [1787726796.008131191] [testbed_probe]: 구독: /crosswalk_dist [std_msgs/msg/Float32]
+[INFO] [1787726796.008607798] [testbed_probe]: 구독: /judgment_state [std_msgs/msg/String]
+[INFO] [1787726796.009164334] [testbed_probe]: 구독: /brake_level [std_msgs/msg/Int32]
+[INFO] [1787726796.029950595] [testbed_probe]: 구독: /cmd_vel_raw [geometry_msgs/msg/Twist]
+[INFO] [1787726866.095208551] [testbed_probe]: 기록 6055건 | /lane/state:930, /lane_metrics:930, /tl/state:930, /stop_line_dist:930, /crosswalk_dist:930, /judgment_state:86, /brake_level:11, /cmd_vel_raw:1308

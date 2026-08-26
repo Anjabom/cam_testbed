@@ -1,0 +1,12 @@
+[INFO] [1787721802.893784486] [testbed_viewer]: 저작 배경 영상 구독: /image_raw
+Warning: Ignoring XDG_SESSION_TYPE=wayland on Gnome. Use QT_QPA_PLATFORM=wayland to run on Wayland anyway.
+[INFO] [1787721854.555110733] [testbed_viewer]: 🧪 frame 331 → RED_FAR(먼 빨강) (15.0)
+[INFO] [1787721859.479680531] [testbed_viewer]: 🧪 frame 385 → RED(가까운 빨강) (40.0)
+[INFO] [1787721865.197380571] [testbed_viewer]: 🧪 frame 443 → 없음(빨강 꺼짐) (0.0)
+[INFO] [1787721883.161088386] [testbed_viewer]: 🧪 frame 632 → RED_FAR(먼 빨강) (15.0)
+[INFO] [1787721888.808657546] [testbed_viewer]: 🧪 frame 692 → RED(가까운 빨강) (40.0)
+[INFO] [1787721895.038857434] [testbed_viewer]: 🧪 frame 756 → 없음(빨강 꺼짐) (0.0)
+
+타임라인 저작 결과 — 시나리오의 stimulus.aux 항목에 붙일 것:
+    schedule: {331: 15.0, 385: 40.0, 443: 0.0, 632: 15.0, 692: 40.0, 756: 0.0}   # 331=RED_FAR(먼 빨강) · 385=RED(가까운 빨강) · 443=없음(빨강 꺼짐) · 632=RED_FAR(먼 빨강) · 692=RED(가까운 빨강) · 756=없음(빨강 꺼짐)
+

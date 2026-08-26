@@ -1,0 +1,15 @@
+[INFO] [1787726796.003101863] [camera_judgment]: 🎥 camera_judgment | px2m=0.006 d_near=0.78m yaw_off=+0.0° | TL=on decel=1.0 margin=0.5m hold=0.4s gap_grace=0.3s brake=2단 | CW=on cap=1.0m/s | 게이트: 폭1.8~4.5m 점프≤0.35m conf≥0.15
+[INFO] [1787726796.042579977] [camera_judgment]: 🛑 리니어 브레이크 0단 (해제)
+[WARN] [1787726796.990845230] [camera_judgment]: ⏳ /lane/state 수신 대기 (perception 미기동?)
+[WARN] [1787726801.991602482] [camera_judgment]: ⏳ /lane/state 수신 대기 (perception 미기동?)
+[INFO] [1787726816.042983422] [camera_judgment]: 🛑 리니어 브레이크 2단 (체결 — 신호등 정지)
+[INFO] [1787726816.095316074] [camera_judgment]: 🛑 리니어 브레이크 0단 (해제)
+[INFO] [1787726816.191280587] [camera_judgment]: 🛑 리니어 브레이크 2단 (체결 — 신호등 정지)
+[INFO] [1787726816.391585343] [camera_judgment]: 🛑 리니어 브레이크 0단 (해제)
+[INFO] [1787726816.541799622] [camera_judgment]: 🛑 리니어 브레이크 2단 (체결 — 신호등 정지)
+[INFO] [1787726816.641800686] [camera_judgment]: 🛑 리니어 브레이크 0단 (해제)
+[INFO] [1787726816.791749456] [camera_judgment]: 🛑 리니어 브레이크 2단 (체결 — 신호등 정지)
+[INFO] [1787726816.892484670] [camera_judgment]: 🛑 리니어 브레이크 0단 (해제)
+[INFO] [1787726816.941057292] [camera_judgment]: 🛑 리니어 브레이크 2단 (체결 — 신호등 정지)
+[INFO] [1787726817.241756310] [camera_judgment]: 🛑 리니어 브레이크 0단 (해제)
+[WARN] [1787726861.991406353] [camera_judgment]: ⛔ /lane/state 2.6s 두절 — 카메라/perception 확인!

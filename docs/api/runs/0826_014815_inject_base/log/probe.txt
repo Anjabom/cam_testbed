@@ -1,0 +1,10 @@
+[INFO] [1787676497.923659486] [testbed_probe]: 구독: /tl/state [std_msgs/msg/String]
+[INFO] [1787676497.924385663] [testbed_probe]: 구독: /tl/stop_line_px [std_msgs/msg/Float32]
+[INFO] [1787676497.924839832] [testbed_probe]: 구독: /tl/stop_line_y [std_msgs/msg/Float32]
+[INFO] [1787676497.925342081] [testbed_probe]: 구독: /tl/stop_line_wait [std_msgs/msg/Bool]
+[INFO] [1787676497.925739634] [testbed_probe]: 구독: /tl/near_metric [std_msgs/msg/Float32]
+[INFO] [1787676497.926585484] [testbed_probe]: 구독: /tl/red_far [std_msgs/msg/Bool]
+[INFO] [1787676497.927072004] [testbed_probe]: 구독: /brake_level [std_msgs/msg/Int32]
+[INFO] [1787676497.927457284] [testbed_probe]: 구독: /tl_brake_req [std_msgs/msg/Int32]
+[INFO] [1787676497.944619358] [testbed_probe]: 구독: /cmd_vel_raw [geometry_msgs/msg/Twist]
+[INFO] [1787676635.594763419] [testbed_probe]: 기록 20352건 | /tl/state:1292, /tl/stop_line_px:4120, /tl/stop_line_y:4119, /tl/stop_line_wait:4119, /tl/near_metric:1292, /tl/red_far:1292, /brake_level:0, /tl_brake_req:4118, /cmd_vel_raw:0
