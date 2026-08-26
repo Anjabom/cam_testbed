@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>카메라 테스트베드</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="#/">
+      <span class="dot"></span>
+      <span>카메라 테스트베드</span>
+    </a>
+    <nav>
+      <a href="#/" data-nav="home">홈</a>
+      <a href="#/newtest" data-nav="newtest">새 시험 시작</a>
+      <a href="#/exec" data-nav="exec">테스트 실행</a>
+      <a href="#/runs" data-nav="runs">실행 기록</a>
+      <a href="#/compare" data-nav="compare">결과 비교</a>
+    </nav>
+    <span class="sep"></span>
+    <nav class="sub">
+      <a href="#/calib" data-nav="calib">카메라 보정</a>
+      <a href="#/baselines" data-nav="baselines">기준 관리</a>
+      <a href="#/check" data-nav="check">환경 점검</a>
+      <a href="#/tools" data-nav="tools">도구</a>
+      <a href="#/help" data-nav="help">사용 안내</a>
+    </nav>
+    <span class="spacer"></span>
+    <span class="hint" id="hint"></span>
+  </header>
+
+  <main id="view"><div class="loading">불러오는 중…</div></main>
+
+  <footer class="bot">
+    <span id="footmeta"></span>
+    <span class="spacer"></span>
+    <span>표준 라이브러리만 · 판정은 엔진이 한다</span>
+  </footer>
+
+  <script>window.STATIC = 1;</script>
+  <script src="plot.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

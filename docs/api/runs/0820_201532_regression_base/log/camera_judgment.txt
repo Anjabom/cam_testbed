@@ -1,0 +1,6 @@
+[INFO] [1787224533.054091613] [camera_judgment]: 🎥 camera_judgment | px2m=0.006 d_near=0.78m yaw_off=+0.0° | TL=on decel=1.0 margin=0.5m hold=0.4s gap_grace=0.3s brake=2단 | CW=on cap=1.0m/s | 게이트: 폭1.8~4.5m 점프≤0.35m conf≥0.15
+[INFO] [1787224533.219745418] [camera_judgment]: 🛑 리니어 브레이크 0단 (해제)
+[WARN] [1787224534.037813013] [camera_judgment]: ⏳ /lane/state 수신 대기 (perception 미기동?)
+[WARN] [1787224539.038247203] [camera_judgment]: ⏳ /lane/state 수신 대기 (perception 미기동?)
+[WARN] [1787224545.037823487] [camera_judgment]: ⏳ /lane/state 수신 대기 (perception 미기동?)
+[WARN] [1787224570.038818030] [camera_judgment]: ⛔ /lane/state 2.5s 두절 — 카메라/perception 확인!

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -656,6 +657,188 @@ def t_bev_rows():
     eq("순서는 기준선 먼저", cal.bev_keys()[0], "bump")
 
 
+def t_calib_drift():
+    """계약의 `default:` 가 노드 기본값과 어긋난 것을 잡는가. [2026-08-25]
+
+    ★이 드리프트는 판정을 안 건드려서 조용하다★ 그림과 게이트 통과율만 바뀐다.
+    실제로 night_b 에서 사다리꼴이 어긋난 채 거리선이 205px 먼 곳에 그려졌고,
+    멀쩡한 판정값을 버그로 읽었다.
+    """
+    from .lint import lint_calibration_drift as drift
+    c = _contract(calibration={"targets": {
+        "quad": {"kind": "quad", "nodes": ["n"], "param": "q",
+                 "default": [10, 20, 50, 20, 60, 48, 4, 48]},
+        "bump": {"kind": "bev_row", "nodes": ["n"], "param": "bp", "default": 48.0},
+        "roi": {"kind": "rect", "nodes": ["n"],
+                "params": ["x0", "y0", "x1", "y1"], "default": [0, 0, 64, 32]},
+        "nodef": {"kind": "scale", "nodes": ["n"], "param": "s"},   # default 없음
+    }})
+    eq("캐시가 없으면 아무 말 안 한다", drift(c, {}), [])
+    eq("같으면 조용하다", drift(c, {"n": {
+        "q": [10, 20, 50, 20, 60, 48, 4, 48], "bp": 48.0,
+        "x0": 0, "y0": 0, "x1": 64, "y1": 32}}), [])
+    eq("int/float 차이는 드리프트가 아니다", drift(c, {"n": {"bp": 48}}), [])
+    eq("리스트 한 칸만 달라도 잡는다",
+       len(drift(c, {"n": {"q": [10, 20, 50, 20, 60, 48, 4, 99]}})), 1)
+    eq("여러 파라미터짜리 대상도 잡는다",
+       len(drift(c, {"n": {"x0": 0, "y0": 0, "x1": 64, "y1": 99}})), 1)
+    #  ★캐시에 없는 파라미터로 경고를 만들지 않는다★ 노드가 그 값을 선언하지
+    #  않는 것과 '다르다' 는 것은 다른 이야기다 — 여기서 떠들면 늘 빨개진다.
+    eq("캐시에 없으면 넘어간다", drift(c, {"n": {"관계없는것": 1}}), [])
+    eq("default 없는 대상은 대조 안 한다", drift(c, {"n": {"s": 0.5}}), [])
+
+    #  ★이 저장소의 계약은 캐시와 맞아야 한다★ (캐시가 있을 때만 본다 —
+    #  다른 기계에는 runs/_params/ 가 없다)
+    from .run import load_ws_params
+    from .contract import load as _load
+    for f in sorted((Path(__file__).resolve().parent.parent / "contracts").glob("*.yaml")):
+        try:
+            cc = _load(f)
+        except Exception:      # noqa: BLE001
+            continue           # 초안 계약은 t_repo_contracts 가 따로 본다
+        ws = load_ws_params(cc)
+        if ws:
+            eq(f"{f.name} 의 default 가 노드와 같은가", drift(cc, ws), [])
+
+
+def t_calib_provenance():
+    """기하가 바뀌면 ★기준과 비교할 수 없다★ 고 말해 주는가. [2026-08-25]
+
+    사다리꼴·범퍼행이 바뀌면 sl_px 의 뜻 자체가 바뀐다. 그런데 그 값들은 아무도
+    ★요청★ 하지 않아 meta 의 params 에 안 남는다 — 노드 기본값이 조용히 바뀌면
+    조건은 '같다' 로 나오고, 회귀 비교가 ★기하 변화를 노드 회귀로 읽는다★.
+    """
+    import tempfile
+    from pathlib import Path as _P
+    from .run import _calib_snapshot, _provenance_diff
+    c = _contract(calibration={
+        "undistort": {"param": "und"},
+        "targets": {
+            "quad": {"kind": "quad", "nodes": ["n"], "param": "q"},
+            "bump": {"kind": "bev_row", "nodes": ["n"], "param": "bp"},
+        }},
+        nodes=[{"id": "n", "package": "p", "executable": "e"}])
+    with tempfile.TemporaryDirectory() as d:
+        rd = _P(d)
+        eq("params_actual 없으면 None", _calib_snapshot(c, rd), None)
+        (rd / "params_actual.yaml").write_text(
+            "params:\n  n:\n    und: true\n    q: [1, 2, 3, 4, 5, 6, 7, 8]\n"
+            "    bp: 480.0\n    무관한것: 9\n")
+        snap = _calib_snapshot(c, rd)
+        eq("캘리브 대상만 담는다", snap,
+           {"n": {"und": True, "q": [1, 2, 3, 4, 5, 6, 7, 8], "bp": 480.0}})
+        #  ★가중치 하나 늘었다고 기준이 죽으면 안 된다★ 그래서 대상만 담는다
+        eq("무관한 파라미터는 조건이 아니다", "무관한것" in snap["n"], False)
+
+    now = {"n": {"und": True, "q": [1, 2, 3, 4, 5, 6, 7, 8], "bp": 645.0}}
+    eq("범퍼행이 바뀌면 비교 불가",
+       [k for k, _a, _b in _provenance_diff({"calib": snap}, {"calib": now})],
+       ["calib"])
+    eq("같으면 조용하다", _provenance_diff({"calib": snap}, {"calib": snap}), [])
+    #  옛 런에는 calib 이 없다(None) — None 끼리는 같으므로 종전 기준이 그대로 산다
+    eq("옛 런끼리는 종전대로", _provenance_diff({}, {}), [])
+
+
+def t_render_params():
+    """오버레이가 ★그 런이 실제로 쓴 값★ 으로 그려지는가. [2026-08-25]
+
+    여기가 틀리면 판정값은 멀쩡한데 그림만 엉뚱한 곳에 얹혀, 멀쩡한 값을 버그로
+    읽게 된다(night_b 에서 실제로 그랬다 — 사다리꼴이 어긋나 거리선이 205px 먼
+    곳에 그려졌다). 그림은 조용히 틀리기 때문에 검사로 잡아야 한다.
+    """
+    import json as _j
+    import tempfile
+    from pathlib import Path as _P
+    from .harvest import effective_params
+    from .render import Renderer, _target_value
+    c = _contract(calibration={
+        "bev": {"w": 64, "h": 48},
+        "targets": {
+            "quad": {"kind": "quad", "nodes": ["n"], "param": "q",
+                     "default": [10, 20, 50, 20, 60, 48, 4, 48]},
+            "bump": {"kind": "bev_row", "nodes": ["n"], "param": "bp",
+                     "default": 48.0},
+            "b1": {"kind": "bev_dist", "nodes": ["n"], "param": "d1",
+                   "default": 30.0},
+            "sc": {"kind": "scale", "nodes": ["n"], "param": "s", "default": 0.01},
+        }},
+        render={"bev_dist": {"distance": "a", "missing": -1}})
+
+    # ── ① 값이 여럿인 대상은 ★리스트 그대로★ 나와야 한다 ──────────────
+    #   여기서 첫 개만 돌려주던 탓에 quad 가 reshape(4,2) 에서 죽었다.
+    t = c.raw["calibration"]["targets"]["quad"]
+    eq("리스트 파라미터는 통째로",
+       _target_value(t, {"n": {"q": [1, 2, 3, 4, 5, 6, 7, 8]}}),
+       [1, 2, 3, 4, 5, 6, 7, 8])
+    eq("스칼라 파라미터",
+       _target_value(c.raw["calibration"]["targets"]["bump"], {"n": {"bp": 60.0}}),
+       [60.0])
+
+    # ── ② params 에 사다리꼴이 있으면 그것으로 그린다 ──────────────────
+    R = Renderer(c, {"n": {"q": [1, 2, 33, 2, 44, 48, 5, 48], "bp": 40.0, "d1": 12.0}})
+    eq("params 사다리꼴 4×2", R.quad.reshape(-1).tolist(),
+       [1.0, 2.0, 33.0, 2.0, 44.0, 48.0, 5.0, 48.0])
+    eq("params 사다리꼴이면 경고 없음", R.quad_guessed, False)
+    eq("params 기준선", R._bumper_y(), 40.0)
+    eq("params 문턱 행", R._row_y("bev_dist", 12.0), 28.0)      # 40 - 12
+
+    # ── ③ 없으면 계약 default 로 떨어지되 ★그 사실을 남긴다★ ──────────
+    R2 = Renderer(c, {})
+    eq("default 사다리꼴", R2.quad.reshape(-1).tolist(),
+       [10.0, 20.0, 50.0, 20.0, 60.0, 48.0, 4.0, 48.0])
+    eq("default 로 떨어지면 경고", R2.quad_guessed, True)
+    eq("default 기준선", R2._bumper_y(), 48.0)
+    eq("default 배율", R2.bd_px2m, 0.01)
+
+    # ── ④ 실효값(params_actual) 이 요청값(summary.meta) 을 이긴다 ──────
+    with tempfile.TemporaryDirectory() as d:
+        rd = _P(d)
+        (rd / "summary.json").write_text(_j.dumps(
+            {"summary": {"meta": {"params": {"n": {"q": [0, 0, 1, 0, 1, 1, 0, 1]}}}}}))
+        eq("params_actual 없으면 meta", effective_params(rd),
+           {"n": {"q": [0, 0, 1, 0, 1, 1, 0, 1]}})
+        (rd / "params_actual.yaml").write_text(
+            "params:\n  n:\n    q: [9, 9, 8, 9, 8, 8, 9, 8]\n")
+        eq("params_actual 이 우선", effective_params(rd),
+           {"n": {"q": [9, 9, 8, 9, 8, 8, 9, 8]}})
+        (rd / "params_actual.yaml").write_text("이건: [깨진\n  yaml")
+        eq("깨진 덤프는 meta 로 폴백", effective_params(rd),
+           {"n": {"q": [0, 0, 1, 0, 1, 1, 0, 1]}})
+
+
+def t_aux_schedule():
+    """타임라인 주입 — 계단 값 선택과 계약↔시나리오 병합. [2026-08-25]
+
+    ★여기가 틀리면 전이 프레임의 값이 어긋나 정지선 게이트가 엉뚱하게 열린다.★
+    """
+    from .player import sched_value
+    pts = [(0, 0.0), (300, 15.0), (520, 40.0)]
+    eq("첫 점 이전은 None", sched_value([(300, 15.0)], 299), None)
+    eq("정확히 그 프레임", sched_value(pts, 300), 15.0)
+    eq("사이는 앞 값 유지", sched_value(pts, 400), 15.0)
+    eq("경계 직전", sched_value(pts, 519), 15.0)
+    eq("다음 점부터", sched_value(pts, 520), 40.0)
+    eq("끝 이후도 유지", sched_value(pts, 99999), 40.0)
+    eq("0프레임부터 상수", sched_value([(0, 15.0)], 0), 15.0)
+
+    #  계약의 aux 정의(토픽·타입·저작키)에 시나리오의 schedule 이 얹히는가.
+    #  ★계약은 안 바뀐다★ — run.py 가 새 dict 를 만든다.
+    from .run import _deep_merge
+    contract_aux = [{"topic": "/tl_enable", "type": "std_msgs/msg/Bool",
+                     "fields": {"data": True}},
+                    {"topic": "/tl/fake_box_h", "type": "std_msgs/msg/Float32",
+                     "field": "data", "keys": {"f": {"value": 15.0}}}]
+    sc_sched = {"/tl/fake_box_h": {0: 0.0, 300: 15.0}}
+    va_sched = {}
+    sched = _deep_merge(sc_sched, va_sched)
+    merged = [dict(a, schedule=sched[a["topic"]]) if a["topic"] in sched else a
+              for a in contract_aux]
+    eq("허락 항목은 그대로", merged[0].get("schedule"), None)
+    eq("주입 항목에 schedule 얹힘", merged[1]["schedule"], {0: 0.0, 300: 15.0})
+    eq("계약 원본은 불변", contract_aux[1].get("schedule"), None)
+    eq("저작키는 보존", merged[1]["keys"], {"f": {"value": 15.0}})
+
+
 def t_webapp_js():
     """웹앱 스크립트가 ★문법상 성한가★.
 
@@ -856,6 +1039,61 @@ def t_lint():
         eq(f"{f.name} 이름 정합", bad, [])
 
 
+def t_aux_schedule_write():
+    """저작한 타임라인을 시나리오에 쓴다 — ★다른 내용·주석을 안 건드리는가★. [2026-08-25]
+
+    줄 단위 수술이라 파일 모양이 예상과 다르면 조용히 엉뚱한 곳에 붙는다. 여기가
+    틀리면 --watch 저작이 시나리오를 망가뜨린다.
+    """
+    import yaml as Y
+    from . import config as C
+    scen = C.ROOT / "scenarios" / "_selftest_aux.yaml"
+    try:
+        # ── ① aux_schedule 이 이미 있는 시나리오 — 블록을 갈아 끼운다 ──────
+        scen.write_text(
+            "name: x\n"
+            "contract: c.yaml\n"
+            "video: v\n"
+            "aux_schedule:\n"
+            "  # 손으로 쓴 설명 — 값이 바뀌면 이 주석은 사라져야 맞다\n"
+            '  "/tl/fake_box_h": {0: 15.0}\n'
+            "params:\n"
+            "  traffic_light:\n"
+            "    show_window: false   # 이 주석은 ★반드시★ 살아야 한다\n"
+            "variants:\n"
+            "  - {name: base, perturb: none}\n")
+        C.set_aux_schedule("_selftest_aux.yaml", {"/tl/fake_box_h": {0: 0.0, 543: 35.0}})
+        txt = scen.read_text()
+        d = Y.safe_load(txt)
+        eq("스케줄이 갈렸다", d["aux_schedule"]["/tl/fake_box_h"], {0: 0.0, 543: 35.0})
+        eq("params 주석 보존", "이 주석은 ★반드시★ 살아야 한다" in txt, True)
+        eq("다른 키 보존", (d["name"], d["video"]), ("x", "v"))
+        eq("params 값 보존", d["params"]["traffic_light"]["show_window"], False)
+        eq("variants 보존", d["variants"][0]["name"], "base")
+        eq("저작 표식 부착", "저작됨" in txt, True)
+        eq("손주석은 사라진다", "손으로 쓴 설명" in txt, False)
+
+        # ── ② aux_schedule 이 없던 시나리오 — 새로 넣는다 ────────────────
+        scen.write_text(
+            "name: y\n"
+            "contract: c.yaml\n"
+            "video: v   # 이 주석도 살아야 한다\n"
+            "params: {}\n")
+        C.set_aux_schedule("_selftest_aux.yaml", {"/t": {5: 1}})
+        d2 = Y.safe_load(scen.read_text())
+        eq("없던 스케줄 추가", d2["aux_schedule"]["/t"], {5: 1})
+        eq("추가해도 주석 보존", "이 주석도 살아야 한다" in scen.read_text(), True)
+
+        # ── ③ 빈 스케줄은 거부한다 ───────────────────────────────────────
+        try:
+            C.set_aux_schedule("_selftest_aux.yaml", {})
+            eq("빈 스케줄 거부", "안 막음", "막아야 함")
+        except ValueError:
+            pass
+    finally:
+        scen.unlink(missing_ok=True)
+
+
 def t_scenario_template():
     """빈 틀로 만든 시나리오에도 판정이 있는가 (없으면 리포트가 늘 초록이다)."""
     import yaml as Y
@@ -867,6 +1105,34 @@ def t_scenario_template():
     #  이 둘은 ★요약 지표★ 라 신호 이름을 안 쓴다 — 어느 계약에 붙여도 유효하다
     eq("신호 이름을 안 쓴다",
        all("signal" not in c and "where" not in c for c in d["checks"]), True)
+
+
+def t_publish_names():
+    """정적 사이트의 파일 이름 — app.js 의 apiURL() 과 한 글자도 어긋나면 안 된다.
+
+    어긋나면 사이트가 「오류: HTTP 404」 로만 열린다. 화면이 왜 비었는지
+    브라우저에서는 알 수 없으므로(서버 로그도 없다) 여기서 잡는다.
+    """
+    from .publish import TEXTY, api_path
+
+    eq("목록", api_path("/api/runs"), "api/runs.json")
+    eq("메타", api_path("/api/meta"), "api/meta.json")
+    eq("기준", api_path("/api/baselines"), "api/baselines.json")
+    eq("런 하나", api_path("/api/runs/0825_x"), "api/runs/0825_x.json")
+    eq("신호", api_path("/api/runs/0825_x/signals"), "api/runs/0825_x/signals.json")
+    eq("리포트", api_path("/api/runs/0825_x/report"), "api/runs/0825_x/report.txt")
+    eq("비교", api_path("/api/runs/0825_x/compare"), "api/runs/0825_x/compare.txt")
+    eq("피드백", api_path("/api/runs/0825_x/feedback"), "api/runs/0825_x/feedback.txt")
+    #  쿼리는 경로 한 칸이 된다 — 정적 호스팅은 쿼리스트링으로 파일을 못 고른다
+    eq("로그", api_path("/api/runs/0825_x/log?name=perception"),
+       "api/runs/0825_x/log/perception.txt")
+
+    #  ★JS 쪽과 대조★ — 텍스트/JSON 구분을 한쪽만 바꾸면 그 탭만 조용히 빈다.
+    js = (Path(__file__).resolve().parent.parent / "web" / "app.js").read_text()
+    m = re.search(r"var TEXTY = \{([^}]*)\}", js)
+    eq("app.js 에 TEXTY 가 있다", bool(m), True)
+    if m:
+        eq("TEXTY 가 양쪽 같다", set(re.findall(r"(\w+):", m.group(1))), TEXTY)
 
 
 def main():

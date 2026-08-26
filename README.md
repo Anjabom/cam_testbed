@@ -76,6 +76,7 @@ theta_deg: { topic: /lane_metrics, path: [theta_lane_deg, "data[2]"] }
 ├── tb/
 │   ├── render.py                  ★경로 생성 시각화★ — 판정에 쓴 값으로 다시 그림
 │   ├── harvest.py                 조건에 맞는 프레임을 원본에서 추출
+│   ├── publish.py                 ★정적 사이트로 내보내기★ — 결과 공유 (§11.7)
 │   ├── selftest.py                테스트베드 자체 검사 (ROS·영상 불필요)
 │   ├── inject.py                  합성 신호 주입 — 변환 수학 격리 검증
 │   ├── expr.py                    계약 조건식의 안전한 평가기
@@ -89,6 +90,7 @@ theta_deg: { topic: /lane_metrics, path: [theta_lane_deg, "data[2]"] }
 │   ├── analyze.py                 지표 · 불변식 · 회귀비교 · 리포트
 │   └── run.py                     오케스트레이션 CLI
 ├── baselines/                     회귀 기준 CSV
+├── docs/                          ★내보낸 정적 사이트★ — GitHub Pages 가 여기서 읽는다
 └── runs/                          실행 결과
 ```
 
@@ -102,28 +104,40 @@ theta_deg: { topic: /lane_metrics, path: [theta_lane_deg, "data[2]"] }
 
 ---
 
-## 3. 사용법
+## 3. 사용법 — 웹앱으로 쓴다
+
+**이 테스트베드는 웹앱이다.** 실행·비교·기준 등록·재해석·피드백·캘리브레이션·프레임
+탐색이 전부 화면 안에 있다. 사람이 치는 명령은 실질적으로 웹앱을 띄우는 것 하나다.
 
 ```bash
 source /opt/ros/humble/setup.bash
 cd ~/cam_testbed
 cp local.yaml.example local.yaml     # 최초 1회: 가중치·영상 경로를 이 머신에 맞춘다
 
-python3 -m tb.selftest                                     # 테스트베드 자체 검사
-python3 -m tb.run doctor                                   # 환경/계약 점검
-python3 -m tb.run run --scenario scenarios/regression.yaml # 실행
-python3 -m tb.run baseline <런디렉토리명> --name regression # 기준으로 등록
-# 코드를 고친 뒤 다시:
-python3 -m tb.run run --scenario scenarios/regression.yaml # 기준과 자동 비교
-python3 -m tb.run list
-python3 -m tb.run compare <기준> <런>          # 임의의 두 결과 비교
-python3 -m tb.run reanalyze <런>               # 계약 수정 후 재해석 (재실행 불필요)
-python3 -m tb.run feedback <런> --vs <이전 런> # 결과 → 코드 개선 요청문 (feedback.md)
+python3 -m tb.run app                 # 웹앱을 별도 창으로 (자세히는 §3.5)
+```
+
+첫 화면이 «환경 점검»으로 안내하고, 거기서부터 실행 → 기준 등록 → 코드 수정 후
+재실행 → 비교 → 피드백까지 화면을 따라가면 된다. CLI 로 되던 명령은 **「도구」 탭**에
+그대로 있다(§3.5 아래 「터미널에서 되는 것은 웹에서도 된다」 대응표).
+
+**웹앱 밖에서 직접 치는 것은 셋뿐이다** — 웹앱을 띄우거나, 웹앱이 죽었을 때도 돌아야
+하는 것들이다:
+
+```bash
+python3 -m tb.run app                 # ← 웹앱 자신
+python3 -m tb.selftest                # 자체 검사 (ROS·영상 불필요)
+python3 -m flake8 tb web              # 린트 (max-line-length 100)
 ```
 
 `tb.selftest` 는 ROS 도 영상도 없이 도는 순수 함수 검사다. 경로식 평가·드리프트 판정·
 상태유지·시퀀스 비교처럼 **여기가 틀리면 모든 판정이 틀리는** 부분만 본다.
-계약 문법을 손볼 때 먼저 돌린다.
+계약 문법을 손볼 때 먼저 돌린다(웹앱의 «환경 점검»에도 버튼이 있다).
+
+> **CLI 는 지울 수 없다 — 웹앱의 실행 엔진이다.** 웹 서버는 각 명령을 `subprocess` 로
+> 띄운다(`web/server.py` 의 `COMMANDS[kind]["module"]` 가 곧 명령줄). 그래서 아래에 남은
+> `tb.run …` 예시들은 "웹앱이 내부적으로 무엇을 부르는가"이기도 하다 — 급하면 직접 쳐도
+> 같은 결과가 나온다.
 
 처음 쓰는 머신이라면 `cp` 한 줄로 끝나지 않는다 — 계약의 `workspace:` 와 베이스라인까지
 손봐야 한다. 이식 절차 전체는 **§11.5**.
@@ -1342,6 +1356,69 @@ git add -A && git commit -m "…" && git push
 git config --global user.name  "Anjabom"
 git config --global user.email "vk1124x@gmail.com"
 ```
+
+---
+
+## 11.7 결과를 남에게 보여 주기 — 정적 사이트로 내보내기
+
+ROS 도 영상도 없는 사람에게 **결과만** 보여 줘야 할 때가 있다(팀원 리뷰, 대회 제출).
+웹앱을 그대로 호스팅할 수는 없다 — 절반이 서버이기 때문이다. 대신 **읽기 화면만
+파일로 구워** 정적 호스팅에 올린다.
+
+```bash
+python3 -m tb.run publish                  # ★핀 꽂은 실행만★ → docs/
+python3 -m tb.run publish --run 0825_x     # 이름으로 지정 (여러 번 쓸 수 있다)
+python3 -m tb.run publish --all            # 전부
+```
+
+「도구」 탭에도 **«정적 사이트 내보내기»** 로 있다.
+
+**왜 이게 되나** — 읽기 화면은 전부 `web/app.js` 의 `get()` 하나를 지나가고,
+서버는 `runs/` 의 파일을 JSON 으로 옮길 뿐이다. **판정은 이미 엔진이 끝내
+`summary.json` 에 들어 있다.** 그래서 서버의 그 함수를 그대로 불러 응답을 파일로
+구워 두면 같은 화면이 그대로 열린다 — 화면 코드를 한 벌 더 쓰지 않는다.
+
+| 나가는 것 | 빠지는 것 |
+|---|---|
+| 실행 기록 · 실행 상세 · 요약 카드 · 체크 | 테스트 실행 · 새 시험 시작 · 카메라 보정 |
+| 신호 통계 · 시계열 그래프 · 리포트 · 비교 · 피드백 | 도구 · 환경 점검 · 휴지통 · 결과 비교(실행기) |
+| 노드 로그 · 기준 관리 · 사용 안내 | 시각화 · 프레임 탐색 (원본 영상이 필요하다) |
+
+빠지는 화면을 열면 「없는 경로」가 아니라 **왜 없는지와 직접 돌리는 법**을 안내한다.
+`app.js` 가 `window.STATIC` 을 보고 판단하고, 그 플래그는 `tb/publish.py` 가
+`index.html` 에 심는다.
+
+### 함정 — 여기 데인 것들
+
+- **공개된다.** `summary.json` 의 `meta` 에는 워크스페이스·가중치·영상의 **절대경로**가
+  들어 있다. 그대로 올리면 사용자 이름과 머신 구조가 같이 나간다 →
+  `publish.py` 가 `/home/<사용자>` 를 `~` 로 바꿔 굽는다.
+- **기본이 「핀 꽂은 실행만」인 이유.** 공개는 되돌리기 어렵다. 웹앱 «실행 기록» 에서
+  📌 를 찍은 것만 나간다 — `--all` 은 의식적으로 쳐야 한다.
+- **노드 로그는 `.txt` 로 굽는다.** `.gitignore` 의 `*.log` 에 걸려 커밋이 조용히
+  빠지면 사이트에서만 로그가 사라진다.
+- **`.gitignore` 의 `runs/` 는 `/runs/` 여야 한다.** 앞의 `/` 가 없으면 어느 깊이의
+  `runs` 든 걸려서 `docs/api/runs/` 가 통째로 빠진다 — 로컬에서는 멀쩡한데
+  **배포된 사이트만 「HTTP 404」로 열린다**(실제로 이렇게 당했다). 내보낸 뒤
+  `git add -n docs | wc -l` 로 파일 수를 세 보면 바로 보인다.
+- **`.nojekyll` 이 필요하다.** Jekyll 은 `_` 로 시작하는 이름을 숨긴다.
+- **`raw.jsonl` 은 안 나간다**(런당 3~4MB, 뷰어가 읽지 않는다). 런 하나가 **~150KB** 다.
+  영상·프레임 이미지도 굽지 않는다 — 넣으면 런당 4MB 이상이고 git 히스토리가 계속 커진다.
+- **이름 규칙이 두 곳에 있다.** `publish.py` 의 `api_path()` 와 `app.js` 의 `apiURL()` 이
+  같은 규칙이어야 한다(쿼리는 경로 한 칸이 된다 —
+  `log?name=perception` → `api/runs/<런>/log/perception.txt`). 어긋나면 화면이
+  「HTTP 404」로만 열리고 브라우저에서는 원인을 알 수 없다 →
+  `selftest.t_publish_names` 가 **양쪽을 대조한다**.
+
+### GitHub Pages 로 올리기
+
+```bash
+python3 -m tb.run publish
+git add docs && git commit -m "사이트: 결과 내보내기" && git push
+gh api -X POST repos/<소유자>/<저장소>/pages -f 'source[branch]=main' -f 'source[path]=/docs'
+```
+
+한도는 넉넉하다 — 저장소 1GB 권장 · 사이트 1GB · 대역폭 100GB/월 · 빌드 10회/시간.
 
 ---
 

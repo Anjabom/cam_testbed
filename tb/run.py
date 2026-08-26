@@ -32,6 +32,25 @@ from .contract import load as load_contract
 
 ROOT = Path(__file__).resolve().parent.parent      # testbed/ (테스트베드 자신)
 
+
+def _child_preexec():
+    """자식 프로세스 시작 훅 — ★새 세션 + 부모 죽으면 같이 죽기★. [2026-08-25]
+
+    · os.setsid()          — 새 프로세스 그룹. Proc.stop 의 killpg 가 그룹째 정리한다.
+    · PR_SET_PDEATHSIG      — ★tb.run 이 timeout·kill 로 정상 정리 없이 죽어도★ 커널이
+                              이 자식에게 SIGTERM 을 보낸다. 안 그러면 setsid 로 분리된
+                              player·viewer·노드·probe 가 ★고아로 남아★ cv2 창을 문 채
+                              CPU 를 태운다(실제로 겪었다). 정상 종료 경로(finally 의
+                              stop())는 그대로 있고, 이건 그 경로가 ★안 도는 경우★ 의
+                              마지막 방어선이다. Linux 전용 — 다른 OS 는 setsid 만 한다.
+    """
+    os.setsid()
+    try:
+        import ctypes                                 # noqa: PLC0415
+        ctypes.CDLL("libc.so.6").prctl(1, signal.SIGTERM, 0, 0, 0)  # 1=PR_SET_PDEATHSIG
+    except Exception:      # noqa: BLE001
+        pass
+
 # ★대상 워크스페이스는 계약이 정한다★ — 테스트베드는 워크스페이스 밖에 있어도 되고
 #   여러 워크스페이스를 계약 파일만 바꿔 가며 붙일 수 있다. contract.workspace 참고.
 
@@ -139,7 +158,7 @@ class Proc:
         self.log = open(log_path, "w")
         self.p = subprocess.Popen(
             ["bash", "-c", cmd], stdout=self.log, stderr=subprocess.STDOUT,
-            env=env, preexec_fn=os.setsid)
+            env=env, preexec_fn=_child_preexec)
 
     def alive(self):
         return self.p.poll() is None
@@ -252,7 +271,9 @@ def cmd_doctor(args):
     #   조용히 빠지고 리포트는 초록으로 나온다. 그걸 ★런을 돌리기 전에★ 묻는다.
     print("── 이름 정합 ──")
     from .lint import lint
-    problems = lint(c, sc)
+    #  캐시를 같이 넘겨 ★계약의 default 가 노드와 어긋났는지★ 도 본다.
+    #  (계약의 default 는 노드 기본값을 옮겨 적은 문서라 조용히 낡는다)
+    problems = lint(c, sc, load_ws_params(c))
     chk("계약·시나리오의 이름 참조", not problems,
         "" if not problems else f"{len(problems)}건")
     for m in problems:
@@ -325,7 +346,11 @@ def _one_run(sc, contract_path, variant, run_dir, domain_id, args):
         # ── 2.5) 뷰어 ────────────────────────────────────────────────
         #   --watch  창을 띄워 보면서 space/n 으로 세워 가며 디버깅
         #   --record-debug  창 없이 디버그 영상을 mp4 로만 남긴다(헤드리스 리뷰용)
-        if (watching or getattr(args, "record_debug", False)) and contract.debug_topics:
+        #  ★저작 키가 있으면 디버그 영상이 없어도 띄운다★ 볼 그림은 없지만 누를 것이
+        #  있다(계약의 stimulus.aux[].keys → 타임라인 저작). 녹화는 그림이 있을 때만.
+        authoring = any((a.get("keys") or {}) for a in (contract.aux or []))
+        if ((watching and (contract.debug_topics or authoring))
+                or (getattr(args, "record_debug", False) and contract.debug_topics)):
             # 디버그 영상도 원본과 같은 속도로 저장한다(안 그러면 느리게 보인다).
             vfps = sc.get("view_fps") or _video_fps(resolve_video(sc, loc)) or 15.0
             vcmd = (f"{pref}exec python3 -m tb.viewer "
@@ -339,8 +364,14 @@ def _one_run(sc, contract_path, variant, run_dir, domain_id, args):
             procs.append(viewer)
             print("  기동: viewer" + ("  (space=정지 n=한프레임 s=스냅샷 q=닫기)"
                                       if watching else "  (mp4 저장만)"))
+            if watching and authoring:
+                print("     타임라인 저작 키: "
+                      + "  ".join(f"[{k}]{v.get('label', k)}"
+                                  for a in contract.aux
+                                  for k, v in (a.get("keys") or {}).items())
+                      + f"  → 끝나면 {run_dir / 'schedule.yaml'}")
         elif watching and not contract.debug_topics:
-            print("  ⚠️  계약에 debug_topics 가 없어 볼 것이 없다")
+            print("  ⚠️  계약에 debug_topics 도 저작 키도 없어 볼 것이 없다")
 
         # ── 3) 자극 투입 ─────────────────────────────────────────────
         #   image_topic 이 없으면 영상 없이 그냥 duration 만큼 기록만 한다.
@@ -361,7 +392,14 @@ def _one_run(sc, contract_path, variant, run_dir, domain_id, args):
                 f"[run] 영상이 없다: {video!r}\n"
                 f"      시나리오의 video: 는 논리 이름이고 실제 경로는 "
                 f"local.yaml 의 videos: 에 둔다.")
-        aux = json.dumps(contract.aux)
+        #  ★타임라인은 시나리오가 소유한다★ 계약의 aux 는 토픽·타입·저작키를 정의하고,
+        #  '어느 프레임에서 무엇이 되는가' 는 시험마다 달라 시나리오/변형이 준다.
+        #  시나리오의 aux_schedule 를 토픽으로 맞춰 계약 aux 항목에 얹는다(계약 불변).
+        sched = _deep_merge(sc.get("aux_schedule") or {},
+                            variant.get("aux_schedule") or {})
+        aux_specs = [dict(a, schedule=sched[a["topic"]]) if a["topic"] in sched
+                     else a for a in contract.aux]
+        aux = json.dumps(aux_specs)
         #  ★합성 자극★ 시나리오 < 변형 순으로 덮는다. 상대경로는 테스트베드 루트 기준
         #  (영상처럼 머신마다 다른 것이 아니라 ★시험 재료★ 라서 저장소에 함께 둔다).
         ovl = _deep_merge(sc.get("overlay") or {}, variant.get("overlay") or {})
@@ -391,8 +429,11 @@ def _one_run(sc, contract_path, variant, run_dir, domain_id, args):
         (run_dir / "cmd_player.txt").write_text(play + "\n")
         t0 = time.time()
         with open(run_dir / "player.log", "w") as lf:
+            #  preexec 로 ★부모가 죽으면 player 도 죽는다★ (_child_preexec).
+            #  player 는 foreground(subprocess.call)라 stop() 대상이 아니므로 이게 없으면
+            #  tb.run 이 timeout 으로 죽었을 때 혼자 남아 프레임을 계속 민다.
             rc = subprocess.call(["bash", "-c", play], stdout=lf,
-                                 stderr=subprocess.STDOUT,
+                                 stderr=subprocess.STDOUT, preexec_fn=_child_preexec,
                                  env={**env, "PYTHONPATH": f"{ROOT}:{env.get('PYTHONPATH', '')}"})
         wall = time.time() - t0
         for p in procs:
@@ -462,6 +503,9 @@ def _one_run(sc, contract_path, variant, run_dir, domain_id, args):
         #   되면 안 된다). 계약이 띄운 노드의 것만 이 런의 조건이다.
         "params": {k: v for k, v in params.items()
                    if k in {n["id"] for n in contract.nodes}},
+        # ★기하의 실효값★ 위 params 는 '요청한 것' 이라 노드 기본값의 변화를
+        #   못 잡는다. 사다리꼴이 바뀌면 sl_px 의 뜻이 바뀐다(_calib_snapshot).
+        "calib": _calib_snapshot(contract, run_dir),
         "when": datetime.now().isoformat(timespec="seconds"),
         "code_fingerprint": _fingerprint(contract.workspace),
         "workspace": str(contract.workspace or ""),
@@ -544,7 +588,19 @@ def _fingerprint(ws):
     return {"n_files": len(files), "sha": h.hexdigest()[:12]}
 
 
+def _sigterm_to_interrupt(signum, frame):
+    """SIGTERM 을 KeyboardInterrupt 로 바꿔 ★정상 정리 경로를 타게 한다★.
+
+    기본 SIGTERM 은 즉사라 _one_run 의 finally(자식 killpg)가 안 돈다 → 노드·probe
+    가 고아로 남는다. timeout·kill 이 보내는 SIGTERM 을 예외로 바꾸면 그 finally 가
+    돌아 프로세스 그룹째 정리된다. PDEATHSIG(_child_preexec)는 이게 못 미치는
+    경우(SIGKILL)의 백업이다.
+    """
+    raise KeyboardInterrupt
+
+
 def cmd_run(args):
+    signal.signal(signal.SIGTERM, _sigterm_to_interrupt)
     sc = load_yaml(args.scenario)
     contract_path = _resolve_contract(args.contract or sc.get("contract"))
     variants = sc.get("variants") or [{"name": "base", "perturb": "none"}]
@@ -567,6 +623,24 @@ def cmd_run(args):
               f"체크 {len(checks) - len(failed)}/{len(checks)} 통과")
         print(f"  → {rd / 'report.md'}")
         results.append((rd, summary, checks))
+
+    # ── ★저작 → 자동 판정★ [2026-08-25] ────────────────────────────────
+    #   --watch 로 타임라인을 찍었으면, 그것을 시나리오에 저장하고 ★헤드리스 판정
+    #   런을 한 번 더★ 돌린다(사용자 확정 설계). 저작 런의 분석은 라이브 주입이라
+    #   꼬리 프레임이 지저분하다 — 이 두 번째 런이 '깨끗한 테스트 시뮬레이션' 이다.
+    #   재귀지만 두 번째 호출은 watch=False 라 이 가지를 다시 타지 않는다.
+    if getattr(args, "watch", False) and results:
+        sf = results[0][0] / "schedule.json"
+        marks = json.loads(sf.read_text()) if sf.exists() else {}
+        marks = {t: m for t, m in marks.items() if m}     # 빈 토픽은 버린다
+        if marks:
+            from . import config as _config
+            saved = _config.set_aux_schedule(args.scenario, marks)
+            print(f"\n✎ 저작한 타임라인을 {Path(saved).name} 에 저장했다.")
+            print("▶ 저작한 타임라인으로 ★판정 런★ (헤드리스)")
+            args.watch = False
+            args.tag = (args.tag + "_" if args.tag else "") + "authored"
+            return cmd_run(args)      # 갱신된 시나리오를 다시 읽어 헤드리스로 판정
 
     # 섭동 대조: base 대비 각 변형이 얼마나 무너졌는가 (GT 없이 재는 강건성)
     if len(results) > 1:
@@ -622,15 +696,19 @@ def cmd_run(args):
 def cmd_render(args):
     """판정에 쓴 값으로 차선·중심선·θ 를 그려 저장한다."""
     import cv2
-    from .harvest import read_signals, source_video
+    from .harvest import effective_params, read_signals, source_video
     from .render import Renderer
     rd = _resolve_run(args.run)
     sc = load_yaml(args.scenario) if args.scenario else {}
     contract = load_contract(_resolve_contract(
         args.contract or sc.get("contract") or contract_of_run(rd)))
-    meta = json.loads((rd / "summary.json").read_text())["summary"]["meta"] \
-        if (rd / "summary.json").exists() else {}
-    R = Renderer(contract, meta.get("params"))
+    #  ★요청값이 아니라 실효값★ 으로 그린다 — 아무도 안 준 파라미터는 노드
+    #  기본값으로 도는데, 그것이 계약의 default 와 어긋나면 선이 엉뚱한 곳에 얹힌다.
+    R = Renderer(contract, effective_params(rd))
+    if R.quad_guessed:
+        print("⚠️  이 런의 사다리꼴을 알 수 없어 계약의 default 로 그린다 —\n"
+              "    노드가 실제로 쓴 값이 아닐 수 있다(선 위치를 믿지 말 것).\n"
+              "    `params_actual.yaml` 이 없는 옛 런이면 어쩔 수 없다.")
 
     rows = {int(r["frame"]): r for r in read_signals(rd)
             if isinstance(r.get("frame"), (int, float))}
@@ -791,6 +869,12 @@ def cmd_app(args):
     _sys.path.insert(0, str(ROOT / "web"))
     import shell as web_shell            # noqa: E402
     return web_shell.launch(args.host, args.port, args.page, args.size)
+
+
+def cmd_publish(args):
+    """★서버 없이 결과만 보는 사이트★를 굽는다 (GitHub Pages)."""
+    from .publish import publish            # noqa: PLC0415
+    return publish(args.out, args.run, args.all)
 
 
 def cmd_inject(args):
@@ -1024,6 +1108,42 @@ def cmd_reanalyze(args):
     return 0
 
 
+def _calib_snapshot(contract, run_dir):
+    """이 런의 ★기하★ — 캘리브 대상 파라미터의 실효값. [2026-08-25]
+
+    ★meta 의 params 로는 모자란다★ 거기엔 테스트베드가 ★요청한★ 것만 있다.
+    사다리꼴·범퍼행·문턱을 아무도 요청하지 않으면 노드가 자기 기본값으로 도는데,
+    그 기본값은 워크스페이스를 재캘리브하면 ★말없이 바뀐다★. 그러면 sl_px 의 뜻
+    자체가 달라지는데 조건은 '같다' 고 나와서, 회귀 비교가 ★기하가 바뀐 것을 노드
+    회귀로 읽는다★ — 있지도 않은 회귀를 쫓게 된다. 그래서 조건에 실효값을 넣는다.
+
+    ★캘리브 대상만★ 담는다. params_actual 을 통째로 넣으면 노드가 파라미터 하나
+    늘릴 때마다 기준이 전부 무효가 된다(가중치 경로로 이미 겪은 실수다).
+    이름은 전부 계약이 준다 — 이 함수에도 워크스페이스 고유명이 들어오지 않는다.
+    """
+    cal = contract.raw.get("calibration") or {}
+    pa = Path(run_dir) / "params_actual.yaml"
+    if not cal or not pa.exists():
+        return None
+    try:
+        actual = load_yaml(pa).get("params") or {}
+    except (yaml.YAMLError, OSError):
+        return None
+    names = []
+    u = cal.get("undistort") or {}
+    if u.get("param"):
+        names.append(u["param"])       # 보정이 꺼졌으면 기하가 통째로 다르다
+    for t in (cal.get("targets") or {}).values():
+        names += t.get("params") or ([t["param"]] if t.get("param") else [])
+    out = {}
+    for n in contract.nodes:
+        kv = actual.get(n["id"]) or {}
+        got = {k: kv[k] for k in names if k in kv}
+        if got:
+            out[n["id"]] = got
+    return out or None
+
+
 def _provenance(meta):
     """이 결과가 '어떤 조건에서 나온 것인가' — 비교 가능 여부를 가르는 것들만."""
     return {
@@ -1036,6 +1156,9 @@ def _provenance(meta):
         "stride": meta.get("stride"),
         "contract": meta.get("contract"),
         "params": meta.get("params"),
+        # ★기하★ 요청값이 같아도 이게 다르면 픽셀의 뜻이 다르다 — 비교 불가다.
+        #   옛 런에는 없다(None) → None 끼리는 같으므로 종전 기준은 그대로 산다.
+        "calib": meta.get("calib"),
     }
 
 
@@ -1408,6 +1531,15 @@ def main(argv=None):
                     help="계약의 패키지만이 아니라 워크스페이스 전체를 빌드")
     bd.set_defaults(fn=cmd_build)
 
+    pb = sub.add_parser(
+        "publish", help="정적 사이트로 내보내기 — 서버 없이 결과만 보는 읽기 전용")
+    pb.add_argument("--run", action="append", default=[],
+                    help="공개할 실행 (여러 번 쓸 수 있다). 비우면 ★핀 꽂은 실행만★")
+    pb.add_argument("--all", action="store_true", help="핀과 무관하게 전부")
+    pb.add_argument("--out", default="docs",
+                    help="내보낼 폴더 (기본 docs/ — GitHub Pages 가 여기서 읽는다)")
+    pb.set_defaults(fn=cmd_publish)
+
     ls = sub.add_parser("list"); ls.set_defaults(fn=cmd_list)
 
     args = ap.parse_args(argv)
@@ -1418,7 +1550,13 @@ def main(argv=None):
         if v and Path(v).exists():
             setattr(args, attr, str(Path(v).resolve()))
     os.chdir(ROOT)
-    return args.fn(args)
+    try:
+        return args.fn(args)
+    except KeyboardInterrupt:
+        #  Ctrl+C 또는 SIGTERM(→ _sigterm_to_interrupt). 자식 정리는 각 명령의
+        #  finally 가 이미 했다. 트레이스백 없이 조용히 나간다.
+        print("\n중단됨 — 정리하고 종료합니다.", file=sys.stderr)
+        return 130
 
 
 if __name__ == "__main__":

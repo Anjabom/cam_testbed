@@ -1,4 +1,6 @@
-runs/
+# ★앞의 / 가 중요하다★ — `runs/` 로 두면 어느 깊이의 runs 든 걸려서
+# 내보낸 사이트의 docs/api/runs/ 까지 통째로 빠진다(껍데기만 배포된다).
+/runs/
 local.yaml
 __pycache__/
 *.pyc

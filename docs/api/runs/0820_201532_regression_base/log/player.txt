@@ -1,0 +1,6 @@
+[INFO] [1787224533.180980954] [testbed_player]: 영상 ~/track_record.mp4 | 2191프레임 @30.00fps | mode=lockstep perturb=none
+[INFO] [1787224535.419468416] [testbed_player]: 동기 토픽 연결: /lane/state (std_msgs/msg/Float32MultiArray)
+[INFO] [1787224550.784953000] [testbed_player]: 100프레임 (13.7 fps 투입)
+[INFO] [1787224556.412226614] [testbed_player]: 200프레임 (15.5 fps 투입)
+[INFO] [1787224561.913786102] [testbed_player]: 300프레임 (16.3 fps 투입)
+[INFO] [1787224569.569780695] [testbed_player]: 완료: 투입 400, 동기수신 400, 재투입 0, 타임아웃 0, 26.1s

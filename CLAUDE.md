@@ -32,23 +32,36 @@ ROS 2 카메라 인지 노드를 **밖에서** 시험하는 테스트 플랫폼�
    영상에 안 맞는다고 판단되면 근거를 먼저 말하고 수정을 제안한다. 재는 쪽을 고쳐 숫자를 좋게
    만드는 것도 금지다(`tb.run feedback` 이 생성 문서에 이 규칙을 박아 넣는다).
 
-## 자주 쓰는 명령
+## 이 테스트베드는 웹앱으로 쓴다
+
+**사람이 치는 명령은 실질적으로 하나다** — 웹앱을 띄우는 것.
 
 ```bash
 source /opt/ros/humble/setup.bash
 cp local.yaml.example local.yaml          # 최초 1회: 이 머신의 영상·가중치 경로
 
+python3 -m tb.run app                     # 웹앱을 별도 창으로 (주소창·탭 없음)
+#   또는  python3 -m tb.run web           # 서버만 (브라우저로 http://127.0.0.1:8770)
+```
+
+실행·비교·기준 등록·재해석·피드백·캘리브레이션·프레임 탐색은 전부 웹앱 안에 있다.
+CLI 로 되던 모든 명령은 웹앱의 **「도구」 탭**에 그대로 있다(인자를 폼으로 골라 넣는다).
+어느 명령이 어느 탭인지는 웹앱의 «도움말»(`#/help`)이 안내한다.
+
+### 웹앱이 CLI 를 감싼다 — CLI 는 지우면 안 된다
+
+웹 서버는 각 명령을 `subprocess` 로 띄운다(`web/server.py` 의 `start_job` → `COMMANDS[kind]["module"]`
+가 곧 명령줄이다). **즉 `tb.run` 서브커맨드는 웹앱의 실행 엔진이다** — 지우면 「도구」 탭의
+버튼이 전부 죽는다. CLI 에 인자를 늘렸으면 `COMMANDS` 도 같이 늘린다(경계 규칙 ⑤).
+
+### 웹앱 밖에서 직접 치는 예외 (셋뿐)
+
+웹앱이 못 하거나, 웹앱이 죽었을 때도 돌아야 하는 것들이다.
+
+```bash
+python3 -m tb.run app                     # ← 웹앱 자신을 띄운다
 python3 -m tb.selftest                    # 자체 검사 (ROS·영상 불필요) — 계약 문법을 건드리면 먼저 이것
 python3 -m flake8 tb web                  # 린트 (max-line-length 100, .flake8)
-python3 -m tb.run doctor                  # 환경·계약·워크스페이스·영상·코덱 점검
-python3 -m tb.run run --scenario scenarios/regression.yaml
-python3 -m tb.run baseline <런디렉토리명> --name regression
-python3 -m tb.run reanalyze <런>          # 계약을 고친 뒤 과거 런을 재해석 (재실행 불필요)
-python3 -m tb.run compare <기준|런> <런>
-python3 -m tb.run feedback <런> --vs <이전 런>   # 결과 → 코드 개선 요청문
-python3 -m tb.run inject                  # 영상·YOLO 없이 변환 수학만 (수초)
-python3 -m tb.run list
-python3 -m tb.run app                     # 웹앱을 별도 창으로 (web 은 서버만, :8770)
 ```
 
 자체 검사 하나만 돌릴 때 — `eq()` 는 예외를 던지지 않고 `FAILS` 에 쌓으므로 **반드시 같이 찍는다**:
@@ -121,6 +134,10 @@ python3 -c "from tb import selftest as s; s.t_events(); print(s.FAILS or '통과
   모이고 삭제는 `runs/_trash/` 로 **옮기는 것**이라 결과 파일이 지워지지 않는다.
 - 웹앱은 **외부 의존성 0**(표준 라이브러리 · CDN·웹폰트·JS 라이브러리 없음). 대회 현장에서
   네트워크 없이 돌아야 한다 — 의존성을 추가하지 않는다.
+- `docs/` 는 **생성물**이다(`tb.run publish`, §11.7). 손으로 고치지 말고 다시 굽는다.
+  라우트→파일 이름 규칙이 `tb/publish.py` 의 `api_path()` 와 `web/app.js` 의 `apiURL()`
+  **양쪽에** 있다 — 한쪽만 고치면 정적 사이트가 「HTTP 404」로만 열린다
+  (`selftest.t_publish_names` 가 대조한다). 공개되는 결과물이라 홈 경로는 `~` 로 스크럽된다.
 
 ## 언어 관행
 

@@ -1,0 +1,15 @@
+[INFO] [1787659850.154214646] [testbed_player]: 영상 ~/video/cam-20260824_201445.mp4 | 1292프레임 @30.02fps | mode=lockstep perturb=none
+[INFO] [1787659851.343185467] [testbed_player]: 동기 토픽 연결: /tl/state (std_msgs/msg/String)
+[INFO] [1787659877.293210460] [testbed_player]: 100프레임 (9.2 fps 투입)
+[INFO] [1787659886.444113149] [testbed_player]: 200프레임 (10.0 fps 투입)
+[INFO] [1787659895.738888690] [testbed_player]: 300프레임 (10.2 fps 투입)
+[INFO] [1787659904.888196059] [testbed_player]: 400프레임 (10.4 fps 투입)
+[INFO] [1787659914.012164484] [testbed_player]: 500프레임 (10.5 fps 투입)
+[INFO] [1787659923.248027591] [testbed_player]: 600프레임 (10.6 fps 투입)
+[INFO] [1787659932.452401929] [testbed_player]: 700프레임 (10.6 fps 투입)
+[INFO] [1787659941.633443338] [testbed_player]: 800프레임 (10.6 fps 투입)
+[INFO] [1787659950.709113938] [testbed_player]: 900프레임 (10.7 fps 투입)
+[INFO] [1787659959.769769113] [testbed_player]: 1000프레임 (10.7 fps 투입)
+[INFO] [1787659968.955773605] [testbed_player]: 1100프레임 (10.7 fps 투입)
+[INFO] [1787659977.949076245] [testbed_player]: 1200프레임 (10.8 fps 투입)
+[INFO] [1787659988.243636131] [testbed_player]: 완료: 투입 1292, 동기수신 1292, 재투입 0, 타임아웃 0, 121.9s

@@ -253,7 +253,8 @@ def overlay_jpeg(run_dir, n, width=900):
     import sys
     sys.path.insert(0, str(ROOT))
     import cv2                                      # noqa: PLC0415
-    from tb.harvest import read_signals, source_video   # noqa: PLC0415
+    from tb.harvest import (effective_params, read_signals,   # noqa: PLC0415
+                            source_video)
     from tb.render import Renderer                  # noqa: PLC0415
 
     key = str(run_dir)
@@ -262,9 +263,8 @@ def overlay_jpeg(run_dir, n, width=900):
         c = _contract_for(run_dir)
         if c is None:
             return None
-        meta = ((_read_json(Path(run_dir) / "summary.json", {}) or {})
-                .get("summary", {}).get("meta", {}))
-        ent = {"r": Renderer(c, meta.get("params")),
+        #  ★요청값이 아니라 실효값★ (tb.harvest.effective_params 의 주석 참고)
+        ent = {"r": Renderer(c, effective_params(run_dir)),
                "rows": {int(x["frame"]): x for x in read_signals(run_dir)
                         if isinstance(x.get("frame"), (int, float))},
                "video": source_video(run_dir)}
@@ -864,6 +864,17 @@ COMMANDS = {
             {"flag": "--out", "type": "path", "help": "저장 폴더 (비우면 <런>/harvest)"},
             {"flag": "--dry-run", "type": "flag", "help": "몇 장이 뽑히는지만 세어 본다"},
             _ARG_VIDEO, _ARG_SCEN, _ARG_CONT,
+        ]},
+
+    "publish": {
+        "title": "정적 사이트 내보내기", "module": ["tb.run", "publish"],
+        "desc": "결과만 보는 읽기 전용 사이트를 docs/ 에 굽는다 — GitHub Pages 로 공유한다. "
+                "실행·보정·도구는 서버가 있어야 하므로 그 화면은 빠진다.",
+        "pos": [], "args": [
+            {"flag": "--run", "type": "run", "repeat": True,
+             "help": "공개할 실행 (비우면 ★핀 꽂은 실행만★)"},
+            {"flag": "--all", "type": "flag", "help": "핀과 무관하게 전부"},
+            {"flag": "--out", "type": "path", "help": "내보낼 폴더 (기본 docs/)"},
         ]},
 
     "reanalyze": {
