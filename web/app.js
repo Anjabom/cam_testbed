@@ -2933,6 +2933,77 @@
    * 인자는 서버가 거부한다 — 그래서 여기에는 인자 이름이 하나도 없다. */
   var TOOLS = { pick: '', vals: {}, timer: null };
 
+  /* ── 터널 : 이 로컬 앱을 인터넷으로 (cloudflared) ────────────────
+   * 정적 사이트는 읽기 전용이다. 진짜 편집(삭제·실행·보정)을 남이 하려면
+   * ★서버 자신★을 열어야 한다. 서버는 ros2 run 을 띄우므로 토큰이 필수 —
+   * 서버(start_tunnel)가 토큰 없이는 시작을 거부한다. */
+  function tunnelPanel() {
+    var box = h('div', { class: 'livebox', style: 'margin:0 0 16px' });
+    view.appendChild(box);
+    function draw(st) {
+      clear(box);
+      box.appendChild(h('div', { class: 'livehd' }, [
+        h('b', { text: st.running ? '● 터널 열림' : '○ 터널' }),
+        h('span', { class: 'mut',
+          text: '이 앱을 인터넷으로 — 삭제·실행·보정을 원격에서 (읽기 전용 아님)' }),
+      ]));
+      if (!st.have_token) {
+        box.appendChild(h('p', { class: 'help',
+          html: '⚠ <code>TB_WEB_TOKEN</code> 이 없어 열 수 없습니다. 서버는 명령을 '
+            + '실행하므로 인증 없이 열면 위험합니다. 터미널에서:<br>'
+            + '<code>TB_WEB_TOKEN=아무비밀번호 python3 -m tb.run web</code> 로 다시 띄운 뒤 '
+            + '이 화면을 새로고침하세요.' }));
+        return;
+      }
+      if (!st.have_cloudflared) {
+        box.appendChild(h('p', { class: 'help',
+          html: '⚠ <code>cloudflared</code> 가 없습니다. 설치 후 다시:<br>'
+            + '<code>cloudflared</code> — developers.cloudflare.com 의 설치 안내 참고.' }));
+        return;
+      }
+      if (st.running && st.url) {
+        box.appendChild(h('div', { class: 'framebar' }, [
+          h('span', { class: 'mut', text: '공개 주소' }),
+          h('a', { href: st.url, target: '_blank', rel: 'noopener',
+                   class: 'mono', text: st.url }),
+        ]));
+        box.appendChild(h('p', { class: 'help',
+          text: '이 주소 + 비밀번호(TB_WEB_TOKEN)를 함께 알려 주세요. 브라우저가 '
+            + '로그인 창을 띄웁니다 (사용자명은 아무거나, 비번=토큰). '
+            + '끄면 주소는 즉시 죽습니다.' }));
+        box.appendChild(h('button', { class: 'danger', text: '터널 끄기',
+          onclick: function () {
+            post('/api/tunnel', { action: 'stop' }).then(function () { poll(); });
+          } }));
+      } else if (st.running) {
+        box.appendChild(h('div', { class: 'framebar' },
+          [spinner('주소 받는 중…'),
+           h('button', { text: '끄기', onclick: function () {
+             post('/api/tunnel', { action: 'stop' }).then(function () { poll(); }); } })]));
+      } else {
+        box.appendChild(h('button', { class: 'primary', text: '터널 켜기',
+          onclick: function () {
+            post('/api/tunnel', { action: 'start',
+                                  port: Number(location.port) || 8770 })
+              .then(function (j) {
+                if (j && j.error) hintEl.textContent = '오류: ' + j.error;
+                poll();
+              });
+          } }));
+      }
+    }
+    function post(url, body2) {
+      return fetch(url, { method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body2) }).then(function (r) { return r.json(); });
+    }
+    function poll() { get('/api/tunnel').then(draw).catch(function () {}); }
+    poll();
+    var t = setInterval(poll, 3000);
+    var prev = window.__stopPoll;
+    window.__stopPoll = function () { clearInterval(t); if (prev) prev(); };
+  }
+
   function renderTools(spec, want) {
     clear(view);
     if (TOOLS.timer) { clearInterval(TOOLS.timer); TOOLS.timer = null; }
@@ -2943,6 +3014,8 @@
     view.appendChild(h('p', { class: 'sub',
       text: '터미널에서 쓰는 명령을 그대로 씁니다. 고르면 그 명령이 받는 인자만 물어보고, '
             + '실제로 어떤 명령줄이 되는지 아래에 그대로 보여 줍니다.' }));
+
+    tunnelPanel();
 
     var pick = want || TOOLS.pick || (cmds.length ? cmds[0].id : '');
     if (!cmds.filter(function (c) { return c.id === pick; }).length) {

@@ -12,7 +12,9 @@
 """
 from __future__ import annotations
 
+import base64
 import csv
+import hmac
 import json
 import mimetypes
 import os
@@ -33,6 +35,28 @@ TRASH = RUNS / "_trash"          # 삭제는 지우지 않고 여기로 옮긴�
 INDEX = RUNS / "_index.json"     # 고정·메모·태그 (실행 결과가 아니라 사람의 정리)
 
 _SAFE = re.compile(r"^[A-Za-z0-9._@-]+$")
+
+#  ★터널로 노출하면 이 토큰이 유일한 방어선이다★ — 서버는 ros2 run 을
+#  subprocess 로 띄우므로 토큰 없이 열면 URL 을 아는 누구나 명령을 실행한다.
+WEB_TOKEN = os.environ.get("TB_WEB_TOKEN", "")
+
+
+def check_basic_auth(header, token):
+    """Authorization: Basic 헤더가 토큰과 맞는가. token 이 비면 항상 통과(로컬).
+
+    비번만 본다(사용자명 아무거나) — 브라우저 기본 로그인 창을 그대로 쓰려는 것.
+    hmac.compare_digest 로 비교해 타이밍 누출을 막는다.
+    """
+    if not token:
+        return True
+    if not header or not header.startswith("Basic "):
+        return False
+    try:
+        raw = base64.b64decode(header[6:]).decode("utf-8", "replace")
+    except (ValueError, UnicodeDecodeError):
+        return False
+    return hmac.compare_digest(raw.partition(":")[2], token)
+
 
 # 정적으로 내보낼 파일은 ★화이트리스트★로 고정한다.
 # 확장자 기반으로 열어 두면 server.py 같은 소스까지 나간다.
@@ -1063,6 +1087,68 @@ def job_running():
     return p is not None and p.poll() is None
 
 
+#  터널은 장시간 프로세스라 단일 JOB 슬롯을 쓰면 그동안 테스트가 막힌다 —
+#  그래서 자기 슬롯을 따로 둔다.
+TUNNEL = {"proc": None, "log": None, "started": 0.0}
+TUNNEL_LOCK = threading.Lock()
+_TUNNEL_URL = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
+
+
+def tunnel_running():
+    p = TUNNEL.get("proc")
+    return p is not None and p.poll() is None
+
+
+def tunnel_url():
+    #  cloudflared 는 URL 을 로그로 찍는다 — 거기서 뽑는다(폴링 스레드 안 씀).
+    lg = TUNNEL.get("log")
+    if not lg or not Path(lg).exists():
+        return ""
+    m = _TUNNEL_URL.search(Path(lg).read_text(errors="replace"))
+    return m.group(0) if m else ""
+
+
+def start_tunnel(port):
+    #  ★토큰 없이는 시작하지 않는다★ — 무방비 원격 코드 실행을 막는 fail-safe.
+    if not WEB_TOKEN:
+        return ("TB_WEB_TOKEN 이 없습니다 — 인증 없이 인터넷에 열 수 없습니다. "
+                "토큰을 정해 TB_WEB_TOKEN 으로 주고 서버를 다시 띄우세요.")
+    if shutil.which("cloudflared") is None:
+        return ("cloudflared 가 설치돼 있지 않습니다. "
+                "https://developers.cloudflare.com/cloudflare-one/connections/"
+                "connect-apps/install-and-setup/installation/ 에서 설치하세요.")
+    with TUNNEL_LOCK:
+        if tunnel_running():
+            return "이미 터널이 열려 있습니다"
+        logf = ROOT / "runs" / "_tunnel.log"
+        logf.parent.mkdir(exist_ok=True)
+        fh = open(logf, "w")
+        proc = subprocess.Popen(
+            ["cloudflared", "tunnel", "--url", f"http://127.0.0.1:{int(port)}"],
+            stdout=fh, stderr=subprocess.STDOUT, start_new_session=True)
+        TUNNEL.update({"proc": proc, "log": str(logf), "started": time.time()})
+    return ""
+
+
+def stop_tunnel():
+    p = TUNNEL.get("proc")
+    if not tunnel_running():
+        return "열린 터널이 없습니다"
+    try:
+        os.killpg(os.getpgid(p.pid), 15)             # SIGTERM
+    except (ProcessLookupError, PermissionError) as e:
+        return str(e)
+    return ""
+
+
+def tunnel_status():
+    return {"running": tunnel_running(), "url": tunnel_url(),
+            "have_cloudflared": shutil.which("cloudflared") is not None,
+            "have_token": bool(WEB_TOKEN),
+            "elapsed_s": round(time.time() - TUNNEL["started"], 1)
+            if TUNNEL.get("started") else 0}
+
+
 def start_job(kind, argv):
     """명령을 background 로 띄운다. 인자는 명세로 거른다."""
     try:
@@ -1229,11 +1315,24 @@ class Handler(BaseHTTPRequestHandler):
         ctype = "video/webm" if play.suffix == ".webm" else "video/mp4"
         return self._file(play, ctype)
 
+    # ── 인증 — 토큰이 설정된 경우에만(로컬 전용이면 없음) ────────────
+    def _authed(self):
+        return check_basic_auth(self.headers.get("Authorization"), WEB_TOKEN)
+
+    def _need_auth(self):
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="testbed"')
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+        return None
+
     # ── 라우팅 ─────────────────────────────────────────────────────
     def do_HEAD(self):
         self.do_GET()
 
     def do_GET(self):
+        if not self._authed():
+            return self._need_auth()
         u = urlparse(self.path)
         p = u.path
         q = parse_qs(u.query)
@@ -1260,6 +1359,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"trash": list_trash()})
         if route == "status":
             return self._json(job_status())
+        if route == "tunnel":
+            return self._json(tunnel_status())
         if route == "calib":
             try:
                 return self._json(calib_state(_scen_arg(q.get("scenario", [""])[0])))
@@ -1393,6 +1494,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def _do_post(self):
+    if not self._authed():
+        return self._need_auth()
     u = urlparse(self.path)
     if not u.path.startswith("/api/"):
         return self._err(404, "없는 주소입니다")
@@ -1545,6 +1648,16 @@ def _do_post(self):
         return self._json({"ok": True, "id": d.name,
                            "path": str(d / "feedback.md"), "md": md})
 
+    if route == "tunnel":
+        action = body.get("action")
+        if action == "start":
+            err = start_tunnel(body.get("port") or 8770)
+        elif action == "stop":
+            err = stop_tunnel()
+        else:
+            return self._err(400, "action 은 start 또는 stop 이어야 합니다")
+        return self._err(409, err) if err else self._json(tunnel_status())
+
     if route == "jobs/stop":
         p = JOB.get("proc")
         if not job_running():
@@ -1561,10 +1674,19 @@ Handler.do_POST = _do_post
 
 
 def serve(host="127.0.0.1", port=8770, open_browser=False):
+    #  로컬이 아닌 host 에 토큰 없이 바인딩하는 것을 막는다(무방비 노출).
+    #  터널(cloudflared)은 localhost 로 붙으므로 이 검사에 안 걸리지만,
+    #  --host 0.0.0.0 같은 직접 노출은 여기서 잡힌다.
+    if host not in ("127.0.0.1", "localhost", "::1") and not WEB_TOKEN:
+        print("거부: 로컬이 아닌 host 인데 TB_WEB_TOKEN 이 없습니다 — "
+              "무방비 노출을 막습니다. 토큰을 주고 다시 띄우세요.")
+        return 2
     srv = ThreadingHTTPServer((host, port), Handler)
     url = f"http://{host}:{port}"
     print(f"테스트베드 웹 뷰어 → {url}")
     print(f"  실행 {len(list_runs())}개 · 베이스라인 {len(list_baselines())}개")
+    if WEB_TOKEN:
+        print("  인증: TB_WEB_TOKEN 설정됨 — 모든 요청에 비밀번호로 필요")
     print("  Ctrl-C 로 종료")
     if open_browser:
         threading.Timer(0.6, lambda: os.system(f"xdg-open {url} >/dev/null 2>&1 &")).start()

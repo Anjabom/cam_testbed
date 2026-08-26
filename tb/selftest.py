@@ -1135,6 +1135,27 @@ def t_publish_names():
         eq("TEXTY 가 양쪽 같다", set(re.findall(r"(\w+):", m.group(1))), TEXTY)
 
 
+def t_web_auth():
+    """인증 게이트 — 터널로 노출하면 이게 유일한 방어선이라 반드시 맞아야 한다."""
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "web"))
+    from server import check_basic_auth as chk           # noqa: PLC0415
+    import base64 as _b64
+
+    def hdr(user, pw):
+        return "Basic " + _b64.b64encode(f"{user}:{pw}".encode()).decode()
+
+    eq("토큰 없으면 통과(로컬)", chk(hdr("x", "y"), ""), True)
+    eq("토큰 없으면 헤더 없어도 통과", chk(None, ""), True)
+    eq("맞는 토큰 통과", chk(hdr("아무나", "s3cret"), "s3cret"), True)
+    eq("틀린 토큰 거부", chk(hdr("x", "nope"), "s3cret"), False)
+    eq("헤더 없으면 거부", chk(None, "s3cret"), False)
+    eq("Basic 아니면 거부", chk("Bearer s3cret", "s3cret"), False)
+    eq("깨진 base64 거부", chk("Basic @@@", "s3cret"), False)
+    eq("콜론 없는 값 거부", chk("Basic " + _b64.b64encode(b"nocolon").decode(),
+                              "s3cret"), False)
+
+
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("t_")]
     for t in tests:
