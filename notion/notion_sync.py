@@ -82,13 +82,23 @@ def save_state(state: dict) -> None:
 
 
 def extract_id(value: str) -> str:
-    """Notion URL 또는 raw ID에서 32자리 ID를 뽑아 대시 형식으로 정규화한다."""
+    """Notion URL 또는 raw ID에서 32자리 ID를 뽑아 대시 형식으로 정규화한다.
+
+    ★페이지 제목이 붙어 있는 URL 을 조심해야 한다★ [2026-08-31]
+    Notion 의 복사 링크는 `.../p/CAM_TESTBED-3cd1...1e5?source=copy_link` 꼴이라
+    제목이 ID 바로 앞에 붙는다. 그런데 제목의 끝이 16진수 글자로 끝날 수 있다 —
+    `CAM_TESTBED` 의 `BED`, `deadbeef`, `face` 처럼. 그러면 32자를 앞에서부터 세는
+    방식이 ★제목 쪽으로 밀린 ID★ 를 만든다(실측: `bed3cd13-2af6-...` → API 400).
+
+    그래서 16진수 ★덩어리★ 를 찾아 그 ★뒤에서부터★ 32자를 쓴다. Notion ID 는 언제나
+    그 덩어리의 마지막 32자다(제목이 앞에 얼마나 더 붙든 상관없다).
+    """
     value = (value or "").strip()
-    hexes = re.findall(r"[0-9a-fA-F]{32}", value.replace("-", ""))
-    if not hexes:
+    runs = [r for r in re.findall(r"[0-9a-fA-F]+", value.replace("-", "")) if len(r) >= 32]
+    if not runs:
         raise SystemExit(f"Notion 페이지 ID를 찾을 수 없습니다: {value!r}\n"
                          "페이지 URL 전체(https://www.notion.so/...-32자리해시)를 넣어주세요.")
-    h = hexes[-1].lower()
+    h = runs[-1][-32:].lower()
     return f"{h[0:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:32]}"
 
 
@@ -368,6 +378,32 @@ def cmd_setup(args) -> None:
     print("\n이제 다음을 실행하세요:  python3 notion/notion_sync.py push")
 
 
+def cmd_check(args) -> None:
+    """extract_id 자체 검사 — 토큰도 네트워크도 필요 없다.
+
+    ID 를 한 글자 밀려 뽑아도 에러가 ★API 400★ 으로만 나와서, 원인이 URL 파싱에
+    있다는 것을 알기까지 한참 걸린다. 그래서 여기서 먼저 걸리게 둔다.
+    """
+    ID = "3cd132af-674f-8067-aae1-d6bd3eb7f1e5"
+    cases = [
+        #  ★제목 끝이 16진수★ 인 실제 복사 링크 (CAM_TESTBED 의 BED) — 여기서 데였다
+        "https://app.notion.com/p/CAM_TESTBED-3cd132af674f8067aae1d6bd3eb7f1e5?source=copy_link",
+        "https://www.notion.so/3cd132af674f8067aae1d6bd3eb7f1e5",
+        "3cd132af674f8067aae1d6bd3eb7f1e5",              # raw
+        "3cd132af-674f-8067-aae1-d6bd3eb7f1e5",          # 이미 대시 꼴
+    ]
+    for c in cases:
+        got = extract_id(c)
+        assert got == ID, f"{c!r}\n  기대 {ID}\n  실제 {got}"
+    try:
+        extract_id("https://app.notion.com/p/deadbeef")   # 32자 못 채운다
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("32자 미만인데 통과했다")
+    print(f"✅ extract_id {len(cases)}건 + 실패 1건 통과")
+
+
 def cmd_status(args) -> None:
     cfg = load_config()
     print(f"설정 파일 : {CONFIG_PATH} {'(있음)' if cfg else '(없음 — setup 필요)'}")
@@ -460,6 +496,9 @@ def main() -> None:
     s.add_argument("--title", help="페이지 제목 (기본: 문서의 첫 # 제목)")
     s.add_argument("--new", action="store_true", help="갱신 대신 새 페이지를 만든다")
     s.set_defaults(func=cmd_push)
+
+    s = sub.add_parser("check", help="URL→ID 파싱 자체 검사 (토큰·네트워크 불필요)")
+    s.set_defaults(func=cmd_check)
 
     s = sub.add_parser("status", help="현재 설정과 동기화 상태 확인")
     s.set_defaults(func=cmd_status)
