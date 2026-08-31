@@ -113,6 +113,60 @@ def lint_contract(contract):
     return out
 
 
+def _flat(v):
+    """비교용 평탄화 — 스칼라도 리스트도 같은 모양으로 만든다."""
+    return [v] if not isinstance(v, (list, tuple)) else list(v)
+
+
+def lint_calibration_drift(contract, ws_params):
+    """계약의 `default:` 가 ★노드가 지금 선언하는 값★ 과 같은가. [2026-08-25]
+
+    ★왜 필요한가★ 계약의 `default:` 는 노드 기본값을 옮겨 적은 ★문서★ 다. 노드가
+    쓰는 값이 아니다. 워크스페이스 코드가 바뀌면 계약은 가만히 있어도 낡는데,
+    그 낡음이 조용하다 — 그 값으로 판정이 갈리는 것이 아니라 ★그림과 게이트 통과율★
+    이 갈리기 때문이다.
+
+    실제로 데였다: night_b 런에서 사다리꼴이 어긋난 채(계약 (750,560)… ↔ 노드
+    (750,650)…) 오버레이가 그려져, 거리선이 205px(≈1.2m) 먼 곳에 얹혔다. 판정값은
+    멀쩡했는데 그림만 틀려서 ★멀쩡한 값을 버그로 읽었다★.
+
+    ★경고만 한다★ 어느 쪽이 옳은지는 여기서 못 정한다 — 노드가 재캘리브된 것일
+    수도, 계약이 최신인데 캐시가 낡은 것일 수도 있다. 사람이 보고 정할 일이다.
+
+    ws_params : `runs/_params/<계약>.yaml` 의 params (`tb.run params` 가 뜬 캐시).
+                없으면 아무것도 안 한다 — 캐시는 있을 수도 없을 수도 있다.
+
+    파라미터 이름은 계약의 `calibration.targets` 가 주고 노드 id 도 계약이 준다.
+    그래서 이 함수에도 워크스페이스 고유명이 들어오지 않는다.
+    """
+    out = []
+    if not ws_params:
+        return out
+    for key, t in ((contract.raw.get("calibration") or {}).get("targets") or {}).items():
+        d = t.get("default")
+        if d is None:
+            continue
+        names = t.get("params") or ([t["param"]] if t.get("param") else [])
+        for nid in t.get("nodes", []):
+            kv = (ws_params or {}).get(nid, {})
+            got = []
+            for n in names:
+                if n in kv:
+                    got.extend(_flat(kv[n]))
+            if not got:
+                continue
+            #  `==` 로 충분하다 — 파이썬은 240 == 240.0 이고 리스트도 원소별로 그렇다
+            if _flat(d) != got:
+                nm = "·".join(names)
+                out.append(
+                    f"calibration.targets.{key}: 계약의 default 가 노드와 다르다 — "
+                    f"`{nm}` 계약 {_flat(d)} ↔ 노드 {got}. "
+                    "계약을 노드에 맞추거나(재캘리브했다면), "
+                    "캐시를 다시 뜰 것(`tb.run params`)")
+            break                      # 첫 노드에서 값을 찾았으면 거기까지다
+    return out
+
+
 def _lint_check(chk, contract, defined, tag, out):
     """체크 한 줄 — 가리키는 이름과 통계 이름이 실제로 있는가."""
     if not isinstance(chk, dict):
@@ -194,9 +248,14 @@ def lint_scenario(contract, scenario):
     return out
 
 
-def lint(contract, scenario=None):
-    """계약(+ 있으면 시나리오)의 이름 참조를 전부 대조한다 — [] 면 깨끗하다."""
+def lint(contract, scenario=None, ws_params=None):
+    """계약(+ 있으면 시나리오)의 이름 참조를 전부 대조한다 — [] 면 깨끗하다.
+
+    ws_params 를 주면 계약의 `default:` 가 노드 기본값과 같은지도 본다
+    (`lint_calibration_drift` 참고). 안 주면 이름 대조만 한다.
+    """
     out = lint_contract(contract)
     if scenario:
         out += lint_scenario(contract, scenario)
+    out += lint_calibration_drift(contract, ws_params)
     return out

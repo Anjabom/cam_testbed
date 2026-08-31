@@ -43,6 +43,7 @@ C_SECANT = (80, 255, 255)   # 노랑 — θ 를 만드는 직선
 C_TANGENT = (150, 150, 150)  # 회색 — 접선(비교)
 C_AXIS = (120, 120, 120)
 C_MEAS = (230, 90, 230)     # 자홍 — 노드가 잰 거리
+C_WARN = (60, 200, 255)     # 주황 — 이 그림을 믿으면 안 되는 이유
 
 
 def _poly_x(fit, y):
@@ -60,19 +61,40 @@ def _valid(fit):
 
 
 def _target_value(t, params):
-    """캘리브 대상 하나의 현재 값 — 시나리오/런의 params 에서 찾는다.
+    """캘리브 대상 하나의 현재 값 — ★언제나 리스트★ 로 돌려준다(없으면 None).
 
-    `tb.calibrate.Calib._param_value` 와 같은 규칙이다. 파라미터 이름은 계약에만
-    있으므로 이 함수도 워크스페이스를 모른다.
+    `tb.calibrate.Calib._param_value` 와 ★같은 규칙★ 이다. 여기만 규칙이 달라서
+    (값이 여럿이어도 첫 개만 돌려줬다) 값이 8개인 `quad` 대상을 params 로 받는
+    순간 4×2 로 못 펴고 죽었다:
+
+        ValueError: cannot reshape array of size 1 into shape (4,2)
+
+    ★캘리브 화면에서 «저장» 한 사다리꼴이 시나리오에 들어오는 순간 걸리는 자리★
+    였다 — 아무도 그 값을 넣은 적이 없어서 여태 안 드러났을 뿐이다. 두 함수의
+    규칙이 갈리면 또 이렇게 되므로 붙여 둔다.
+
+    파라미터 이름은 계약에만 있으므로 이 함수도 워크스페이스를 모른다.
     """
     names = t.get("params") or ([t["param"]] if t.get("param") else [])
     for nid in t.get("nodes", []):
         kv = (params or {}).get(nid, {})
+        out = []
         for n in names:
             if n in kv:
                 v = kv[n]
-                return v[0] if isinstance(v, (list, tuple)) and v else v
+                out.extend(v if isinstance(v, (list, tuple)) else [v])
+        if out:
+            return out
     return None
+
+
+def _scalar(v, default=None):
+    """`_target_value` 의 리스트에서 스칼라 하나 — 없으면 계약의 default."""
+    if v is None:
+        v = default
+    if v is None:
+        return None
+    return float(v[0] if isinstance(v, (list, tuple)) else v)
 
 
 class Renderer:
@@ -113,24 +135,30 @@ class Renderer:
                 kind = t.get("kind")
                 if kind not in ("bev_row", "bev_dist"):
                     continue
-                v = _target_value(t, params)
+                v = _scalar(_target_value(t, params), t.get("default"))
                 if v is None:
-                    v = t.get("default")
-                if v is None:
-                    v = self.bev_h if kind == "bev_row" else None
+                    v = float(self.bev_h) if kind == "bev_row" else None
                 if v is None:
                     continue
-                self.bd_rows.append((key, kind, float(v)))
+                self.bd_rows.append((key, kind, v))
             # 기준선 먼저, 그 다음 먼 문턱 → 가까운 문턱
             self.bd_rows.sort(key=lambda x: (x[1] != "bev_row", -x[2]))
             #  참고 미터 — ★판정에는 안 쓴다★. 노드에서도 0 이면 화면에도 안 붙는다.
             for t in (cal.get("targets") or {}).values():
                 if t.get("kind") == "scale":
-                    v = _target_value(t, params)
-                    self.bd_px2m = float(v if v is not None else (t.get("default") or 0))
+                    self.bd_px2m = _scalar(_target_value(t, params),
+                                           t.get("default")) or 0.0
 
-        # IPM 사각형 — 시나리오 params 가 덮어썼으면 그걸 쓴다
+        # IPM 사각형 — 그 런이 실제로 쓴 params 가 있으면 그걸 쓴다
         quad = None
+        #  ★계약의 default 로 떨어졌는가★ [2026-08-25]
+        #  이 그림은 '노드가 판정에 쓴 그 사다리꼴' 이어야 뜻이 있다. default 는
+        #  계약이 적어 둔 ★문서★ 일 뿐이고 노드가 실제로 든 값이 아니다 — 실제로
+        #  어긋난 적이 있다(night_b: 노드 (750,650)(1170,650)(1810,1080)(260,1080)
+        #  ↔ 계약 default (750,560)(1170,560)(1920,1080)(0,1080)). 그때 자홍색
+        #  거리선이 205px(≈1.2m) 먼 곳에 얹혀 ★멀쩡한 판정값이 틀려 보였다★.
+        #  그림 없이 원본만 나오는 것보다는 낫지만, 조용히 틀린 그림이 제일 나쁘다.
+        self.quad_guessed = False
         tgt = (cal.get("targets") or {})
         for t in tgt.values():
             if t.get("kind") != "quad":
@@ -140,6 +168,7 @@ class Renderer:
             #  (예전에는 여기서 None 이 되어 BEV 를 아예 못 그렸다 — 그러면 오버레이
             #   없이 원본만 나와서 '왜 안 그려지지' 를 한참 찾게 된다)
             quad = t.get("default") if v is None else v
+            self.quad_guessed = v is None and quad is not None
         if quad is None:
             quad = r.get("ipm_src_pts")
         self.quad = (np.asarray(quad, np.float32).reshape(4, 2)
@@ -283,11 +312,15 @@ class Renderer:
                                            else f"{v}"))
         lines_txt += ["", ("★ 자홍색 선이 노드가 잰 거리다 — 노면의 그것과 "
                            "겹치는가" if seen else "★ 미검출 — 자홍색 선이 없다")]
+        if self.quad_guessed:
+            lines_txt += ["⚠ 사다리꼴을 계약 default 로 그렸다 — 이 런이 실제로",
+                          "⚠ 쓴 값이 아니다. 선 위치를 믿지 말 것"]
         panel_h = 22 * len(lines_txt) + 14
         cv2.rectangle(src, (0, 0), (560, panel_h), (24, 24, 28), -1)
         for i, t in enumerate(lines_txt):
             put_text(src, t, (10, 24 + 22 * i), 16,
-                     C_MEAS if t.startswith("★") else (225, 225, 225))
+                     C_WARN if t.startswith("⚠") else
+                     (C_MEAS if t.startswith("★") else (225, 225, 225)))
 
         sh = src.shape[0]
         scale = sh / float(self.bev_h)

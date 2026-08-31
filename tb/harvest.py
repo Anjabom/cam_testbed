@@ -62,6 +62,42 @@ def source_video(run_dir):
     return v if v and Path(v).exists() else None
 
 
+def effective_params(run_dir):
+    """이 런에서 노드가 ★실제로 들고 있던★ 파라미터. [2026-08-25]
+
+    앞에서부터 처음 있는 것을 쓴다:
+      ① `params_actual.yaml`      — `ros2 param dump` 로 뜬 ★실효값★
+      ② `summary.json` 의 meta    — 테스트베드가 ★요청한★ 값
+      (둘 다 없으면 {} → 그리는 쪽이 계약의 default 로 떨어진다)
+
+    ★①이 필요한 이유★ ②에는 시나리오·local.yaml 이 적어 준 것만 들어 있다.
+    아무도 안 준 파라미터는 노드가 자기 기본값으로 도는데, 그 기본값은 계약이
+    적어 둔 default 와 ★얼마든지 어긋난다★ — 워크스페이스 코드가 바뀌면 계약은
+    가만히 있어도 낡기 때문이다. 실제로 night_b 런에서 사다리꼴이 어긋나
+    거리선이 205px(≈1.2m) 먼 곳에 얹혔다(그때 판정값 자체는 멀쩡했다).
+
+    ★과거 런도 이걸로 되살아난다★ `params_actual.yaml` 이 런 디렉터리에 남아
+    있으므로, 다시 돌릴 필요 없이 그리기만 다시 하면 옳은 그림이 나온다.
+    """
+    import yaml                                      # noqa: PLC0415
+    rd = Path(run_dir)
+    pa = rd / "params_actual.yaml"
+    if pa.exists():
+        try:
+            got = (yaml.safe_load(pa.read_text()) or {}).get("params")
+            if got:
+                return got
+        except Exception:      # noqa: BLE001
+            pass               # 깨진 덤프 하나로 그림을 통째로 잃지 않는다
+    sj = rd / "summary.json"
+    if sj.exists():
+        try:
+            return json.loads(sj.read_text())["summary"]["meta"].get("params") or {}
+        except Exception:      # noqa: BLE001
+            pass
+    return {}
+
+
 def grab(video, frames, out_dir, prefix="f", width=0, undistort=None):
     """원본 영상에서 프레임들을 뽑아 PNG 로 저장. 반환: 저장된 경로 목록."""
     import cv2
