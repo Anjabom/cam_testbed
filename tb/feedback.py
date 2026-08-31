@@ -112,6 +112,105 @@ def hint_for(name):
 
 
 # ══════════════════════════════════════════════════════════════════════
+#  관측값 — ★판정이 없어도 나오는 절★
+# ══════════════════════════════════════════════════════════════════════
+#  checks: 는 "이 값이 이래야 한다"는 기준이라 ★정상이 뭔지 알아야★ 쓸 수 있다.
+#  새 워크스페이스·새 영상에서는 그걸 아직 모른다 — 그래서 판정이 0개인 채로
+#  돌리게 되는데, 그때도 이 문서가 알맹이를 갖도록 하는 것이 이 절이다.
+#  전부 summary.json 에 이미 계산돼 있는 값이고, 여기서 판정하지 않는다.
+def _signal_rows(sig_stats):
+    """신호 통계 → (숫자표 줄들, 문자열표 줄들). 계약의 signals: 순서를 지킨다."""
+    num, cat = [], []
+    for name, st in (sig_stats or {}).items():
+        if not isinstance(st, dict):
+            continue
+        if st.get("kind") == "cat":
+            counts = st.get("counts") or {}
+            n = st.get("n") or sum(counts.values()) or 1
+            top = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)
+            share = ", ".join(f"`{k}` {v}회({v / n * 100:.0f}%)" for k, v in top[:6])
+            cat.append(f"| `{name}` | {st.get('n', 0)} | {share or '—'} "
+                       f"| {st.get('transitions', 0)} |")
+        else:
+            num.append(
+                f"| `{name}` | {st.get('n', 0)} | {_f(st.get('mean'))} "
+                f"| {_f(st.get('std'))} | {_f(st.get('min'))} | {_f(st.get('max'))} "
+                f"| {_f(st.get('p95'))} | {st.get('increases', 0)}↑ "
+                f"{st.get('decreases', 0)}↓ |")
+    return num, cat
+
+
+def observations(s, n):
+    """`## n. 관측값` 절 — 신호 통계 · 전이 · 노드 로그."""
+    L = []
+    a = L.append
+    a(f"## {n}. 관측값 — 신호가 실제로 어떻게 나왔나")
+    a("")
+    a("판정(`checks:`)과 무관하게 **이번 실행에서 관측된 값 그대로**다. "
+      "기준을 세우지 않았으므로 합격/불합격이 아니라, "
+      "**물리적으로·논리적으로 말이 되는 값인지** 읽어 볼 자료다.")
+    a("")
+
+    num, cat = _signal_rows(s.get("signals"))
+    if num:
+        a("### 숫자 신호")
+        a("")
+        a("| 신호 | 표본 | 평균 | 표준편차 | 최소 | 최대 | p95 | 프레임간 증감 |")
+        a("|---|---|---|---|---|---|---|---|")
+        L.extend(num)
+        a("")
+        a("- `최소`·`최대` 가 물리적으로 불가능한 값이면 그 신호를 만드는 곳이 "
+          "이미 틀린 것이다(캘리브·단위·예외처리).")
+        a("- `표준편차` 가 평균에 비해 크면 프레임마다 값이 튄다는 뜻이고, "
+          "`증감` 횟수가 표본 수에 육박하면 매 프레임 흔들린 것이다.")
+        a("")
+    if cat:
+        a("### 상태(문자열) 신호")
+        a("")
+        a("| 신호 | 표본 | 값 분포 | 전이 횟수 |")
+        a("|---|---|---|---|")
+        L.extend(cat)
+        a("")
+        a("- 한 값이 100% 면 그 신호는 이 영상에서 ★한 번도 안 바뀐★ 것이다 — "
+          "자극이 없었는지, 아니면 로직이 굳었는지 구분해야 한다.")
+        a("")
+
+    for ev in (s.get("events") or []):
+        trs = ev.get("transitions") or []
+        a(f"### 전이 — {ev.get('label', ev.get('signal'))} (`{ev.get('signal')}`)")
+        a("")
+        if ev.get("why"):
+            a(f"> {ev['why']}")
+            a("")
+        if not trs:
+            a("전이가 한 번도 없었다 — 값이 처음 그대로다.")
+            a("")
+            continue
+        at = [str(x) for x in (ev.get("at") or [])]
+        a("| 프레임 | 시각[s] | 바뀜 | " + " | ".join(f"`{x}`" for x in at) + " |")
+        a("|---|---|---|" + "---|" * len(at))
+        for t in trs[:20]:
+            cells = " | ".join(_f(t.get(x)) for x in at)
+            a(f"| {t.get('frame')} | {_f(t.get('t_s'), 2)} | "
+              f"{t.get('from')} → {t.get('to')} | {cells} |")
+        if len(trs) > 20:
+            a(f"| … | | 그 외 {len(trs) - 20}건 | " + " | " * len(at) + "|")
+        a("")
+
+    le = {k: v for k, v in (s.get("log_events") or {}).items()
+          if isinstance(v, dict) and v.get("count")}
+    if le:
+        a("### 노드 로그 — 토픽에 안 나오는 근거")
+        a("")
+        a("| 로그 | 횟수 | 무엇을 뜻하나 |")
+        a("|---|---|---|")
+        for k, v in sorted(le.items(), key=lambda kv: kv[1].get("count", 0), reverse=True):
+            a(f"| `{k}` | {v.get('count')} | {(v.get('why') or '').strip() or '—'} |")
+        a("")
+    return L
+
+
+# ══════════════════════════════════════════════════════════════════════
 #  본문
 # ══════════════════════════════════════════════════════════════════════
 def render(run_dir, prev_dir=None, note=""):
@@ -137,8 +236,14 @@ def render(run_dir, prev_dir=None, note=""):
     # ── 0. 결론 ────────────────────────────────────────────────────
     a("## 0. 결론 먼저")
     a("")
-    a(f"- 불변식 체크 **{len(good)}/{len(checks)} 통과**"
-      + (f" — 실패 {len(bad)}건" if bad else " — 전부 통과"))
+    if not checks:
+        #  ★"실패 0건" 이라고 쓰면 안 된다★ 판정이 없는 것과 전부 통과한 것은
+        #  전혀 다른데, 문서만 보면 구별이 안 돼 «다 정상» 으로 읽힌다.
+        a("- **판정(`checks:`)이 아직 없다** — 합격/불합격을 말할 수 없다. "
+          "이 실행이 어떤 값을 냈는지는 아래 관측값 절을 볼 것.")
+    else:
+        a(f"- 불변식 체크 **{len(good)}/{len(checks)} 통과**"
+          + (f" — 실패 {len(bad)}건" if bad else " — 전부 통과"))
     if bad:
         top = ", ".join(f"`{c['check']}`" for c in bad[:3])
         a(f"- 가장 급한 것: {top}")
@@ -186,6 +291,9 @@ def render(run_dir, prev_dir=None, note=""):
         for c in good:
             a(f"- ✅ `{c['check']}` = {_f(c['value'])} (기준 {_bound(c)})"
               + (f" — {_note(c)}" if _note(c) else ""))
+    elif not checks:
+        a("- 판정이 없어 «지켜야 할 선» 이 정해져 있지 않다. "
+          "아래 관측값이 이번 실행의 기록이니, 고친 뒤 그 값들이 어떻게 변했는지 볼 것.")
     else:
         a("- 통과한 체크가 없다.")
     if verdict == "PASS":
@@ -198,14 +306,19 @@ def render(run_dir, prev_dir=None, note=""):
                            for st in ok_stages)
             a(f"- ✅ {fn.get('label', fn.get('id'))} — 잘 통과한 단계: {nm}")
     a("")
-    a("이 값들을 깨뜨리는 수정은 개선이 아니다. 고친 뒤 다시 확인할 것.")
-    a("")
+    if checks:
+        a("이 값들을 깨뜨리는 수정은 개선이 아니다. 고친 뒤 다시 확인할 것.")
+        a("")
 
     # ── 3. 안 좋은 점 ──────────────────────────────────────────────
     a("## 3. 안 좋은 점 — 고쳐야 할 것 (심각도 순)")
     a("")
-    if not bad:
-        a("실패한 체크가 없다. 아래 4·5절의 병목과 수치만 보면 된다.")
+    if not checks:
+        a("**판정이 없어 여기에 자동으로 올라오는 항목이 없다.** "
+          "아래 병목·관측값을 읽고 이상한 값을 직접 짚어야 한다.")
+        a("")
+    elif not bad:
+        a("실패한 체크가 없다. 아래 병목과 관측값만 보면 된다.")
         a("")
     for i, c in enumerate(bad, 1):
         e = excess(c)
@@ -280,8 +393,15 @@ def render(run_dir, prev_dir=None, note=""):
           + " — 메시지 배치가 바뀌었으면 계약의 `path:` 한 줄을 고친다.")
     a("")
 
-    # ── 6. 개선 전/후 ──────────────────────────────────────────────
-    n = 6
+    # ── 6. 관측값 ──────────────────────────────────────────────────
+    #    ★판정이 없어도 이 절은 항상 나온다★ — 이 문서의 알맹이다.
+    L.extend(observations(s, 6))
+
+    # ── 7. 개선 전/후 ──────────────────────────────────────────────
+    #    ★자동으로 붙지 않는다★ prev_dir 을 준 때만이다. 전/후 비교는 웹앱의
+    #    «결과 비교» 에서 사람이 두 실행을 골라 하는 일이고, 이 문서는 기본적으로
+    #    ★이번 실행 하나★ 만 말한다.
+    n = 7
     if prev_dir:
         L.extend(_diff_section(prev_dir, run_dir, sj, n))
         n += 1
@@ -298,7 +418,23 @@ def render(run_dir, prev_dir=None, note=""):
     sc = m.get("scenario", "regression")
     a(f"## {n}. 요청")
     a("")
-    a(f"위 3·4절을 없애는 방향으로 `{m.get('workspace', '?')}` 의 코드를 고쳐 줘.")
+    if checks:
+        a(f"위 3·4절을 없애는 방향으로 `{m.get('workspace', '?')}` 의 코드를 고쳐 줘.")
+    else:
+        #  ★판정이 없을 때는 요청이 달라진다★ "실패를 없애라"고 할 대상이 없다.
+        #  대신 관측값을 읽고 ★이상한 것을 찾아 달라★ 고 부탁하는 것이 맞다.
+        a(f"이 실행은 **판정 없이 돌린 탐색용**이다. `{m.get('workspace', '?')}` 의 "
+          "알고리즘이 어떤 값을 내는지 보려고 돌렸다.")
+        a("")
+        a("**6절의 관측값을 읽고 다음을 말해 줘:**")
+        a("")
+        a("1. 물리적으로·논리적으로 **말이 안 되는 값**이 있는가 "
+          "(범위를 벗어난 최소/최대, 100% 한 값으로 고정된 상태, "
+          "표본 수에 육박하는 증감 횟수 등). 있으면 그 신호를 만드는 코드의 어디를 볼지.")
+        a("2. 4절의 병목에서 **받는 쪽이 못 쓴 프레임**이 많다면 그 원인.")
+        a("3. 이 관측값을 근거로 **앞으로 걸어 둘 만한 판정(`checks:`)**을 제안해 줘 — "
+          f"`scenarios/{sc}.yaml` 에 넣을 것이다. 각 항목의 `why:` 에는 "
+          "**여기 관측된 값을 그대로 인용**해서, 왜 그 문턱인지 나중에 재현되게 할 것.")
     a("")
     a("**규칙**")
     a("")
@@ -307,7 +443,12 @@ def render(run_dir, prev_dir=None, note=""):
     a("2. **임계값을 느슨하게 해서 체크를 통과시키지 마라.** 값이 아니라 원인을 고친다. "
       f"측정 기준 자체가 이 영상·차량에 안 맞는다고 판단되면, 그 근거를 먼저 말하고 "
       f"`scenarios/{sc}.yaml` 의 `checks:` 를 고치자고 제안할 것 — 말없이 바꾸지 않는다.")
-    a("3. 2절에서 통과한 체크를 깨지 않는다. 하나를 고치다 다른 하나가 깨지면 그것도 보고할 것.")
+    if checks:
+        a("3. 2절에서 통과한 체크를 깨지 않는다. "
+          "하나를 고치다 다른 하나가 깨지면 그것도 보고할 것.")
+    else:
+        a("3. 관측값을 **추측으로 채우지 마라.** 6절에 없는 숫자를 지어내지 말고, "
+          "더 봐야 할 것이 있으면 무엇을 어떻게 재야 하는지 말할 것.")
     a("4. 고칠 곳을 정할 때 4절의 병목 단계부터 본다 — 거기가 실제로 주행에 반영되는 길목이다.")
     a("")
     a("**고친 뒤 검증**")
@@ -315,9 +456,10 @@ def render(run_dir, prev_dir=None, note=""):
     a("```bash")
     a(f"cd {ROOT}")
     a(f"python3 -m tb.run run --scenario scenarios/{sc}.yaml --tag fix")
-    a("python3 -m tb.run feedback <새로 생긴 실행 이름> "
-      f"--vs {run_dir.name}   # 무엇이 좋아지고 무엇이 나빠졌는지")
     a("```")
+    a("")
+    a(f"전/후를 숫자로 대조하려면 웹앱 **«결과 비교»** 에서 `{run_dir.name}` 과 "
+      "새 실행을 골라 비교한다(신호별 차이를 허용오차와 함께 낸다).")
     a("")
     if m.get("mode") == "lockstep":
         a("`lockstep` 이라 같은 코드면 값이 정확히 같다. 숫자가 바뀌었다면 "
