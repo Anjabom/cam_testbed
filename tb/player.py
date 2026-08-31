@@ -177,6 +177,21 @@ def make_perturb(spec):
 
 
 # ══════════════════════════════════════════════════════════════════════
+def sched_value(pts, frame):
+    """정렬된 [(프레임, 값)] 에서 이 프레임에서의 계단(hold) 값. 첫 점 이전이면 None.
+
+    ★보간하지 않는다★ 이 표는 '언제 무엇이 되었나' 이지 물리량이 아니다 —
+    프레임 f 의 값은 f 이하의 마지막 점이다.
+    """
+    val = None
+    for f, v in pts:
+        if f <= frame:
+            val = v
+        else:
+            break
+    return val
+
+
 def _set_field(msg, path, value):
     """'linear.x' 같은 경로에 값을 넣는다 (aux 스텁 발행용)."""
     parts = path.split(".")
@@ -213,17 +228,48 @@ class Player(Node):
         self.sync_topic = args.sync_topic or None
 
         # aux 스텁 (보내는 쪽 노드 대역)
+        #   두 갈래다:
+        #     · fields:   고정값을 rate_hz 로 계속 — 허락 신호처럼 '늘 켜져 있는' 것
+        #     · schedule: ★프레임에 따라 바뀌는 값★ — 타이머가 아니라 프레임마다 낸다
         self._aux = []
+        self._sched = []
         for spec in aux_specs:
             from rosidl_runtime_py.utilities import get_message
             cls = get_message(spec["type"])
             pub = self.create_publisher(cls, spec["topic"], rel)
+            sched = spec.get("schedule")
+            if sched:
+                # {프레임: 값} — 사이는 ★계단(hold)★ 이다. 보간하지 않는 이유는
+                # 이것이 '언제 무엇이 되었나' 를 적는 표이지 물리량이 아니라서다.
+                pts = sorted((int(k), v) for k, v in sched.items())
+                self._sched.append((pub, cls, str(spec.get("field", "data")), pts))
+            elif spec.get("fields"):
+                msg = cls()
+                for k, v in spec["fields"].items():
+                    _set_field(msg, k, v)
+                period = 1.0 / float(spec.get("rate_hz", 10.0))
+                self._aux.append(self.create_timer(period,
+                                                   lambda p=pub, m=msg: p.publish(m)))
+            #  fields 도 schedule 도 없으면 ★발행하지 않는다★ — 뷰어가 키로 값을
+            #  넣어 타임라인을 저작하는 런이 그렇다. 여기서 0 을 흘리면 뷰어와 싸운다.
+
+    def publish_scheduled(self, frame_idx):
+        """이 프레임에서의 스케줄 값을 낸다 — ★매 프레임★ 낸다.
+
+        바뀔 때만 내지 않는 이유: 이 토픽들은 RELIABLE 이지만 대상 노드가 늦게 떠서
+        첫 발행을 놓치면 그 뒤로 영영 기본값으로 돈다. 매번 내면 그 창이 없어진다.
+
+        ⚠️ ★전이 프레임에서 ±1 프레임 밀릴 수 있다★ 이미지와 이 토픽은 서로 다른
+           콜백 그룹으로 들어가므로 처리 순서가 보장되지 않는다. 스케줄을 프레임
+           단위로 정확히 맞춰야 하는 판정은 두지 말 것(구간 판정은 안전하다).
+        """
+        for pub, cls, field, pts in self._sched:
+            val = sched_value(pts, frame_idx)
+            if val is None:
+                continue
             msg = cls()
-            for k, v in (spec.get("fields") or {}).items():
-                _set_field(msg, k, v)
-            period = 1.0 / float(spec.get("rate_hz", 10.0))
-            self._aux.append(self.create_timer(period,
-                                               lambda p=pub, m=msg: p.publish(m)))
+            _set_field(msg, field, val)
+            pub.publish(msg)
 
     def attach_sync(self):
         """sync_topic 의 타입이 광고되면 그때 구독한다."""
@@ -381,6 +427,8 @@ def main(argv=None):
                 idx += 1
                 continue
             node.wait_if_paused()
+            #  ★이미지보다 먼저★ 낸다 — 이 프레임을 처리할 때 값이 이미 가 있어야 한다
+            node.publish_scheduled(idx)
             frame = perturb(frame)
             if overlay.ok:
                 #  재생 진행률 0~1 — 목업이 '다가오는' 속도의 기준이다

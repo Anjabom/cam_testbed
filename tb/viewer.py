@@ -34,7 +34,8 @@ from std_msgs.msg import Float64MultiArray, String
 
 from . import encode
 from .contract import load as load_contract
-from .player import FRAME_TOPIC
+from .geometry import put_text            # ★한글이 되는 putText★ (cv2 는 ASCII 만)
+from .player import FRAME_TOPIC, _set_field
 
 CONTROL_TOPIC = "/testbed/control"
 
@@ -73,6 +74,62 @@ class Viewer(Node):
         self._sig_subs = {}
         self.create_timer(0.5, self._attach_signals)
         self._attach_signals()
+
+        # ── 타임라인 저작 (계약의 stimulus.aux[].keys 가 있을 때만) ──────
+        #   ★키 이름·값·라벨은 전부 계약이 준다★ — 여기에 워크스페이스 어휘가
+        #   들어오면 다른 계약에서 엉뚱한 키가 뜬다(경계 규칙 ①·④).
+        #   누른 순간의 frame_idx 를 적어 두었다가 끝날 때 schedule: 로 뱉는다.
+        self.keys = {}            # 눌린 키 문자 -> (pub, field, value, label)
+        self.marks = []           # [(frame, value, label)] — 저작 결과
+        for spec in (getattr(contract, "aux", None) or []):
+            ks = spec.get("keys") or {}
+            if not ks:
+                continue
+            cls = get_message(spec["type"])
+            pub = self.create_publisher(cls, spec["topic"], rel)
+            field = str(spec.get("field", "data"))
+            for k, kv in ks.items():
+                self.keys[str(k)[:1]] = (pub, cls, field, kv.get("value"),
+                                         str(kv.get("label", k)), spec["topic"])
+
+        #  ★저작하려면 영상을 봐야 한다★ 이 노드는 디버그 이미지를 안 내므로
+        #  (debug_topics 비어 있음), 플레이어가 밀어넣는 ★자극 이미지★ 를 그대로
+        #  받아 배경으로 깐다 — 그것이 곧 노드가 보는 그림이고 프레임 번호와 짝이다.
+        self.stim_topic = getattr(contract, "image_topic", "") or ""
+        if self.keys and self.stim_topic and self.stim_topic not in contract.debug_topics:
+            self.create_subscription(
+                Image, self.stim_topic,
+                lambda m, tt=self.stim_topic: self._on_img(tt, m), best)
+            self.get_logger().info(f"저작 배경 영상 구독: {self.stim_topic}")
+
+    def press(self, ch):
+        """저작 키 하나 — 지금 값을 발행하고 '몇 프레임에서 눌렀나' 를 적는다."""
+        hit = self.keys.get(ch)
+        if hit is None:
+            return False
+        pub, cls, field, val, label, topic = hit
+        msg = cls()
+        _set_field(msg, field, val)
+        pub.publish(msg)
+        self.marks.append((self.frame_idx, topic, val, label))
+        self.get_logger().info(f"🧪 frame {self.frame_idx} → {label} ({val})")
+        return True
+
+    def schedule_json(self):
+        """저작 결과를 aux_schedule 모양 {토픽: {프레임: 값}} 으로. 판정 런이 재생한다."""
+        out = {}
+        for f, topic, val, _lab in self.marks:
+            if f >= 0:
+                out.setdefault(topic, {})[int(f)] = val
+        return out
+
+    def schedule_yaml(self):
+        """저작 결과를 시나리오에 붙일 수 있는 모양으로. 빈 저작이면 ''."""
+        if not self.marks:
+            return ""
+        body = ", ".join(f"{f}: {v}" for f, _t, v, _l in self.marks if f >= 0)
+        why = " · ".join(f"{f}={l}" for f, _t, _v, l in self.marks if f >= 0)
+        return f"    schedule: {{{body}}}   # {why}\n"
 
     def _qos_for(self, topic):
         rel, dur = ReliabilityPolicy.RELIABLE, DurabilityPolicy.VOLATILE
@@ -117,6 +174,8 @@ class Viewer(Node):
 
     # ── 오버레이 ────────────────────────────────────────────────────
     def _draw(self, img, topic, paused):
+        #  ★한글은 geometry.put_text(PIL) 로 그린다★ cv2.putText 는 ASCII 만 그려
+        #  라벨이 통째로 ???? 가 된다 — 노드 HUD 가 폰트를 따로 쓰는 것과 같은 이유다.
         img = img.copy()
         h, w = img.shape[:2]
         lines = [f"frame {self.frame_idx}   {topic}"]
@@ -126,20 +185,44 @@ class Viewer(Node):
                 lines.append(f"{name:<14} {v:+.4f}")
             elif v is not None:
                 lines.append(f"{name:<14} {v}")
-        pad, lh = 8, 22
-        bw = 330
+        pad, lh = 8, 24
+        bw = 360
         bh = pad * 2 + lh * len(lines)
         panel = img[0:min(bh, h), 0:min(bw, w)]
         cv2.addWeighted(panel, 0.35, panel * 0, 0.65, 0, panel)
         for i, t in enumerate(lines):
-            cv2.putText(img, t, (pad, pad + lh * (i + 1) - 6),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.52, (0, 255, 180), 1,
-                        cv2.LINE_AA)
+            put_text(img, t, (pad, pad + lh * (i + 1) - 4), 17, (180, 255, 60))
+
+        #  ★저작 모드★ 키 안내와 지금까지 찍은 마크를 화면 아래에 그린다.
+        if self.keys:
+            legend = "  ".join(f"[{ch}] {lab}({val:g})"
+                               for ch, (_p, _c, _f, val, lab, _tp)
+                               in sorted(self.keys.items()))
+            put_text(img, legend, (pad, h - 58), 18, (90, 220, 255))
+            recent = "  ".join(f"{f}:{lab}" for f, _t, _v, lab in self.marks[-6:])
+            put_text(img, f"마크 {len(self.marks)}개  {recent}",
+                     (pad, h - 32), 16, (200, 200, 200))
         if paused:
-            cv2.putText(img, "PAUSED  (space=resume  n=step)",
-                        (pad, h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
-                        (0, 200, 255), 2, cv2.LINE_AA)
+            put_text(img, "⏸ 정지 (space=재개  n=한프레임)", (pad, h - 8), 18,
+                     (0, 200, 255))
         return img
+
+    def status_canvas(self, paused):
+        """디버그 이미지가 없는 계약을 위한 ★빈 화면★ — 저작 키를 띄우려고 있다.
+
+        이 노드처럼 디버그 토픽을 안 내는 대상은 볼 그림이 없다. 그래도 재생 중에
+        키를 누르려면 창이 하나는 떠 있어야 한다(cv2.waitKey 는 창이 있어야 먹는다).
+        """
+        import numpy as np                                 # noqa: PLC0415
+        img = np.zeros((320, 620, 3), np.uint8)
+        img[:] = (28, 26, 24)
+        put_text(img, "영상 기다리는 중…", (16, 40), 20, (200, 200, 200))
+        for i, (ch, (_p, _c, _f, val, label, _tp)) in enumerate(sorted(self.keys.items())):
+            put_text(img, f"[{ch}]  {label} = {val:g}", (16, 200 + 28 * i),
+                     18, (90, 220, 255))
+        put_text(img, "space=정지  n=한프레임  q=닫기", (16, 300), 16,
+                 (150, 150, 150))
+        return self._draw(img, "타임라인 저작", paused)
 
     def _record(self, topic, img):
         if self.save_dir is None:
@@ -179,7 +262,25 @@ class Viewer(Node):
         cv2.destroyAllWindows()
 
 
+def _die_with_parent():
+    """부모(tb.run)가 죽으면 이 프로세스도 SIGTERM 을 받게 한다 (Linux). [2026-08-25]
+
+    ★고아 창 방지의 핵심★ tb.run 이 --watch 를 exec 로 띄우므로 이 뷰어의 부모는
+    곧 tb.run 이다. tb.run 이 timeout·kill 로 ★정상 정리 없이★ 죽어도(그러면 finally
+    가 안 돌아 stop() 이 호출되지 않는다) 커널이 여기에 SIGTERM 을 보내 준다 —
+    cv2 창을 문 채 영영 남는 일이 없어진다. 다른 OS 에서는 조용히 넘어간다.
+    """
+    try:
+        import ctypes                                 # noqa: PLC0415
+        import signal as _sig                         # noqa: PLC0415
+        PR_SET_PDEATHSIG = 1
+        ctypes.CDLL("libc.so.6").prctl(PR_SET_PDEATHSIG, _sig.SIGTERM, 0, 0, 0)
+    except Exception:      # noqa: BLE001
+        pass               # Linux 아니거나 libc 없음 — 정상 정리 경로는 그대로 있다
+
+
 def main(argv=None):
+    _die_with_parent()
     argv = list(sys.argv[1:] if argv is None else argv)
     ap = argparse.ArgumentParser(prog="tb.viewer")
     ap.add_argument("--contract", required=True)
@@ -196,8 +297,11 @@ def main(argv=None):
     args, ros_argv = ap.parse_known_args(argv)
 
     contract = load_contract(args.contract)
-    if not contract.debug_topics:
-        print("[viewer] 계약에 debug_topics 가 없다 — 볼 것이 없다.", file=sys.stderr)
+    #  ★저작 키가 있으면 디버그 영상이 없어도 뜬다★ 볼 그림은 없지만 누를 것이 있다.
+    authoring = any((s.get("keys") or {}) for s in (getattr(contract, "aux", None) or []))
+    if not contract.debug_topics and not authoring:
+        print("[viewer] 계약에 debug_topics 도 stimulus.aux[].keys 도 없다 — "
+              "볼 것도 누를 것도 없다.", file=sys.stderr)
         return 1
     overlay = ([s for s in args.overlay.split(",") if s]
                or contract.compare_signals[:8])
@@ -208,15 +312,43 @@ def main(argv=None):
     node = Viewer(contract, args.save_dir, overlay, args.fps)
     paused = False
     t0 = time.time()
+    #  ★띄운 창을 추적한다★ 사용자가 X 로 닫으면 다음 프레임에 imshow 가 다시
+    #  띄우므로, 닫힘을 감지해 종료로 처리한다(아래 _user_closed).
+    win_shown = set()
+
+    def _user_closed():
+        """사용자가 창을 X 로 닫았는가 — 하나라도 닫혔으면 True."""
+        for w in list(win_shown):
+            try:
+                if cv2.getWindowProperty(w, cv2.WND_PROP_VISIBLE) < 1:
+                    return True
+            except cv2.error:
+                return True          # 이미 파괴된 창을 물으면 닫힌 것이다
+        return False
+
     try:
         while rclpy.ok():   # 실행이 끝나면 오케스트레이터가 SIGINT 를 보낸다
             rclpy.spin_once(node, timeout_sec=0.01)
+            if not node.frames and node.keys and not args.headless:
+                #  창 제목은 ASCII 로 — 한글이면 Qt 제목표시줄에서 ???? 가 된다.
+                cv2.imshow("authoring", node.status_canvas(paused))
+                win_shown.add("authoring")
+            elif "authoring" in win_shown and node.frames:
+                #  실제 영상이 오기 시작하면 임시 대기창을 닫는다(둘이 겹치지 않게).
+                try:
+                    cv2.destroyWindow("authoring")
+                except cv2.error:
+                    pass
+                win_shown.discard("authoring")
             for topic, img in list(node.frames.items()):
                 fresh = topic in node.dirty
                 node.dirty.discard(topic)
                 shown = node._draw(img, topic, paused)
                 if fresh:
-                    node._record(topic, shown)   # 새 프레임일 때만 기록
+                    #  ★자극 영상은 mp4 로 남기지 않는다★ 저작 배경일 뿐이라 1080p
+                    #  원본을 통째로 다시 굽는 것은 낭비다(디버그 토픽만 기록한다).
+                    if topic != getattr(node, "stim_topic", None):
+                        node._record(topic, shown)   # 새 프레임일 때만 기록
                     if args.jpeg:
                         # 원자적 교체 — 반쯤 쓰인 파일을 브라우저가 읽지 않게.
                         # imwrite 는 확장자로 포맷을 정하므로 .tmp 를 못 쓴다 →
@@ -234,8 +366,13 @@ def main(argv=None):
                     if args.scale != 1.0:
                         shown = cv2.resize(shown, None, fx=args.scale, fy=args.scale)
                     cv2.imshow(topic, shown)
+                    win_shown.add(topic)
             if not args.headless:
                 k = cv2.waitKey(1) & 0xFF
+                #  ★X 로 창을 닫았으면 종료★ 안 그러면 다음 프레임에 imshow 가 다시
+                #  띄워 '꺼도 계속 켜지는' 것으로 보인다(q 키와 같게 취급한다).
+                if _user_closed():
+                    break
                 if k == ord(" "):
                     paused = not paused
                     node.pub_ctl.publish(String(data="pause" if paused else "resume"))
@@ -248,8 +385,10 @@ def main(argv=None):
                         cv2.imwrite(str(Path(args.save_dir or ".") / fn),
                                     node._draw(img, topic, False))
                     node.get_logger().info(f"스냅샷 저장 (frame {node.frame_idx})")
-                elif k == ord("q"):
+                elif k == ord("q") or k == 27:      # q 또는 ESC 로 닫는다
                     break
+                elif k != 255 and node.press(chr(k)):
+                    pass          # 계약이 준 저작 키 — press() 가 기록·발행한다
             if args.seconds and time.time() - t0 > args.seconds:
                 break
     except KeyboardInterrupt:
@@ -261,6 +400,19 @@ def main(argv=None):
                 time.sleep(0.2)
             except Exception:   # noqa: BLE001
                 pass
+        sched = node.schedule_yaml()
+        if sched:
+            #  ★그대로 시나리오의 aux 항목에 붙여 넣는 모양★ 으로 낸다.
+            #  판정 런은 이걸 재생한다 — 사람이 누른 그 순간이 아니라.
+            print("\n타임라인 저작 결과 — 시나리오의 stimulus.aux 항목에 붙일 것:\n"
+                  + sched, file=sys.stderr)
+            if args.save_dir:
+                import json                          # noqa: PLC0415
+                (Path(args.save_dir) / "schedule.yaml").write_text(sched)
+                #  ★기계가 읽는 모양★ {토픽:{프레임:값}} — cmd_run 이 이걸 읽어
+                #  시나리오에 저장하고 판정 런을 한 번 더 돌린다(config.set_aux_schedule).
+                (Path(args.save_dir) / "schedule.json").write_text(
+                    json.dumps(node.schedule_json()))
         node.close()          # ★mp4 를 여기서 닫는다★
         node.destroy_node()
         if rclpy.ok():
