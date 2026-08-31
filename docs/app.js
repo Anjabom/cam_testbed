@@ -18,7 +18,7 @@
      실행 상세의 «비교» 탭에 그대로 있다. */
   var SERVERONLY = { newtest: 1, exec: 1, calib: 1, check: 1, tools: 1,
                      compare: 1, trash: 1, visual: 1 };
-  var SECNAME = { newtest: '새 시험 시작', exec: '테스트 실행', calib: '카메라 보정',
+  var SECNAME = { newtest: '테스트 준비', exec: '테스트 실행', calib: '카메라 보정',
                   check: '환경 점검', tools: '도구', compare: '결과 비교',
                   trash: '휴지통', frames: '프레임 탐색', visual: '시각화' };
 
@@ -145,7 +145,7 @@
   // ── 홈 — 무엇을 할지 고른다 ─────────────────────────────────────
   //   첫 화면이 곧바로 목록이면 "지금 뭘 하려던 거였지"를 화면이 안 도와준다.
   var HOME = [
-    ['#/newtest', '새 시험 시작',
+    ['#/newtest', '테스트 준비',
      '돌리기 전에 등록하는 것은 전부 여기 — 워크스페이스 · 영상 · 시나리오, '
      + '그다음 카메라 맞추기.'],
     ['#/exec', '테스트 실행',
@@ -1846,7 +1846,7 @@
       execTimer = setInterval(tick, 1200);
     }
 
-    // ── 5) 저장 — 파라미터만. 등록(영상·계약·시나리오)은 «새 시험 시작» 이 한다
+    // ── 5) 저장 — 파라미터만. 등록(영상·계약·시나리오)은 «테스트 준비» 가 한다
     //   같은 폼을 두 화면에 두면 한쪽만 고쳐진다. 이 화면은 고르고 돌리기만 한다.
     function post(url, body2) {
       return fetch(url, { method: 'POST',
@@ -1872,10 +1872,10 @@
     scSel.addEventListener('change', load);
     if (scenarios.length) load();
     else planBox.appendChild(h('div', { class: 'empty',
-      text: 'scenarios/ 가 비어 있습니다 — «새 시험 시작» 에서 하나 만드세요.' }));
+      text: 'scenarios/ 가 비어 있습니다 — «테스트 준비» 에서 하나 만드세요.' }));
     view.appendChild(h('p', { class: 'sub', html:
       '영상·워크스페이스·시나리오를 등록하거나 새로 만들려면 '
-      + '<a href="#/newtest">새 시험 시작</a> 으로. 이 화면은 있는 시나리오를 돌립니다.' }));
+      + '<a href="#/newtest">테스트 준비</a> 로. 이 화면은 있는 시나리오를 돌립니다.' }));
     poll();
   }
 
@@ -2440,7 +2440,7 @@
     function draw() {
       if (yamlTimer) clearTimeout(yamlTimer);
       yamlTimer = setTimeout(refreshYaml, 500);
-      if (!S.video) { meta.textContent = '먼저 영상을 등록하세요 («새 시험 시작» 1단계)'; return; }
+      if (!S.video) { meta.textContent = '먼저 영상을 등록하세요 («테스트 준비» 1단계)'; return; }
       if (S.busy) { S.dirty = true; return; }
       S.busy = true;
       postJSON('/api/calib/view', body()).then(function (d) {
@@ -2656,7 +2656,7 @@
     refreshYaml();
   }
 
-  /* ── 새 시험 시작 — 돌리기 전에 등록하는 것은 전부 여기 ────────────────
+  /* ── 테스트 준비 — 돌리기 전에 등록하는 것은 전부 여기 ────────────────
    * ★왜 마법사인가★ 시험을 새로 차리는 일은 순서가 있다(워크스페이스 → 영상 →
    * 시나리오 → 카메라 맞추기 → 돌리기). 그 순서를 기억하는 것이 사람 몫이면
    * 반드시 한 단계를 빼먹는다 — 특히 ★카메라 맞추기★ 를 빼먹고 남의 영상 값으로
@@ -2666,20 +2666,17 @@
    * 두 벌 짜게 되고 한쪽만 고쳐진다. 그래서 local.yaml·contracts·scenarios 를
    * 건드리는 폼은 전부 이 화면에만 있고, 실행 화면은 고르고 돌리기만 한다.
    * 카메라 맞추기(3)와 돌리기(4)는 이미 있는 화면으로 보낸다. */
-  var WIZ = { video: '', path: '', real: true, src: '', name: '', scen: '' };
+  //  cont(계약) 은 2단계가 들고 있는다 — 계약을 바꾸면 본 목록·신호 목록이
+  //  통째로 달라져서 다시 그려야 하고, 그때 고른 값이 살아 있어야 한다.
+  var WIZ = { video: '', path: '', real: true, cont: '', name: '', scen: '' };
 
   function renderNewTest(cfg) {
     clear(view);
-    view.appendChild(h('h1', { text: '새 시험 시작' }));
+    view.appendChild(h('h1', { text: '테스트 준비' }));
     view.appendChild(h('p', { class: 'sub',
       text: '돌리기 전에 등록하는 것은 전부 여기 있습니다 — 워크스페이스 · 영상 · 시나리오. '
             + '순서대로 거치면 됩니다. 특히 3단계(카메라 맞추기)를 빼먹으면 '
             + '남의 영상 값으로 판정하게 됩니다.' }));
-
-    var scens = (cfg.scenarios || []).map(function (s) { return s.file; });
-    var stopline = scens.filter(function (f2) { return f2.indexOf('stopline') === 0; });
-    WIZ.src = WIZ.src || (stopline.indexOf('stopline_field.yaml') >= 0
-                          ? 'stopline_field.yaml' : (stopline[0] || scens[0] || ''));
 
     function reload() { return get('/api/config').then(renderNewTest).catch(fail); }
     function say(j, okmsg) {
@@ -2801,93 +2798,278 @@
       ]));
 
     // ── 2) 시나리오 만들기 ──────────────────────────────────────
-    //   두 갈래다 — ★본 떠서★(있는 시험을 새 영상으로) 와 ★빈 틀★(새 워크스페이스).
-    //   본 떠서가 기본이다: 판정과 그 근거 주석을 통째로 물려받는다.
-    var how = h('select', {}, [
-      h('option', { value: 'clone', text: '있는 시험을 본 떠서 (권장)' }),
-      h('option', { value: 'new', text: '빈 틀에서 새로 (새 워크스페이스)' })]);
-    var srcSel = h('select', {}, scens.map(function (f2) {
-      return h('option', { value: f2, selected: f2 === WIZ.src ? 'selected' : null,
-                           text: f2 });
+    //   ★계약을 먼저 고른다★ — 계약 하나 = 워크스페이스 하나이므로 이 한 칸이
+    //   "어느 대상을 시험하는가"를 정한다. 예전에는 «본 떠서»/«빈 틀» 갈래를 먼저
+    //   고르게 했는데, 본 목록이 계약과 무관하게 전부 보여서 ★고른 본을 따라 계약이
+    //   조용히 바뀌었다★(clone 은 본의 contract: 줄을 그대로 물려받는다).
+    //   지금은 계약을 고르면 그 계약의 시험만 보이고, 갈래는 고른 개수가 정한다:
+    //     0개 = 빈 틀 · 1개 = 본 떠서(주석까지 보존) · 2개+ = 합쳐서(판정만 병합).
+    var cList = (cfg.contracts || []).slice();
+    var defC = String(cfg.default_contract || '').split('/').pop();
+    //  ★데모가 기본으로 뽑히면 곤란하다★ — 알파벳 첫 파일이 demo_foreign 이다.
+    //  local.yaml 의 default_contract → 없으면 빌드된 첫 계약 → 그래도 없으면 첫 줄.
+    var pickC = (cList.filter(function (c) { return c.file === defC; })[0]
+                 || cList.filter(function (c) { return c.ok && c.setup_ok && !c.draft; })[0]
+                 || cList[0] || {}).file || '';
+    WIZ.cont = (cList.filter(function (c) { return c.file === WIZ.cont; })[0] || {}).file
+               || pickC;
+    function cLabel(c) {
+      //  파일명만 보여 주면 어느 워크스페이스인지 알 수 없다 — 상태까지 한 줄에.
+      var st2 = !c.ok ? '⛔ 읽을 수 없음'
+        : c.draft ? '⛔ 초안(TODO)'
+        : c.attach ? 'attach(관찰만)'
+        : c.setup_ok ? '✅ 빌드됨'
+        : c.ws_exists ? '⛔ 빌드 안 됨' : '⛔ 경로 없음';
+      return c.file + ' — ' + (c.workspace || '(워크스페이스 없음)')
+             + ' · ' + st2 + ' · 신호 ' + (c.signals || 0);
+    }
+    var sCont = h('select', {}, cList.map(function (c) {
+      return h('option', { value: c.file,
+                           selected: c.file === WIZ.cont ? 'selected' : null,
+                           text: cLabel(c) });
     }));
+    var curC = (cList.filter(function (c) { return c.file === WIZ.cont; })[0] || {});
+
+    //  고른 계약의 시험만 — 이게 「판정을 물려받을 본」이다.
+    var mine = (cfg.scenarios || []).filter(function (s) {
+      return String(s.contract || '').split('/').pop() === WIZ.cont;
+    });
+    var srcChecks = [];
     var sName = h('input', { type: 'text', placeholder: '새 시나리오 이름 — 예: sl_0820',
                              size: '22' });
-    var sCont = h('select', {}, (cfg.contracts || []).map(function (c) {
-      return h('option', { value: c.file, text: c.file });
-    }));
     var sVid = h('select', {}, Object.keys(cfg.videos || {}).map(function (k) {
       return h('option', { value: k, selected: k === WIZ.video ? 'selected' : null, text: k });
     }));
-    var sMode = h('select', {}, ['lockstep', 'realtime'].map(function (k) {
-      return h('option', { value: k, text: k });
-    }));
+    //  모드는 두 갈래에 다 있다 — 본 떠서일 때 «(본 그대로)» 면 본의 mode 를 안 건드린다.
+    var sMode = h('select', {}, [h('option', { value: '', text: '(본 그대로)' })]
+      .concat(['lockstep', 'realtime'].map(function (k) {
+        return h('option', { value: k, text: k });
+      })));
     var sStart = h('input', { type: 'number', placeholder: '0', style: 'width:100px' });
     var sLimit = h('input', { type: 'number', placeholder: '0 = 전체', style: 'width:110px' });
     var sOut = h('div', { class: 'mut' });
-    var cloneBar = h('div', { class: 'framebar' }, [
-      h('span', { class: 'mut', text: '본' }), srcSel,
-      h('span', { class: 'mut', text: '— 이 시험의 판정을 그대로 물려받습니다' })]);
-    var newBar = h('div', { class: 'framebar' }, [
-      h('span', { class: 'mut', text: '계약' }), sCont,
-      h('span', { class: 'mut', text: '모드' }), sMode]);
+    var howNote = h('div', { class: 'mut' });
+
+    //  ★옮겨 심기★ 상태 — 다른 계약에서 판정을 가져올 때만 채워진다.
+    //  items 는 서버의 preview 결과(순서가 곧 keep 인덱스라 손대면 안 된다).
+    var GR = { srcs: [], items: null, boxes: [] };
+
     function syncHow() {
-      cloneBar.style.display = how.value === 'clone' ? '' : 'none';
-      newBar.style.display = how.value === 'new' ? '' : 'none';
+      var n = srcChecks.filter(function (x) { return x.box.checked; }).length;
+      if (GR.srcs.length) {
+        var k = GR.boxes.filter(function (x) { return x.box.checked; }).length;
+        howNote.textContent = GR.items
+          ? ('다른 계약에서 옮겨 심기 → 고른 판정 ' + k + '개를 '
+             + WIZ.cont + ' 위에 심습니다'
+             + (n ? ' (이 계약의 본 ' + n + '개 선택은 무시됩니다)' : ''))
+          : '성립 여부를 확인하는 중…';
+        return;
+      }
+      howNote.textContent = !mine.length
+        ? '이 계약에는 아직 시험이 없습니다 → 빈 틀로 만들고 checks: 를 채웁니다'
+        : n === 0 ? '아무것도 안 고르면 → 빈 틀 (판정 2줄만 들어갑니다)'
+        : n === 1 ? '하나 고름 → 본 떠서 (판정과 근거 주석을 그대로 물려받습니다)'
+        : n + '개 고름 → 합쳐서 (판정만 병합 — 절 구분 주석은 없어집니다)';
+      //  빈 틀에는 물려받을 mode 가 없으므로 «(본 그대로)» 가 성립하지 않는다.
+      if (!n && !sMode.value) sMode.value = 'lockstep';
     }
-    how.addEventListener('change', syncHow);
-    syncHow();
+    var srcBox = h('div', { class: 'tmpllist' }, mine.length
+      ? mine.map(function (s) {
+        var box = h('input', { type: 'checkbox', onchange: syncHow });
+        srcChecks.push({ file: s.file, box: box });
+        return h('label', { class: 'toolflag', style: 'display:block' }, [
+          box, h('span', { class: 'mono', text: s.file }),
+          h('span', { class: 'mut', text: s.summary ? ' — ' + s.summary : '' })]);
+      })
+      : [h('div', { class: 'mut',
+                    text: '(이 계약을 쓰는 시나리오가 아직 없습니다)' })]);
+
+    sCont.addEventListener('change', function () {
+      //  계약이 바뀌면 본 목록도 신호 목록도 통째로 달라진다 — 다시 그린다.
+      WIZ.cont = sCont.value;
+      renderNewTest(cfg);
+    });
+
+    //  ★빈 틀로 갈 수밖에 없는 경우★ 를 위한 유일한 준비물 — 계약이 정의한 신호 이름.
+    //  checks: 에 쓸 수 있는 이름은 이것뿐이고, 틀리면 판정이 조용히 사라진다.
+    var sigNames = (curC.signal_names || []);
+    var sigBox = sigNames.length
+      ? h('details', {}, [
+          h('summary', { class: 'mut',
+                         text: 'checks: 에 쓸 수 있는 신호 이름 ' + sigNames.length + '개' }),
+          h('div', { class: 'mono', style: 'word-break:break-all',
+                     text: sigNames.join(' · ') }),
+          h('div', { class: 'mut',
+                     text: '+ 내장 열 frame · latency_ms. 오타는 «환경 점검»의 '
+                           + 'doctor 「이름 정합」이 실행 전에 잡습니다.' })])
+      : null;
+
+    /* ── 다른 계약의 판정 가져오기 ────────────────────────────────
+     * ★왜 계약을 넘는 복사를 그냥 열어 두지 않는가★ checks: 의 신호 이름은 계약이
+     * 정의한다. 없는 이름을 쓰면 엔진이 None 을 내고 리포트에 ⚠️「값 없음」 으로
+     * 남는다 — ★실패가 아니다★. 20개를 물려받아 3개만 살아 있는데 전부 초록으로
+     * 보인다. 그래서 옮기기 전에 서버의 tb.lint 에게 한 줄씩 물어보고, 성립하는
+     * 것만 미리 체크해 둔 채 사람이 확인하고 심는다. */
+    var others = (cfg.scenarios || []).filter(function (s2) {
+      return String(s2.contract || '').split('/').pop() !== WIZ.cont && !s2.error;
+    });
+    var grList = h('div', { class: 'tmpllist' });
+    var grOut = h('div', { class: 'mut' });
+
+    function drawPreview() {
+      clear(grList);
+      GR.boxes = [];
+      if (!GR.srcs.length) { grOut.textContent = ''; syncHow(); return; }
+      if (!GR.items) { grOut.textContent = '확인 중…'; syncHow(); return; }
+      var okN = GR.items.filter(function (it) { return !it.problems.length; }).length;
+      grOut.textContent = '판정 ' + GR.items.length + '개 중 ' + okN
+        + '개가 ' + WIZ.cont + ' 에서 성립합니다. ⛔ 는 이 계약에 없는 이름이라 '
+        + '가져가도 조용히 사라집니다 — 기본으로 빼 두었습니다.';
+      GR.items.forEach(function (it) {
+        var good = !it.problems.length;
+        var box = h('input', { type: 'checkbox', checked: good ? 'checked' : null,
+                               onchange: syncHow });
+        GR.boxes.push({ i: it.i, box: box });
+        grList.appendChild(h('label', { class: 'toolflag', style: 'display:block' }, [
+          box, h('span', { text: good ? '✅ ' : '⛔ ' }),
+          h('span', { class: 'mono', text: it.yaml }),
+          h('span', { class: 'mut', text: ' ← ' + it.src }),
+        ].concat(it.problems.map(function (pr) {
+          return h('div', { class: 'mut', style: 'margin-left:22px', text: '↳ ' + pr });
+        }))));
+      });
+      syncHow();
+    }
+
+    function loadPreview() {
+      GR.items = null;
+      drawPreview();
+      if (!GR.srcs.length) return;
+      postJSON('/api/config/scenario/preview',
+               { srcs: GR.srcs, contract: WIZ.cont })
+        .then(function (d) {
+          if (d.error) { grOut.textContent = '오류: ' + d.error; return; }
+          GR.items = d.items || [];
+          drawPreview();
+        }).catch(function (e) { grOut.textContent = '오류: ' + e.message; });
+    }
+
+    var grBox = h('details', {}, [
+      h('summary', { class: 'mut',
+                     text: '다른 계약의 판정 가져오기 (' + others.length + '개 시험)' }),
+      h('p', { class: 'help', html:
+        '판정의 신호 이름은 <b>계약이 정의</b>합니다 — 그래서 계약을 넘어 그대로 '
+        + '복사하면 <b>없는 이름을 쓴 판정이 조용히 사라진 채</b> 리포트가 초록으로 '
+        + '나옵니다. 여기서는 옮기기 <b>전에</b> 한 줄씩 성립 여부를 확인하고 '
+        + '고른 것만 심습니다. <b>문턱(숫자)은 그래도 본의 차량·영상 것</b>이니 '
+        + '이 대상에서 실측해 고치세요.' }),
+      h('div', { class: 'tmpllist' }, others.map(function (s2) {
+        var box = h('input', { type: 'checkbox', onchange: function () {
+          GR.srcs = GR.srcs.filter(function (x) { return x !== s2.file; });
+          if (box.checked) GR.srcs.push(s2.file);
+          loadPreview();
+        } });
+        return h('label', { class: 'toolflag', style: 'display:block' }, [
+          box, h('span', { class: 'mono', text: s2.file }),
+          h('span', { class: 'mut',
+                      text: ' — ' + String(s2.contract || '').split('/').pop() })]);
+      })),
+      grOut, grList,
+    ]);
 
     view.appendChild(stepBox('2', '시나리오 만들기',
-      '무엇을 어떻게 돌릴지입니다. 본 떠서 만들면 판정 기준과 그 근거 주석을 '
-      + '그대로 물려받습니다. 구간은 비워 두고(전체) 3·4단계에서 좁히면 됩니다.', [
+      '무엇을 어떻게 돌릴지입니다. 계약(=워크스페이스)을 먼저 고르면 그 계약의 시험만 '
+      + '보입니다 — 본을 고르면 판정 기준과 그 근거 주석을 그대로 물려받습니다. '
+      + '구간은 비워 두고(전체) 3·4단계에서 좁히면 됩니다.', [
         h('div', { class: 'framebar' }, [
-          how, h('span', { class: 'mut', text: '새 이름' }), sName,
+          h('span', { class: 'mut', text: '계약' }), sCont]),
+        curC.error ? h('p', { class: 'help',
+                              text: '⛔ 이 계약을 읽을 수 없습니다: ' + curC.error }) : null,
+        curC.draft ? h('p', { class: 'help', html:
+          '⛔ 이 계약은 <b>아직 초안</b>입니다(노드·<code>sync_topic</code> 이 TODO). '
+          + '시나리오는 만들 수 있지만 <b>돌아가지 않습니다</b> — «환경 점검» 탭의 '
+          + '<code>discover</code> 로 먼저 채우세요.' }) : null,
+        (!curC.draft && !curC.attach && curC.ok && !curC.setup_ok)
+          ? h('p', { class: 'help', html:
+              '⛔ 대상 워크스페이스가 <b>' + (curC.ws_exists ? '빌드되지 않았습니다'
+                : '그 경로에 없습니다') + '</b> — 0단계에서 경로를 고치거나 대상에서 '
+              + '<code>colcon build</code> 부터.' }) : null,
+        h('div', { class: 'mut', text: '판정을 물려받을 본 — 하나만 고르면 주석까지 그대로, '
+                                       + '여럿 고르면 판정만 합칩니다' }),
+        srcBox,
+        howNote,
+        sigBox,
+        others.length ? grBox : null,
+        h('div', { class: 'framebar' }, [
+          h('span', { class: 'mut', text: '새 이름' }), sName,
           h('span', { class: 'mut', text: '영상' }), sVid,
+          h('span', { class: 'mut', text: '모드' }), sMode,
+          h('span', { class: 'mut', text: 'start' }), sStart,
+          h('span', { class: 'mut', text: 'limit' }), sLimit,
           h('button', { class: 'primary', text: '만들기', onclick: function () {
             var nm = sName.value.trim();
             if (!nm) { sOut.textContent = '새 시나리오 이름을 적으세요'; return; }
             if (!sVid.value) { sOut.textContent = '먼저 1단계에서 영상을 등록하세요'; return; }
             var st = sStart.value ? Number(sStart.value) : 0;
             var li = sLimit.value ? Number(sLimit.value) : 0;
-            if (how.value === 'new') {
-              postJSON('/api/config/scenario', {
-                name: nm, contract: sCont.value, video: sVid.value,
-                mode: sMode.value, start: st, limit: li,
-              }).then(function (d) {
-                if (d.error) { sOut.textContent = '오류: ' + d.error; return; }
-                WIZ.scen = d.file; WIZ.name = nm;
-                sOut.textContent = '✅ scenarios/' + d.file + ' 를 만들었습니다 '
-                                   + '(빈 틀입니다 — checks: 를 채워야 판정이 생깁니다)';
-                reload();
-              }).catch(function (e) { sOut.textContent = '오류: ' + e.message; });
-              return;
-            }
+            var picked = srcChecks.filter(function (x) { return x.box.checked; })
+              .map(function (x) { return x.file; });
             //  ★실차 카메라 여부는 시나리오 머리말에 박아 둔다★ — 여기서 맞춘 BEV 값을
             //  실차에 쓸 수 있는지가 그 한 줄에 걸린다(§13.11).
-            postJSON('/api/config/scenario/clone', {
-              src: srcSel.value, name: nm, video: sVid.value, start: st, limit: li,
-              note: '영상 ' + sVid.value + ' ('
-                    + ((cfg.videos || {})[sVid.value] || {}).path + ')\n'
-                    + '실차 카메라로 촬영: '
-                    + (vReal.checked ? '예' : '★아니오 — BEV 값을 실차에 쓰지 말 것★'),
-            }).then(function (d) {
+            var noteTxt = '영상 ' + sVid.value + ' ('
+                  + ((cfg.videos || {})[sVid.value] || {}).path + ')\n'
+                  + '실차 카메라로 촬영: '
+                  + (vReal.checked ? '예' : '★아니오 — BEV 값을 실차에 쓰지 말 것★');
+            var req;
+            if (GR.srcs.length) {
+              //  ★옮겨 심기가 이긴다★ — 다른 계약에서 판정을 고른 상태면 그것이
+              //  사람이 방금 한 일이다. 이 계약의 본 선택은 무시한다(안내에 적힌다).
+              if (!GR.items) { sOut.textContent = '성립 여부 확인이 끝나기를 기다리세요'; return; }
+              var keep = GR.boxes.filter(function (x) { return x.box.checked; })
+                .map(function (x) { return x.i; });
+              if (!keep.length) { sOut.textContent = '옮길 판정을 하나 이상 고르세요'; return; }
+              req = postJSON('/api/config/scenario/graft',
+                             { srcs: GR.srcs, name: nm, contract: WIZ.cont,
+                               video: sVid.value, keep: keep,
+                               mode: sMode.value || 'lockstep', start: st, limit: li,
+                               note: noteTxt });
+            } else if (!picked.length) {
+              req = postJSON('/api/config/scenario', {
+                name: nm, contract: WIZ.cont, video: sVid.value,
+                mode: sMode.value || 'lockstep', start: st, limit: li,
+              });
+            } else if (picked.length === 1) {
+              req = postJSON('/api/config/scenario/clone',
+                             { src: picked[0], name: nm, video: sVid.value,
+                               start: st, limit: li, mode: sMode.value || null,
+                               note: noteTxt });
+            } else {
+              req = postJSON('/api/config/scenario/compose',
+                             { srcs: picked, name: nm, video: sVid.value,
+                               start: st, limit: li, mode: sMode.value || null,
+                               note: noteTxt });
+            }
+            req.then(function (d) {
               if (d.error) { sOut.textContent = '오류: ' + d.error; return; }
               WIZ.scen = d.file; WIZ.name = nm;
-              sOut.textContent = '✅ scenarios/' + d.file + ' 를 만들었습니다 ('
-                                 + d.from + ' 의 판정을 그대로 물려받았습니다)';
+              var warn = [].concat(d.warn || [], d.warnings || []);
+              sOut.textContent = '✅ scenarios/' + d.file + ' 를 만들었습니다 '
+                + (d.kept !== undefined
+                   ? '(판정 ' + d.kept + '/' + d.total + ' 개를 ' + GR.srcs.join(', ')
+                     + ' 에서 옮겨 심었습니다 — ★문턱은 실측해 고칠 것★)'
+                   : picked.length
+                   ? '(' + picked.join(', ') + ' 의 판정을 물려받았습니다)'
+                   : '(빈 틀입니다 — checks: 를 채워야 판정이 생깁니다)')
+                + (warn.length ? ' ⚠️ ' + warn.join(' / ') : '');
               reload();
             }).catch(function (e) { sOut.textContent = '오류: ' + e.message; });
           } })]),
-        cloneBar, newBar,
-        h('div', { class: 'framebar' }, [
-          h('span', { class: 'mut', text: 'start' }), sStart,
-          h('span', { class: 'mut', text: 'limit' }), sLimit,
-          h('span', { class: 'mut', text: '(비우면 영상 전체)' })]),
+        h('div', { class: 'mut', text: '(구간을 비우면 영상 전체)' }),
         sOut,
         WIZ.scen ? h('p', { class: 'help', html:
           '만든 것: <code>scenarios/' + WIZ.scen + '</code>' }) : null,
       ]));
-
+    syncHow();
     // ── 3) 카메라 맞추기 ────────────────────────────────────────
     view.appendChild(stepBox('3', '카메라 맞추기 (STOPLINE_TEST 단계 2)',
       '사다리꼴 → 범퍼선 → 두 문턱 순서로. ★«워크스페이스 기본값 불러오기» 로 '
@@ -2933,6 +3115,77 @@
    * 인자는 서버가 거부한다 — 그래서 여기에는 인자 이름이 하나도 없다. */
   var TOOLS = { pick: '', vals: {}, timer: null };
 
+  /* ── 터널 : 이 로컬 앱을 인터넷으로 (cloudflared) ────────────────
+   * 정적 사이트는 읽기 전용이다. 진짜 편집(삭제·실행·보정)을 남이 하려면
+   * ★서버 자신★을 열어야 한다. 서버는 ros2 run 을 띄우므로 토큰이 필수 —
+   * 서버(start_tunnel)가 토큰 없이는 시작을 거부한다. */
+  function tunnelPanel() {
+    var box = h('div', { class: 'livebox', style: 'margin:0 0 16px' });
+    view.appendChild(box);
+    function draw(st) {
+      clear(box);
+      box.appendChild(h('div', { class: 'livehd' }, [
+        h('b', { text: st.running ? '● 터널 열림' : '○ 터널' }),
+        h('span', { class: 'mut',
+          text: '이 앱을 인터넷으로 — 삭제·실행·보정을 원격에서 (읽기 전용 아님)' }),
+      ]));
+      if (!st.have_token) {
+        box.appendChild(h('p', { class: 'help',
+          html: '⚠ <code>TB_WEB_TOKEN</code> 이 없어 열 수 없습니다. 서버는 명령을 '
+            + '실행하므로 인증 없이 열면 위험합니다. 터미널에서:<br>'
+            + '<code>TB_WEB_TOKEN=아무비밀번호 python3 -m tb.run web</code> 로 다시 띄운 뒤 '
+            + '이 화면을 새로고침하세요.' }));
+        return;
+      }
+      if (!st.have_cloudflared) {
+        box.appendChild(h('p', { class: 'help',
+          html: '⚠ <code>cloudflared</code> 가 없습니다. 설치 후 다시:<br>'
+            + '<code>cloudflared</code> — developers.cloudflare.com 의 설치 안내 참고.' }));
+        return;
+      }
+      if (st.running && st.url) {
+        box.appendChild(h('div', { class: 'framebar' }, [
+          h('span', { class: 'mut', text: '공개 주소' }),
+          h('a', { href: st.url, target: '_blank', rel: 'noopener',
+                   class: 'mono', text: st.url }),
+        ]));
+        box.appendChild(h('p', { class: 'help',
+          text: '이 주소 + 비밀번호(TB_WEB_TOKEN)를 함께 알려 주세요. 브라우저가 '
+            + '로그인 창을 띄웁니다 (사용자명은 아무거나, 비번=토큰). '
+            + '끄면 주소는 즉시 죽습니다.' }));
+        box.appendChild(h('button', { class: 'danger', text: '터널 끄기',
+          onclick: function () {
+            post('/api/tunnel', { action: 'stop' }).then(function () { poll(); });
+          } }));
+      } else if (st.running) {
+        box.appendChild(h('div', { class: 'framebar' },
+          [spinner('주소 받는 중…'),
+           h('button', { text: '끄기', onclick: function () {
+             post('/api/tunnel', { action: 'stop' }).then(function () { poll(); }); } })]));
+      } else {
+        box.appendChild(h('button', { class: 'primary', text: '터널 켜기',
+          onclick: function () {
+            post('/api/tunnel', { action: 'start',
+                                  port: Number(location.port) || 8770 })
+              .then(function (j) {
+                if (j && j.error) hintEl.textContent = '오류: ' + j.error;
+                poll();
+              });
+          } }));
+      }
+    }
+    function post(url, body2) {
+      return fetch(url, { method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body2) }).then(function (r) { return r.json(); });
+    }
+    function poll() { get('/api/tunnel').then(draw).catch(function () {}); }
+    poll();
+    var t = setInterval(poll, 3000);
+    var prev = window.__stopPoll;
+    window.__stopPoll = function () { clearInterval(t); if (prev) prev(); };
+  }
+
   function renderTools(spec, want) {
     clear(view);
     if (TOOLS.timer) { clearInterval(TOOLS.timer); TOOLS.timer = null; }
@@ -2943,6 +3196,8 @@
     view.appendChild(h('p', { class: 'sub',
       text: '터미널에서 쓰는 명령을 그대로 씁니다. 고르면 그 명령이 받는 인자만 물어보고, '
             + '실제로 어떤 명령줄이 되는지 아래에 그대로 보여 줍니다.' }));
+
+    tunnelPanel();
 
     var pick = want || TOOLS.pick || (cmds.length ? cmds[0].id : '');
     if (!cmds.filter(function (c) { return c.id === pick; }).length) {
@@ -3239,7 +3494,7 @@
     view.appendChild(sec('처음 켰다면 — 이 순서대로'));
     view.appendChild(h('div', { class: 'md', text:
       '  ┌ 첫 설정 (한 번) ───────────────────────────────────┐\n' +
-      '    «새 시험 시작»  0 워크스페이스 → 1 영상 → 2 시나리오\n' +
+      '    «테스트 준비»   0 워크스페이스 → 1 영상 → 2 시나리오\n' +
       '                    3 카메라 맞추기 → 4 돌리기\n' +
       '  └────────────────────────────────────────────────────┘\n' +
       '  ┌ 평소 루프 (매번) ──────────────────────────────────┐\n' +
@@ -3253,10 +3508,10 @@
       '    파라미터만 고칠 때는 «덮어쓰는 값» 에서 고쳐 바로 다시 실행 (빌드 불필요)\n' +
       '  └────────────────────────────────────────────────────┘' }));
     view.appendChild(para(
-      '원칙 하나만 알면 헤맬 일이 없다 — <b>파일을 쓰는 일은 «새 시험 시작», ' +
+      '원칙 하나만 알면 헤맬 일이 없다 — <b>파일을 쓰는 일은 «테스트 준비», ' +
       '돌리는 일은 «테스트 실행»</b>. 등록 폼이 두 화면에 있으면 같은 것을 두 벌 짜게 되고 ' +
       '한쪽만 고쳐진다. 그래서 <code>local.yaml</code>·<code>contracts/</code>·' +
-      '<code>scenarios/</code> 를 건드리는 폼은 전부 «새 시험 시작» 에만 있고, ' +
+      '<code>scenarios/</code> 를 건드리는 폼은 전부 «테스트 준비» 에만 있고, ' +
       '실행 화면은 고르고 돌리기만 한다.'));
     view.appendChild(para(
       '<b>어느 화면도 대상 워크스페이스의 파일은 고치지 않는다.</b> ' +
@@ -3287,9 +3542,9 @@
           'git 에 안 올린다. 그래서 시나리오는 다른 PC 에서도 그대로 돈다.' })]),
     ])]));
 
-    view.appendChild(sec('1. 등록하기 — «새 시험 시작» 탭'));
+    view.appendChild(sec('1. 등록하기 — «테스트 준비» 탭'));
     view.appendChild(para(
-      '<b>파일을 건드리는 일은 전부 «새 시험 시작» 탭에 있다</b> — 워크스페이스(0) · ' +
+      '<b>파일을 건드리는 일은 전부 «테스트 준비» 탭에 있다</b> — 워크스페이스(0) · ' +
       '영상(1) · 시나리오(2). 실행 화면은 있는 것을 고르고 돌리기만 한다. ' +
       '파일을 직접 열어도 되고 화면에서 해도 된다 — 같은 결과다.'));
     view.appendChild(steps([
@@ -3306,9 +3561,12 @@
        '돌고 있는 토픽·타입·필드 배치를 읽어 <code>signals:</code> 초안을 뽑아 준다. ' +
        '숫자 배열은 의미를 알 수 없으니 이름만 사람이 붙인다 ' +
        '(<code>nav_state_data0</code> → <code>cte_m</code>).'],
-      ['④ 시나리오 만들기', '두 갈래다. <b>본 떠서</b>는 있는 시험을 새 영상으로 옮기는 것이라 ' +
-       '<b>판정과 그 근거 주석을 그대로 물려받는다</b> — 새 영상은 이쪽이다. ' +
-       '<b>빈 틀</b>은 새 워크스페이스를 붙일 때. ' +
+      ['④ 시나리오 만들기', '<b>계약을 먼저 고른다</b> — 계약 하나 = 워크스페이스 하나라 ' +
+       '이 한 칸이 "어느 대상을 시험하는가"다. 그러면 <b>그 계약의 시험만</b> 본 목록에 뜬다 ' +
+       '(다른 계약의 판정은 신호 이름이 달라 그대로 쓸 수 없다). 고른 개수가 갈래를 정한다 — ' +
+       '<b>0개=빈 틀</b>(판정 2줄만, 새 워크스페이스일 때), <b>1개=본 떠서</b>' +
+       '(판정과 그 근거 주석을 그대로 물려받는다 — 새 영상은 이쪽이다), ' +
+       '<b>2개+=합쳐서</b>(판정만 병합). ' +
        '<b>lockstep</b> 은 한 프레임씩 밀어 넣어 결정적이라 회귀 비교용, ' +
        '<b>realtime</b> 은 실제 fps 로 밀어 타이밍·유실을 보는 용도다.'],
     ]));
@@ -3715,7 +3973,7 @@
     var mc = hash.match(/^\/calib(?:\?s=([^&]+))?$/);
     if (mc) {
       setNav('calib');
-      //  «새 시험 시작» 이 방금 만든 시나리오로 곧바로 열 수 있게 (?s=…)
+      //  «테스트 준비» 가 방금 만든 시나리오로 곧바로 열 수 있게 (?s=…)
       var want = mc[1] ? decodeURIComponent(mc[1]) : '';
       return get('/api/calib' + (want ? '?scenario=' + encodeURIComponent(want) : ''))
         .then(renderCalib).catch(fail);
