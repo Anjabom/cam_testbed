@@ -914,6 +914,68 @@ def t_clone_scenario():
         del shutil
 
 
+def t_compose_scenario():
+    """★여러 시나리오의 판정을 합쳐★ 새 시나리오를 만드는가 — 겹치는 항목은 한 번만."""
+    from . import config as C
+    a = C.ROOT / "scenarios" / "_selftest_a.yaml"
+    b = C.ROOT / "scenarios" / "_selftest_b.yaml"
+    out = C.ROOT / "scenarios" / "_selftest_composed.yaml"
+    a.write_text(
+        "name: a\ncontract: contracts/x.yaml\nvideo: old\n"
+        "mode: lockstep\nstart: 0\nlimit: 0\n"
+        "checks:\n"
+        "  - {stat: drop_rate, max: 0.02, why: 겹치는 판정}\n"
+        "  - {signal: sig_a, stat: mean, min: 1, why: a 고유 판정}\n"
+        "compare_tol:\n  _default: 1.0e-6\n  x: 0.1\n")
+    b.write_text(
+        "name: b\ncontract: contracts/x.yaml\nvideo: old2\n"
+        "mode: lockstep\nstart: 0\nlimit: 0\n"
+        "checks:\n"
+        "  - {stat: drop_rate, max: 0.02, why: 겹치는 판정}\n"
+        "  - {signal: sig_b, stat: max, max: 5, why: b 고유 판정}\n"
+        "compare_tol:\n  _default: 1.0e-6\n  x: 0.2\n")
+    try:
+        r = C.compose_scenario(["_selftest_a.yaml", "_selftest_b.yaml"],
+                               "_selftest_composed", "newvid", start=10, limit=20)
+        d = None
+        import yaml as Y
+        t = out.read_text()
+        d = Y.safe_load(t)
+        eq("이름 교체", d["name"], "_selftest_composed")
+        eq("영상 교체(첫 본 기준)", d["video"], "newvid")
+        eq("구간 교체", (d["start"], d["limit"]), (10, 20))
+        #  겹치는 판정은 한 번만, 고유 판정은 둘 다
+        eq("판정 개수 — 겹치는 것 dedup", len(d["checks"]), 3)
+        why = [c.get("why") for c in d["checks"]]
+        eq("a 고유 판정 유지", "a 고유 판정" in why, True)
+        eq("b 고유 판정 유지", "b 고유 판정" in why, True)
+        #  compare_tol 충돌(x: 0.1 vs 0.2) — 먼저 온 본(a)이 이기고 경고가 남는다
+        eq("충돌 시 첫 본이 이긴다", d["compare_tol"]["x"], 0.1)
+        eq("충돌 경고 기록", any("compare_tol.x" in w for w in r["warnings"]), True)
+        eq("충돌 경고가 파일에도 남는다", "compare_tol 충돌" in t, True)
+
+        #  본이 하나뿐이면 거부 — clone_scenario 를 쓰라고 안내
+        try:
+            C.compose_scenario(["_selftest_a.yaml"], "_x", "v")
+            FAILS.append("본 1개인데 compose 를 허용했다")
+        except ValueError:
+            pass
+        #  계약이 다르면 거부
+        c = C.ROOT / "scenarios" / "_selftest_c.yaml"
+        c.write_text("name: c\ncontract: contracts/y.yaml\nvideo: v\n"
+                     "checks:\n  - {stat: drop_rate, max: 0.02, why: 다른 계약}\n")
+        try:
+            C.compose_scenario(["_selftest_a.yaml", "_selftest_c.yaml"], "_y", "v")
+            FAILS.append("계약이 다른데 compose 를 허용했다")
+        except ValueError:
+            pass
+        c.unlink()
+    finally:
+        for f in (a, b, out):
+            if f.exists():
+                f.unlink()
+
+
 def t_commands_wired():
     """웹의 허용 명령이 ★실제로 존재하는 CLI★ 를 가리키는가.
 
@@ -1094,6 +1156,64 @@ def t_aux_schedule_write():
         scen.unlink(missing_ok=True)
 
 
+def t_feedback_observations():
+    """★판정이 0개여도 문서에 알맹이가 있는가★ — 탐색용 실행의 핵심이다.
+
+    checks: 가 없을 때 "실패 0건"으로 읽히면 다 정상인 줄 안다. 그리고 그때야말로
+    관측값(신호 통계·전이·로그)이 문서의 전부여야 한다.
+    """
+    import json as J
+    import tempfile
+    from . import feedback as F
+    summary = {
+        "rows": 100, "valid_rows": 100, "valid_rate": 1.0, "drop_rate": 0.0,
+        "meta": {"workspace": "/ws", "scenario": "s", "mode": "lockstep"},
+        "signals": {
+            "dist_m": {"kind": "num", "n": 100, "mean": 2.5, "std": 0.4,
+                       "min": 0.1, "max": 9.9, "p95": 3.0,
+                       "increases": 40, "decreases": 60},
+            "state": {"kind": "cat", "n": 100,
+                      "counts": {"IDLE": 90, "GO": 10}, "transitions": 4},
+        },
+        "events": [{"signal": "state", "label": "상태", "at": ["dist_m"],
+                    "why": "한 방향으로만 가야 한다",
+                    "transitions": [{"frame": 50, "t_s": 1.67, "from": "IDLE",
+                                     "to": "GO", "dist_m": 2.2}]}],
+        "log_events": {"boot": {"count": 1, "why": "기동 배너"},
+                       "never": {"count": 0, "why": "안 난 것은 표에서 뺀다"}},
+    }
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td) / "run"
+        d.mkdir()
+        (d / "summary.json").write_text(J.dumps({"summary": summary, "checks": []}))
+        md = F.render(d)
+    #  ★판정 없음을 «전부 통과» 로 말하지 않는가★
+    eq("판정 없음을 명시", "판정(`checks:`)이 아직 없다" in md, True)
+    eq("«전부 통과» 라고 하지 않는다", "전부 통과" in md, False)
+    #  ★관측값이 실제로 실려 있는가★
+    eq("숫자 신호 표", "`dist_m`" in md and "9.9" in md, True)
+    eq("문자열 신호 분포", "`IDLE` 90회(90%)" in md, True)
+    eq("전이표", "IDLE → GO" in md, True)
+    eq("전이 순간의 다른 신호", "2.2" in md, True)
+    eq("발생한 로그만", "`boot`" in md and "`never`" not in md, True)
+    #  ★요청이 «탐색용» 으로 바뀌는가★ (실패를 없애라고 할 대상이 없다)
+    eq("탐색용 요청문", "판정 없이 돌린 탐색용" in md, True)
+    eq("전/후 비교는 결과 비교로 안내", "«결과 비교»" in md, True)
+    eq("자동 전/후 절은 없다", "## 7. 개선 전/후" in md, False)
+
+    #  판정이 있으면 종전 문구가 그대로여야 한다 (회귀 방지)
+    with tempfile.TemporaryDirectory() as td:
+        d2 = Path(td) / "run2"
+        d2.mkdir()
+        (d2 / "summary.json").write_text(J.dumps({
+            "summary": summary,
+            "checks": [{"check": "drop_rate", "ok": True, "value": 0.0,
+                        "bound": {"max": 0.02}, "note": "동기 실패"}]}))
+        md2 = F.render(d2)
+    eq("판정이 있으면 통과 수를 센다", "**1/1 통과**" in md2, True)
+    eq("판정이 있어도 관측값은 나온다", "`dist_m`" in md2, True)
+
+
 def t_scenario_template():
     """빈 틀로 만든 시나리오에도 판정이 있는가 (없으면 리포트가 늘 초록이다)."""
     import yaml as Y
@@ -1154,6 +1274,74 @@ def t_web_auth():
     eq("깨진 base64 거부", chk("Basic @@@", "s3cret"), False)
     eq("콜론 없는 값 거부", chk("Basic " + _b64.b64encode(b"nocolon").decode(),
                               "s3cret"), False)
+
+
+def t_graft_across_contracts():
+    """계약을 넘어 판정을 옮길 때 — ★없는 이름은 안 따라와야 한다★.
+
+    따라오면 리포트에 ⚠️「값 없음」 으로 남는다. 실패가 아니라서 초록으로 보이고,
+    그 판정은 조용히 사라진 것이다. 그래서 여기서 세 가지를 못 박는다:
+    ① preview 가 성립/불성립을 갈라 주는가 ② graft 결과에 lint 가 깨끗한가
+    ③ 성립하는 판정이 하나도 없으면 ★거부하는가★(판정 0개면 리포트가 늘 초록이다).
+    """
+    import yaml as Y
+    from . import config as C
+    from . import lint as L
+    from .contract import load as load_contract
+
+    #  이 저장소의 (시나리오 × 남의 계약) 조합을 훑어 두 경우를 다 찾는다 —
+    #  하나라도 성립하는 조합과, 하나도 성립하지 않는 조합.
+    pairs = []
+    for f in sorted((C.ROOT / "scenarios").glob("*.yaml")):
+        doc = Y.safe_load(f.read_text()) or {}
+        if not doc.get("checks"):
+            continue
+        own = Path(str(doc.get("contract") or "")).name
+        for cf in sorted((C.ROOT / "contracts").glob("*.yaml")):
+            if cf.name == own:
+                continue
+            pv = C.preview_checks([f.name], cf.name)
+            eq(f"{f.name}→{cf.name}: 판정을 다 편다", pv["total"], len(doc["checks"]))
+            pairs.append((f.name, cf.name, pv))
+    if not pairs:
+        return
+
+    #  ★요약 지표 판정은 신호 이름을 안 쓴다★ — 어느 계약에서도 성립해야 한다.
+    for f, cf, pv in pairs:
+        doc = Y.safe_load((C.ROOT / "scenarios" / f).read_text()) or {}
+        for it in pv["items"]:
+            c0 = doc["checks"][it["i"]] if it["i"] < len(doc["checks"]) else {}
+            if isinstance(c0, dict) and str(c0.get("stat", "")) == "drop_rate":
+                eq(f"{f}→{cf}: drop_rate 는 계약을 넘어도 성립", it["problems"], [])
+
+    out = C.ROOT / "scenarios" / "_selftest_graft.yaml"
+
+    good = next(((f, cf, pv) for f, cf, pv in pairs if pv["ok_count"]), None)
+    if good:
+        f, cf, pv = good
+        if out.exists():
+            out.unlink()
+        try:
+            r = C.graft_scenario([f], "_selftest_graft", cf, "v")
+            eq("성립하는 것만 남긴다", r["kept"], pv["ok_count"])
+            got = Y.safe_load(out.read_text())
+            eq("고른 계약을 쓴다", got.get("contract"), f"contracts/{cf}")
+            eq("옮긴 결과에 이름 오류가 없다",
+               L.lint_scenario(load_contract(C.ROOT / "contracts" / cf), got), [])
+        finally:
+            if out.exists():
+                out.unlink()
+
+    bad = next(((f, cf) for f, cf, pv in pairs if not pv["ok_count"]), None)
+    if bad:
+        try:
+            C.graft_scenario([bad[0]], "_selftest_graft", bad[1], "v")
+            eq("성립하는 판정이 없으면 거부한다", "만들어졌다", "거부")
+        except ValueError:
+            pass
+        finally:
+            if out.exists():
+                out.unlink()
 
 
 def main():

@@ -1529,6 +1529,16 @@ def _do_post(self):
     # ── 등록 — local.yaml / contracts / scenarios 를 쓴다 ───────────
     #   주석을 보존하는 것은 엔진(tb.config)이 한다. 여기서는 인자만 넘긴다.
     if route.startswith("config/"):
+        if route == "config/scenario/preview":
+            #  ★파일을 쓰지 않는다★ — 다른 계약의 판정이 이 계약에서 성립하는지
+            #  tb.lint 로 물어보기만 한다. 그래서 실행 중 잠금 위에 둔다.
+            try:
+                return self._json({"ok": True, **_cfg().preview_checks(
+                    body.get("srcs") or [], body.get("contract", ""))})
+            except ValueError as e:
+                return self._err(400, str(e))
+            except Exception as e:                 # noqa: BLE001
+                return self._err(500, f"{type(e).__name__}: {e}")
         if job_running():
             return self._err(409, "실행 중에는 설정을 바꿀 수 없습니다")
         what = route[7:]
@@ -1554,6 +1564,31 @@ def _do_post(self):
                     body.get("video", ""),
                     body.get("start"), body.get("limit"),
                     body.get("mode") or None, body.get("note", ""))})
+            if what == "scenario/compose":
+                #  ★여러 시나리오의 판정을 합쳐★ — 목적이 다른 checks: 를 한 영상에
+                #  같이 걸고 싶을 때(예: 인지 판정 + 개입 판정). 계약이 다르면 거부된다.
+                srcs = body.get("srcs") or []
+                if not isinstance(srcs, list):
+                    return self._err(400, "srcs 는 배열이어야 합니다")
+                return self._json({"ok": True, **cfg.compose_scenario(
+                    srcs, body.get("name", ""), body.get("video", ""),
+                    body.get("start"), body.get("limit"),
+                    body.get("mode") or None, body.get("note", ""))})
+            if what == "scenario/graft":
+                #  ★다른 계약의 판정을 옮겨 심는다★ — clone/compose 는 본의
+                #  contract: 를 물려받으므로 계약을 넘을 수가 없다. 여기서는
+                #  대상 계약을 받아 빈 틀 위에 고른 판정만 얹는다.
+                srcs = body.get("srcs") or []
+                keep = body.get("keep")
+                if not isinstance(srcs, list) or (keep is not None
+                                                  and not isinstance(keep, list)):
+                    return self._err(400, "srcs·keep 은 배열이어야 합니다")
+                return self._json({"ok": True, **cfg.graft_scenario(
+                    srcs, body.get("name", ""), body.get("contract", ""),
+                    body.get("video", ""), keep,
+                    body.get("mode") or "lockstep",
+                    body.get("start", 0), body.get("limit", 0),
+                    body.get("note", ""))})
             if what == "params":
                 #  ★파라미터를 고쳐 가며 다시 돌리는 고리★ 를 웹에서 닫는다.
                 #  기준 자동 비교에는 ⚠ 가 붙는다(params 는 provenance 다) —

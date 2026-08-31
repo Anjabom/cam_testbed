@@ -58,6 +58,26 @@ def video_info(path):
     return _video_info(path)
 
 
+_DECOR_RE = re.compile(r"^#\s*[═─━=\-]{5,}\s*$")
+
+
+def _scenario_summary(text):
+    """머리말 첫 설명 줄 — 테스트 준비의 «본 떠서» 목록에 파일명 대신 보여준다.
+
+    새 필드를 만들지 않는다 — 시나리오 파일은 이미 첫머리에 사람이 쓴 한 줄
+    설명을 관행으로 달고 있다(★제목★ 박스로 감싼 것도 있다). 그걸 그대로 쓴다.
+    """
+    for line in text.splitlines()[:6]:
+        if not line.startswith("#"):
+            break
+        if _DECOR_RE.match(line):
+            continue
+        s = line.lstrip("#").strip()
+        if s:
+            return s[:120]
+    return ""
+
+
 def snapshot():
     """등록 화면이 통째로 그리는 데 필요한 현재 상태."""
     r = _run()
@@ -76,7 +96,15 @@ def snapshot():
                 "ws_exists": bool(ws and ws.is_dir()),
                 "setup_ok": bool(ws and (ws / "install" / "setup.bash").exists()),
                 "nodes": [f"{n.get('package')}/{n.get('executable')}" for n in c.nodes],
-                "image_topic": c.image_topic, "signals": len(c.signals), "ok": True,
+                "image_topic": c.image_topic, "signals": len(c.signals),
+                #  ★이름까지★ 준다 — 새 워크스페이스는 물려받을 판정이 없어서 사람이
+                #  checks: 를 손으로 쓴다. 그때 필요한 유일한 정보가 이 목록이다.
+                "signal_names": sorted(c.signals), "ok": True,
+                #  discover 초안 그대로면 `ros2 run TODO TODO` 다 — resolve_scenario 가
+                #  실행 직전에 block 하지만, 시나리오를 ★만드는 자리★에서 미리 보여 준다.
+                "draft": bool(str(c.sync_topic) == "TODO" or any(
+                    "TODO" in (str(n.get("package")), str(n.get("executable")))
+                    for n in c.nodes)),
             })
         except Exception as e:                   # noqa: BLE001
             ent["error"] = str(e)
@@ -88,8 +116,9 @@ def snapshot():
 
     scenarios = []
     for f in sorted((ROOT / "scenarios").glob("*.yaml")):
+        text = f.read_text()
         try:
-            sc = yaml.safe_load(f.read_text()) or {}
+            sc = yaml.safe_load(text) or {}
         except Exception as e:                   # noqa: BLE001
             scenarios.append({"file": f.name, "error": str(e)})
             continue
@@ -99,6 +128,7 @@ def snapshot():
             "mode": sc.get("mode", "lockstep"),
             "start": sc.get("start", 0), "limit": sc.get("limit", 0),
             "variants": [v.get("name") for v in (sc.get("variants") or [])],
+            "summary": _scenario_summary(text),
         })
 
     # 화면이 처음 고를 것 — 알파벳순 첫 파일(demo_foreign)이 뽑히면 곤란하다.
@@ -272,7 +302,7 @@ def resolve_scenario(fname):
     #  잘못 적으면 그 판정이 조용히 사라진 채 리포트가 초록으로 나온다. 런까지
     #  가기 전에 여기서 묻는다(판정을 막지는 않으므로 block 이 아니라 warn 이다).
     from .lint import lint
-    out["warn"] += [f"이름이 안 맞는다 — {m}" for m in lint(c, sc)]
+    out["warn"] += [f"이름이 안 맞는다 — {m}" for m in lint(c, sc, r.load_ws_params(c))]
 
     params = r._deep_merge(sc.get("params", {}), loc.get("params", {}))
     out["params"] = params
@@ -474,7 +504,48 @@ def new_scenario(name, contract, video, mode="lockstep", start=0, limit=0):
                             mode=mode, start=int(start), limit=int(limit))
     yaml.safe_load(text)
     f.write_text(text)
-    return {"file": f.name}
+    #  ★막지는 않는다★ — 새 워크스페이스는 discover 로 계약을 채우기 ★전에★
+    #  시나리오부터 만들어 두는 순서가 실제로 있다. 다만 조용히 두면 3·4단계까지
+    #  가서야 `ros2 run TODO TODO` 를 만난다.
+    warn = []
+    try:
+        from .contract import load as load_contract
+        c = load_contract(ROOT / "contracts" / str(contract))
+        if str(c.sync_topic) == "TODO" or any(
+                "TODO" in (str(n.get("package")), str(n.get("executable")))
+                for n in c.nodes):
+            warn.append(f"계약 contracts/{contract} 이 아직 초안이다 — "
+                        "«환경 점검» 탭의 discover 로 TODO 를 채워야 돌아간다")
+    except Exception as e:                       # noqa: BLE001
+        warn.append(f"계약을 읽지 못했다: {e}")
+    return {"file": f.name, "warn": warn}
+
+
+def _substitute_fields(lines, subs, drop_comment=()):
+    """`key: value` 줄을 찾아 subs 의 값으로 갈아 끼운다(주석은 보존). 없으면 에러.
+
+    clone_scenario·compose_scenario 가 같이 쓴다 — name/video/mode/start/limit 처럼
+    한 줄짜리 스칼라 필드를 손대는 공통 로직이다.
+
+    ★drop_comment★ 는 그 줄의 꼬리 주석까지 지운다. `mode:` 가 그렇다 — 본의 주석은
+    "머신 속도와 무관하게 같은 결과"처럼 ★그 모드를 설명하는 말★ 이라, 값만 갈아
+    끼우면 realtime 옆에 lockstep 설명이 붙어 거짓말이 된다.
+    """
+    done = set()
+    for i, ln in enumerate(lines):
+        m = re.match(r"^([a-z_]+):(\s*)([^#]*?)(\s*#.*)?$", ln)
+        if not m:
+            continue
+        key = m.group(1)
+        if key not in subs or key in done:
+            continue
+        done.add(key)
+        tail = '' if key in drop_comment else (m.group(4) or '')
+        lines[i] = f"{key}: {subs[key]}{tail}"
+    missing = [k for k in subs if k not in done]
+    if missing:
+        raise ValueError(f"본에 그 항목이 없어 못 바꿨다: {', '.join(missing)}")
+    return lines
 
 
 def clone_scenario(src, name, video, start=None, limit=None, mode=None, note=""):
@@ -509,19 +580,7 @@ def clone_scenario(src, name, video, start=None, limit=None, mode=None, note="")
         subs["start"] = str(int(start))
     if limit is not None:
         subs["limit"] = str(int(limit))
-    done = set()
-    for i, ln in enumerate(lines):
-        m = re.match(r"^([a-z_]+):(\s*)([^#]*?)(\s*#.*)?$", ln)
-        if not m:
-            continue
-        key = m.group(1)
-        if key not in subs or key in done:
-            continue
-        done.add(key)
-        lines[i] = f"{key}: {subs[key]}{m.group(4) or ''}"
-    missing = [k for k in subs if k not in done]
-    if missing:
-        raise ValueError(f"본에 그 항목이 없어 못 바꿨다: {', '.join(missing)}")
+    lines = _substitute_fields(lines, subs, drop_comment=("mode",) if mode else ())
 
     head = [f"# ★{name}★ — scenarios/{src} 를 본으로 떠서 만들었다 "
             f"({datetime.now().strftime('%Y-%m-%d %H:%M')})"]
@@ -532,6 +591,272 @@ def clone_scenario(src, name, video, start=None, limit=None, mode=None, note="")
     yaml.safe_load(text)                       # 깨진 YAML 을 쓰지 않는다
     out.write_text(text)
     return {"file": out.name, "from": src}
+
+
+def _replace_block(lines, key, new_block):
+    """top-level `key:` 블록을 통째로 들어내고 new_block(줄 목록)으로 갈아 끼운다.
+
+    없으면 파일 끝에 붙인다. 합친 결과로 ★통째로 교체★한다(compose_scenario 전용).
+    """
+    idx = next((i for i, ln in enumerate(lines) if re.match(rf"^{key}\s*:", ln)), None)
+    if idx is None:
+        return lines + [""] + new_block
+    end = _block_end(lines, idx, 0)
+    return lines[:idx] + new_block + lines[end:]
+
+
+def compose_scenario(srcs, name, video, start=None, limit=None, mode=None, note=""):
+    """★여러 시나리오의 판정을 합쳐★ 새 시나리오를 만든다.
+
+    "인지 판정 + 개입 판정을 한 영상에 같이" 처럼 목적이 다른 checks: 를 섞고
+    싶을 때 쓴다. clone_scenario 는 본 하나의 텍스트(주석까지)를 통째로 베끼지만,
+    여기서는 checks:/compare_tol: 을 ★구조로 파싱해 합친다★ — 여러 본을 그대로
+    이어 붙이면 겹치는 항목을 어떻게 할지 정할 수 없어서다. 완전히 같은 판정
+    (dict 이 동일)은 한 번만 남긴다 — 부팅 안전 판정처럼 여러 본이 그대로 겹치는
+    경우가 실제로 있다(이 계약의 stopline_* 4개가 전부 boot_* 로그 판정을 갖는다).
+
+    ★대가★ checks: 항목 자체의 why: 는 그대로 남지만, 그 위에 달린 절 구분
+    주석(「── 단계 0 ──」 같은)은 없어진다 — 파싱 후 재조립이라 원문 줄과
+    항목의 대응을 알 수 없다. 본 하나만 옮길 때는 clone_scenario 를 쓸 것.
+    """
+    srcs = [str(s) for s in srcs]
+    if len(srcs) < 2:
+        raise ValueError("2개 이상을 골라야 «합쳐서» 다 — 하나뿐이면 clone_scenario 를 쓸 것")
+    for s in srcs:
+        if not s.endswith(".yaml") or "/" in s or ".." in s:
+            raise ValueError(f"본이 될 시나리오 이름이 잘못됐다: {s}")
+    docs = []
+    for s in srcs:
+        sp = ROOT / "scenarios" / s
+        if not sp.is_file():
+            raise ValueError(f"그런 시나리오가 없다: {s}")
+        docs.append((s, yaml.safe_load(sp.read_text()) or {}))
+    contracts = {d.get("contract") for _, d in docs}
+    if len(contracts) > 1:
+        raise ValueError(f"본들의 계약이 다르다 — 신호 이름이 안 맞는다: {sorted(contracts)}")
+    if not NAME_RE.match(str(name)):
+        raise ValueError("이름은 영문·숫자·_·-·. 만 쓸 수 있다")
+    if not NAME_RE.match(str(video)):
+        raise ValueError("영상 이름은 영문·숫자·_·-·. 만 쓸 수 있다 (논리 이름)")
+    out = ROOT / "scenarios" / f"{name}.yaml"
+    if out.exists():
+        raise ValueError(f"이미 있다: scenarios/{out.name}")
+
+    merged_checks, seen = [], []
+    for _, d in docs:
+        for c in (d.get("checks") or []):
+            if c in seen:
+                continue
+            seen.append(c)
+            merged_checks.append(c)
+    if not merged_checks:
+        raise ValueError("합칠 판정이 하나도 없다 — 본들의 checks: 가 비어 있다")
+
+    merged_tol, tol_warnings = {}, []
+    for s, d in docs:
+        for k, v in (d.get("compare_tol") or {}).items():
+            if k in merged_tol and not _same(merged_tol[k], v):
+                tol_warnings.append(f"compare_tol.{k}: {merged_tol[k]} 를 유지 "
+                                    f"({s} 의 {v} 는 버렸다 — 다르면 손으로 확인할 것)")
+                continue
+            merged_tol[k] = v
+
+    base_src = srcs[0]
+    lines = (ROOT / "scenarios" / base_src).read_text().splitlines()
+    subs = {"name": str(name), "video": str(video)}
+    if mode:
+        if mode not in ("lockstep", "realtime", "asfast"):
+            raise ValueError(f"모드가 잘못됐다: {mode}")
+        subs["mode"] = mode
+    if start is not None:
+        subs["start"] = str(int(start))
+    if limit is not None:
+        subs["limit"] = str(int(limit))
+    lines = _substitute_fields(lines, subs, drop_comment=("mode",) if mode else ())
+
+    checks_block = ["checks:"] + ["  - " + _yv(_order_check(c)) for c in merged_checks]
+    lines = _replace_block(lines, "checks", checks_block)
+    if merged_tol:
+        tol_block = ["compare_tol:"] + [f"  {k}: {_yv(v)}" for k, v in merged_tol.items()]
+        lines = _replace_block(lines, "compare_tol", tol_block)
+
+    head = [f"# ★{name}★ — {', '.join(srcs)} 를 합쳐서 만들었다 "
+            f"({datetime.now().strftime('%Y-%m-%d %H:%M')})"]
+    if note:
+        head += ["#   " + ln2 for ln2 in str(note).splitlines() if ln2.strip()]
+    head.append(f"#   ⚠️ 판정 {len(merged_checks)}개를 물려받았다(절 구분 주석은 요약됐다,")
+    head.append("#      각 판정의 why: 는 남아 있다) — 이 영상·이 계약에 맞는지 확인할 것.")
+    if tol_warnings:
+        head.append("#   ⚠️ compare_tol 충돌 (본들끼리 값이 달랐다):")
+        head += [f"#     - {w}" for w in tol_warnings]
+    text = "\n".join(head + lines) + "\n"
+    parsed = yaml.safe_load(text)                  # 깨진 YAML 을 쓰지 않는다
+    if len(parsed.get("checks") or []) != len(merged_checks):
+        raise ValueError(f"{name} 의 checks: 를 예상대로 못 합쳤다.")
+    out.write_text(text)
+    return {"file": out.name, "from": srcs, "warnings": tol_warnings}
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  판정을 ★다른 계약으로★ 옮기기 — 이름이 안 맞는 것을 먼저 보여 준다
+# ══════════════════════════════════════════════════════════════════════
+#  ★왜 clone/compose 로는 안 되는가★ 둘은 본의 `contract:` 줄을 그대로 물려받는다
+#  (compose 는 본들의 계약이 다르면 아예 거부한다). 즉 "A 계약의 판정을 B 계약에
+#  붙인다"는 표현할 수가 없었다.
+#
+#  ★왜 그냥 복사하면 안 되는가★ checks: 의 신호 이름은 계약이 정의한다. B 에 없는
+#  이름을 쓰면 `_stat_value` 가 None 을 내고 리포트에 ⚠️ 「값 없음」 으로 남는다 —
+#  ★실패가 아니다★. 20개를 물려받아 3개만 살아 있는데 전부 초록으로 보인다.
+#  그래서 여기서는 옮기기 ★전에★ tb.lint 를 돌려 한 줄씩 성립 여부를 보여 주고,
+#  사람이 고른 것만 쓴다.
+#
+#  ★그래도 남는 것★ 이름이 맞아도 ★문턱(숫자)은 그 차량·그 영상 것★이다.
+#  머리말에 그 경고를 박는다 — 느슨하게 고쳐 통과시키는 것은 금지다(CLAUDE.md).
+
+def _load_srcs(srcs):
+    """본 목록을 [(파일명, dict)] 로 읽는다 — 이름 검사도 여기서."""
+    out = []
+    for s in [str(x) for x in (srcs or [])]:
+        if not s.endswith(".yaml") or "/" in s or ".." in s:
+            raise ValueError(f"본이 될 시나리오 이름이 잘못됐다: {s}")
+        sp = ROOT / "scenarios" / s
+        if not sp.is_file():
+            raise ValueError(f"그런 시나리오가 없다: {s}")
+        out.append((s, yaml.safe_load(sp.read_text()) or {}))
+    return out
+
+
+def _graft_items(srcs, contract):
+    """본들의 판정을 ★순서대로★ 편다 — 완전히 같은 판정은 한 번만.
+
+    preview_checks 와 graft_scenario 가 ★같은 순서★ 를 봐야 한다. 화면이 돌려주는
+    keep 은 이 목록의 인덱스이기 때문이다 — 두 곳에서 따로 세면 엉뚱한 판정이 남는다.
+    """
+    from . import lint as _lint
+    from .contract import load as load_contract
+
+    cp = ROOT / "contracts" / str(contract)
+    if not str(contract).endswith(".yaml") or "/" in str(contract) or ".." in str(contract):
+        raise ValueError(f"계약 이름이 잘못됐다: {contract}")
+    if not cp.is_file():
+        raise ValueError(f"그런 계약이 없다: {contract}")
+    c = load_contract(cp)
+
+    items, seen = [], []
+    for s, d in _load_srcs(srcs):
+        for chk in (d.get("checks") or []):
+            if chk in seen:
+                continue
+            seen.append(chk)
+            #  lint_scenario 는 `checks[0]: …` 로 태그를 단다 — 한 개씩 물어서
+            #  그 태그를 떼면 그대로 사람이 읽을 문장이 된다.
+            probs = [p.split(": ", 1)[-1]
+                     for p in _lint.lint_scenario(c, {"checks": [chk]})]
+            items.append({"i": len(items), "src": s, "check": chk,
+                          "yaml": _yv(_order_check(chk)), "problems": probs})
+    return c, items
+
+
+def preview_checks(srcs, contract):
+    """옮기기 전에 묻는다 — 이 판정들이 저 계약에서 성립하는가.
+
+    돌려주는 것: items[] (i · src · yaml 한 줄 · problems[]) 와 계약의 신호 이름.
+    problems 가 비어 있으면 그 판정은 새 계약에서 그대로 판정된다.
+    """
+    c, items = _graft_items(srcs, contract)
+    return {"contract": str(contract), "signals": sorted(c.signals),
+            "items": [{k: v for k, v in it.items() if k != "check"} for it in items],
+            "ok_count": sum(1 for it in items if not it["problems"]),
+            "total": len(items)}
+
+
+def graft_scenario(srcs, name, contract, video, keep=None, mode="lockstep",
+                   start=0, limit=0, note=""):
+    """고른 판정만 ★새 계약의★ 시나리오로 옮겨 심는다.
+
+    keep 은 preview_checks 가 준 `i` 의 목록이다. 안 주면 ★깨끗한 것만★ 남긴다.
+    본의 텍스트를 베끼지 않고 빈 틀(SCEN_TMPL)에서 시작한다 — 본의 주석은 본의
+    계약을 설명하는 말이라 새 계약 위에서는 거짓말이 되기 때문이다. 대신 판정마다
+    ★어느 본에서 왔는지★ 를 꼬리 주석으로 남긴다.
+    """
+    if mode not in ("lockstep", "realtime", "asfast"):
+        raise ValueError(f"모드가 잘못됐다: {mode}")
+    if not NAME_RE.match(str(name)):
+        raise ValueError("이름은 영문·숫자·_·-·. 만 쓸 수 있다")
+    if not NAME_RE.match(str(video)):
+        raise ValueError("영상 이름은 영문·숫자·_·-·. 만 쓸 수 있다 (논리 이름)")
+    out = ROOT / "scenarios" / f"{name}.yaml"
+    if out.exists():
+        raise ValueError(f"이미 있다: scenarios/{out.name}")
+
+    c, items = _graft_items(srcs, contract)
+    if keep is None:
+        picked = [it for it in items if not it["problems"]]
+    else:
+        want = {int(k) for k in keep}
+        bad = want - {it["i"] for it in items}
+        if bad:
+            #  화면이 본 목록과 지금 파일이 어긋났다는 뜻이다 — 조용히 빼면
+            #  ★사람이 고른 판정이 없는 채로★ 시나리오가 만들어진다.
+            raise ValueError(f"고른 판정 번호가 목록에 없다: {sorted(bad)} — 화면을 새로 고칠 것")
+        picked = [it for it in items if it["i"] in want]
+    if not picked:
+        raise ValueError("옮길 판정이 하나도 없다 — 하나 이상 골라야 한다")
+
+    #  ★compare_tol 은 이름이 확인된 것만★ 가져온다. 오타·없는 이름이면 허용오차가
+    #  조용히 _default 로 떨어져 ★회귀 비교가 통과하는 쪽으로★ 틀린다(lint.py 참고).
+    tol, tol_dropped = {}, []
+    for s, d in _load_srcs(srcs):
+        for k, v in (d.get("compare_tol") or {}).items():
+            if k != "_default" and k not in c.signals:
+                tol_dropped.append(f"{k} ({s})")
+            elif k not in tol:
+                tol[k] = v
+
+    lines = SCEN_TMPL.format(name=name, contract=str(contract), video=video,
+                             mode=mode, start=int(start), limit=int(limit)).splitlines()
+    checks_block = ["checks:"] + [
+        f"  - {it['yaml']}    # ← {it['src']}" for it in picked]
+    #  ★빈 틀의 안내 주석을 갈아 끼운다★ — SCEN_TMPL 의 그 문단은 "여기부터 사람이
+    #  채운다"는 말이라, 판정이 17개 들어찬 파일 위에 남으면 거짓말이 된다.
+    #  _replace_block 은 `checks:` 줄부터만 손대므로 그 위 주석은 여기서 지운다.
+    ci = next(i for i, ln in enumerate(lines) if ln.startswith("checks:"))
+    top = ci
+    while top > 0 and (lines[top - 1].startswith("#") or not lines[top - 1].strip()):
+        top -= 1
+    lines = lines[:top] + [
+        "",
+        "# ── 판정 ───────────────────────────────────────────────────────────────",
+        "#   ★다른 계약에서 옮겨 심은 것이다★ — 꼬리의 `# ←` 가 출처다.",
+        "#   이 계약의 signals: 에 있는 이름만 남겼다(나머지는 옮기지 않았다).",
+    ] + lines[ci:]
+    lines = _replace_block(lines, "checks", checks_block)
+    if tol:
+        lines = _replace_block(lines, "compare_tol",
+                               ["compare_tol:"] + [f"  {k}: {_yv(v)}" for k, v in tol.items()])
+
+    head = [f"# ★{name}★ — {', '.join(str(s) for s in srcs)} 의 판정을 "
+            f"contracts/{contract} 로 옮겨 심었다 "
+            f"({datetime.now().strftime('%Y-%m-%d %H:%M')})"]
+    if note:
+        head += ["#   " + ln2 for ln2 in str(note).splitlines() if ln2.strip()]
+    head.append(f"#   판정 {len(picked)}/{len(items)} 개를 골랐다 "
+                f"(나머지는 이 계약에 없는 이름을 쓴다).")
+    head.append("#   ⚠️ 이름은 맞췄지만 ★문턱(숫자)은 본의 차량·영상 것★ 이다 — "
+                "이 대상에서 실측해 고칠 것.")
+    head.append("#   ⚠️ 통과시키려고 문턱을 느슨하게 하지 않는다. 근거를 먼저 적을 것.")
+    if tol_dropped:
+        head.append("#   compare_tol 에서 뺀 이름(이 계약에 없다): " + ", ".join(tol_dropped))
+
+    text = "\n".join(head + lines) + "\n"
+    parsed = yaml.safe_load(text)                  # 깨진 YAML 을 쓰지 않는다
+    if len(parsed.get("checks") or []) != len(picked):
+        raise ValueError(f"{name} 의 checks: 를 예상대로 못 옮겼다.")
+    out.write_text(text)
+    return {"file": out.name, "from": [str(s) for s in srcs],
+            "kept": len(picked), "total": len(items),
+            "warn": ([f"compare_tol 에서 {len(tol_dropped)}개를 뺐다 — 계약에 없는 이름"]
+                     if tol_dropped else [])}
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -551,8 +876,18 @@ def _yv(v):
     if isinstance(v, int) or v is None:
         return "null" if v is None else str(v)
     s = str(v)
-    return s if NAME_RE.match(s) or s.startswith("/") else yaml.safe_dump(
-        s, default_flow_style=True).strip().rstrip("\n...").strip()
+    #  ★allow_unicode 필수★ 없으면 한글이 \uXXXX 로 이스케이프된다 — why: 에 한글이
+    #  들어가고 나서야 드러난 잠재 버그였다(그전 호출자는 전부 영문·숫자만 줬다).
+    #  ★default_style='"' 도 필수★ yaml.safe_dump 는 이 문자열이 ★독립 문서★ 로
+    #  쓰일 걸로 보고 콤마가 있어도 안 따옴표를 친다 — 그런데 여기 결과는 손으로
+    #  조립한 흐름식 매핑({k: v, k2: v2}) ★안에 끼워 넣는다★. 콤마 있는 문자열이
+    #  안 따옴표로 나오면 그 콤마가 다음 키의 구분자로 읽혀 매핑이 깨진다(why: 에
+    #  "실측 80, 여유 30%" 처럼 콤마 든 문장을 넣고서야 드러났다). 그래서 이
+    #  분기에 오는 문자열은 ★무조건★ 큰따옴표를 강제한다.
+    if NAME_RE.match(s) or s.startswith("/"):
+        return s
+    return yaml.safe_dump(s, default_flow_style=True, allow_unicode=True,
+                          default_style='"').strip().rstrip("\n...").strip()
 
 
 def _block_end(lines, i, indent):
@@ -612,6 +947,80 @@ def _ensure_key(lines, key, indent, lo, hi):
         return i, True
     lines.insert(hi, " " * indent + f"{key}:")
     return hi, False
+
+
+def set_aux_schedule(scenario, schedule):
+    """시나리오의 top-level `aux_schedule:` 를 저작한 것으로 갈아 끼운다. [2026-08-25]
+
+    schedule = {토픽: {프레임: 값}} — 뷰어(--watch)가 저작해 낸 그대로. 블록을 통째로
+    교체하고 ★자동생성 표식★ 을 단다(그 앞에 있던 손주석은 값이 바뀌면 거짓이 되므로
+    남기지 않는다 — 이건 사람이 쓴 설명이 아니라 기계가 찍은 타임라인이다).
+
+    ★params 처럼 줄 단위로 병합하지 않는 이유★ aux_schedule 은 top-level 한 덩이라
+    통째 교체가 가장 안전하다(중간에 끼우면 프레임 키가 흩어진다). 다른 블록의
+    주석·순서는 그대로 둔다 — 이 블록만 들어낸다. 쓰고 나서 되읽어 확인한다.
+    """
+    name = Path(str(scenario)).name
+    if not name.endswith(".yaml"):
+        raise ValueError(f"시나리오 파일이 아니다: {scenario}")
+    path = ROOT / "scenarios" / name
+    if not path.is_file():
+        raise ValueError(f"그런 시나리오가 없다: scenarios/{name}")
+    if not schedule:
+        raise ValueError("저작한 타임라인이 비어 있다")
+
+    text = path.read_text()
+    lines = text.splitlines()
+    # ① 기존 aux_schedule 블록(키 줄 + 들여쓴 자식·빈 줄)을 걷어낸다
+    out, i, n = [], 0, len(lines)
+    while i < n:
+        if re.match(r"^aux_schedule\s*:", lines[i]):
+            i += 1
+            while i < n and (not lines[i].strip() or lines[i][:1] in " \t"):
+                i += 1
+            continue
+        out.append(lines[i])
+        i += 1
+    # ② 새 블록 조립 (흐름식 한 줄/토픽)
+    block = ["aux_schedule:",
+             f"  # ★뷰어(--watch)에서 저작됨 "
+             f"{datetime.now().strftime('%Y-%m-%d %H:%M')}★ 판정 런이 이 프레임을 재생한다"]
+    for topic, marks in schedule.items():
+        pairs = ", ".join(f"{int(f)}: {_yv(v)}"
+                          for f, v in sorted(marks.items(), key=lambda x: int(x[0])))
+        block.append(f'  "{topic}": {{{pairs}}}')
+    # ③ params: 앞에 넣는다(없으면 variants: 앞, 그것도 없으면 끝)
+    at = next((j for j, ln in enumerate(out)
+               if re.match(r"^(params|variants)\s*:", ln)), len(out))
+    out[at:at] = block + [""]
+
+    new = "\n".join(out) + "\n"
+    after = yaml.safe_load(new) or {}                        # 깨진 YAML 차단
+    got = after.get("aux_schedule") or {}
+    for topic, marks in schedule.items():
+        for f, v in marks.items():
+            g = (got.get(topic) or {}).get(int(f))
+            if not _same(g, v):
+                raise ValueError(f"{name} 에 aux_schedule 을 제대로 넣지 못했다 "
+                                 f"({topic}[{f}]: 넣으려던 {v}, 다시 읽은 {g}).")
+    # 그 밖의 것이 사라지지 않았는가 (aux_schedule 만 빼고 비교)
+    b, a = yaml.safe_load(text) or {}, dict(after)
+    b.pop("aux_schedule", None)
+    a.pop("aux_schedule", None)
+    if b != a:
+        raise ValueError(f"{name} 의 다른 내용이 바뀔 뻔했다 — 저장을 취소한다.")
+    path.write_text(new)
+    return str(path)
+
+
+_CHECK_KEY_ORDER = ("signal", "where", "event", "stat", "when_valid", "last",
+                    "min", "max", "why")
+
+
+def _order_check(chk):
+    ordered = {k: chk[k] for k in _CHECK_KEY_ORDER if k in chk}
+    ordered.update((k, v) for k, v in chk.items() if k not in ordered)
+    return ordered
 
 
 def _same(a, b):
