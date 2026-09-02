@@ -152,11 +152,15 @@ def export(run_dir, ws=None):
                        "| 실행 | 시나리오 | 변형 | 행 | 유효 | 체크 | 호스트 | 코드 |\n"
                        "|---|---|---|---|---|---|---|---|\n")
     vr = "—" if v["valid_rate"] is None else f"{v['valid_rate']:.3f}"
-    idx.write_text(idx.read_text() + (
-        f"| [{run_dir.name}]({run_dir.name}/report.md) | {env['scenario']} | "
-        f"{env['variant']} | {v['rows']} | {vr} | "
-        f"{v['checks_ok']}/{v['checks_total']} | {env['host']} | "
-        f"{env['workspace_code_sha'][:8]} |\n"))
+    head = f"| [{run_dir.name}]({run_dir.name}/report.md) |"
+    row = (f"{head} {env['scenario']} | {env['variant']} | {v['rows']} | {vr} | "
+           f"{v['checks_ok']}/{v['checks_total']} | {env['host']} | "
+           f"{env['workspace_code_sha'][:8]} |")
+    #  ★같은 런을 다시 내보내는 것이 정상 흐름이다★ — feedback.md 를 뽑고,
+    #  기준과 비교하고, replay 로 영상을 잡은 뒤에 다시 내보낸다. 그때마다
+    #  줄이 쌓이면 이력이 아니라 중복이 된다 → 그 런의 줄을 갈아 끼운다.
+    lines = [ln for ln in idx.read_text().splitlines() if not ln.startswith(head)]
+    idx.write_text("\n".join(lines + [row]) + "\n")
 
     return {"dest": dest, "copied": copied, "verdict": v, "env": env,
             "gitignored": ensure_gitignore(ws),
@@ -224,9 +228,17 @@ def selftest():
         idx = (ws / OUT_DIRNAME / "INDEX.md").read_text()
         assert idx.count("\n|") >= 2 and run.name in idx
 
-        #  두 번 내보내도 .gitignore 가 늘지 않고 이력만 한 줄 는다
+        #  두 번 내보내도 .gitignore 도 이력도 늘지 않는다 (같은 런은 갈아 끼운다)
         r2 = export(run)
         assert not r2["gitignored"], ".gitignore 가 중복으로 늘어난다"
+        rows = [ln for ln in (ws / OUT_DIRNAME / "INDEX.md").read_text().splitlines()
+                if ln.startswith("| [")]
+        assert len(rows) == 1, rows
+
+        #  다른 런은 따로 쌓인다
+        run2 = run.parent / "0101_000001_y_base"
+        shutil.copytree(run, run2)
+        export(run2)
         rows = [ln for ln in (ws / OUT_DIRNAME / "INDEX.md").read_text().splitlines()
                 if ln.startswith("| [")]
         assert len(rows) == 2, rows

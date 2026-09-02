@@ -100,19 +100,7 @@ cd "$TB" && python3 -m tb.run run --scenario scenarios/<새이름>.yaml
 - 오래 걸린다(영상 길이 × 프레임당 처리). **백그라운드로 돌리고 기다린다.**
 - 기준 등록은 `python3 -m tb.run baseline <런>` 이고, 이름은 **시나리오의 `name:`** 을 따른다.
 
-## 4단계 — 대상 워크스페이스로 내보낸다
-
-```bash
-cd "$TB" && python3 skills/cam-test/export.py runs/<런ID> --ws "$WS"
-```
-
-`<워크스페이스>/testbed_results/<런ID>/` 에 리포트·`summary.json`·`signals.csv`·
-**디버그 영상**·`run_env.json`(호스트·GPU·가중치·코드 해시)이 들어가고, `INDEX.md` 에 한 줄이
-쌓인다. `COLCON_IGNORE` 와 `.gitignore` 등록도 이때 자동으로 된다.
-
-원본은 `$TB/runs/` 에 그대로 남는다 — 재해석(`reanalyze`)·재실행(`replay`)은 원본으로 한다.
-
-## 5단계 — 피드백
+## 4단계 — 피드백
 
 ```bash
 cd "$TB" && python3 -m tb.run feedback runs/<런ID> [--vs runs/<이전런>]
@@ -121,6 +109,22 @@ cd "$TB" && python3 -m tb.run feedback runs/<런ID> [--vs runs/<이전런>]
 `feedback.md` 는 "무엇을 고쳐야 하나" 순으로 정렬된 개선 요청문이다. 이걸 읽고
 **진단과 제안까지** 한다 — 원인 후보, 볼 파일, 고칠 방향. **대상 워크스페이스 코드는
 사용자가 따로 지시할 때만 고친다.**
+
+**내보내기(5단계) 전에 뽑는다** — 그래야 `feedback.md` 가 보관본에 같이 들어간다.
+
+## 5단계 — 대상 워크스페이스로 내보낸다
+
+```bash
+cd "$TB" && python3 skills/cam-test/export.py runs/<런ID> --ws "$WS"
+```
+
+`<워크스페이스>/testbed_results/<런ID>/` 에 리포트·`summary.json`·`signals.csv`·
+**디버그 영상**·`run_env.json`(호스트·GPU·가중치·코드 해시)이 들어가고, `INDEX.md` 에 한 줄이
+쌓인다(같은 런을 다시 내보내면 그 줄을 갈아 끼운다). `COLCON_IGNORE` 와 `.gitignore`
+등록도 이때 자동으로 된다.
+
+원본은 `$TB/runs/` 에 그대로 남는다 — 재해석(`reanalyze`)·재실행(`replay`)은 원본으로 하고,
+새 산출물이 생기면 **다시 내보내면 된다**(덮어쓴다).
 
 ## 결과를 읽을 때 — 순서를 지킨다
 
@@ -158,3 +162,4 @@ cd "$TB" && python3 -m tb.run feedback runs/<런ID> [--vs runs/<이전런>]
 | 테스트베드 자체 검사 | `python3 -m tb.selftest` (ROS·영상 불필요) |
 
 `$TB/README.md` 에 § 번호로 전체 설계와 절차가 있다.
+사람이 읽는 사용 설명은 [USAGE.md](USAGE.md) — 사용자가 "이 스킬 어떻게 쓰냐"고 물으면 거기를 가리킨다.
