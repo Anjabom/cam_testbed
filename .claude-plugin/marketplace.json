@@ -1,0 +1,11 @@
+{
+  "name": "cam-testbed",
+  "owner": { "name": "Anjabom" },
+  "plugins": [
+    {
+      "name": "cam-test",
+      "source": "./",
+      "description": "카메라 인지 테스트베드 — 어느 워크스페이스에서든 시험을 돌리고 결과를 그 워크스페이스에 남긴다."
+    }
+  ]
+}
