@@ -306,6 +306,9 @@ def resolve_scenario(fname):
 
     params = r._deep_merge(sc.get("params", {}), loc.get("params", {}))
     out["params"] = params
+    #  실행 전에 화면이 먼저 말해 준다 — run.py 와 ★같은 함수★ 를 쓴다.
+    from .contract import check_required
+    out["block"] += check_required(c, params)
     #  ★어느 파일에서 온 값인가★ — 화면이 「고치면 어디가 바뀌는지」를 말할 수 있게.
     #  둘 다에 있으면 local 이 이긴다(우선순위가 시나리오 < local 이다).
     out["params_local"] = loc.get("params", {}) or {}

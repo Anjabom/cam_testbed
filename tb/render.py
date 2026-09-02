@@ -176,6 +176,32 @@ class Renderer:
         self.M, self.Minv = (ipm_matrices(self.quad, self.bev_w, self.bev_h)
                              if self.quad is not None else (None, None))
 
+        # ── 그 런이 실제로 쓴 px2m ─────────────────────────────────
+        #   `draw()` 의 기본값(0.006)은 ★어느 런의 값도 아니다★. 그대로 두면 화면
+        #   왼쪽에 '차선폭 = 2.571 m' 같은 주석이 뜨는데 바로 위 readout 에는
+        #   노드가 낸 lane_width_m = 3.000 이 있다 — 같은 양이 두 값으로 보인다.
+        #   (0.007 로 돈 런을 0.006 으로 다시 재서 14% 틀린 것이다.)
+        #   캘리브 대상(kind: scale)이 그 런의 실측값을 갖고 있으므로 그걸 쓴다.
+        self.px2m = 0.0
+        for t in tgt.values():
+            if t.get("kind") == "scale":
+                self.px2m = _scalar(_target_value(t, params), t.get("default")) or 0.0
+
+        # ── 미터 단위 차선 모델 (`render.lane_metric`) ─────────────
+        #   차선을 BEV 픽셀 다항식이 아니라 ★미터 단위 (d, ψ, κ, 폭)★ 으로 내는
+        #   노드가 있다. 그런 노드는 폴리핏 계수가 아예 없어서 위 signals.left/right
+        #   가 비고, 그러면 경로 그림이 통째로 안 나온다 — 숫자만 남는다.
+        #   화면을 새로 만들지는 않는다. `fits()` 에서 픽셀 다항식으로 되돌려
+        #   ★아래 그리기 코드를 그대로★ 쓴다(§_fits_metric 의 유도 참고).
+        self.lm = r.get("lane_metric") or None
+        self.lm_mpp = 0.0
+        self.lm_x_min = 0.0
+        if self.lm:
+            self.lm_mpp = float(self.lm.get("mpp") or 0.0)
+            if self.lm_mpp <= 0:            # 캘리브 대상(kind: scale)에서 그 런의 실측값
+                self.lm_mpp = self.px2m
+            self.lm_x_min = float(self.lm.get("x_min", 0.0))
+
     # ── 좌표 ────────────────────────────────────────────────────────
     @property
     def y_near(self):
@@ -185,7 +211,43 @@ class Renderer:
     def y_look(self):
         return self.bev_h * self.lookahead_ratio
 
+    def _fits_metric(self, row):
+        """(d, ψ, κ, 폭) → BEV 픽셀 다항식 x = a·y² + b·y + c 로 되돌린다.
+
+        BEV 행 r 이 가리키는 전방거리와, 차선 중심의 횡위치·열은
+            x(r)   = x0 + s·r,      x0 = x_min + H·mpp,  s = −mpp
+            y_c(x) = d + tan(ψ)·x + ½·κ·x²
+            col    = c0 − y_c/mpp,  c0 = (W−1)/2
+        이므로 전개하면 r 에 대한 2차식이 되고, 계수는
+            a = −½·κ·mpp
+            b = tan(ψ) + κ·x0
+            c = c0 − (d + tan(ψ)·x0 + ½·κ·x0²)/mpp
+        좌/우 차선은 y = y_c ± w/2 라서 c 만 ∓(w/2)/mpp 옮기면 된다.
+        (부호: y 는 좌측 +, col 은 우측 + 이므로 좌차선이 c 가 작은 쪽이다.)
+        """
+        def num(key, dflt):
+            v = row.get(self.lm.get(key, dflt))
+            return float(v) if isinstance(v, (int, float)) else 0.0
+
+        w = num("width", "vote_width")
+        if w <= 0.0 or self.lm_mpp <= 0.0:
+            # 결과가 없는 프레임은 전 필드가 0 으로 온다 — 그리면 거짓 그림이 된다.
+            return None, None
+        d = num("d", "vote_d")
+        psi = num("psi", "vote_psi")
+        kap = num("kappa", "vote_kappa")
+        mpp = self.lm_mpp
+        x0 = self.lm_x_min + self.bev_h * mpp
+        c0 = (self.bev_w - 1) / 2.0
+        a = -0.5 * kap * mpp
+        b = math.tan(psi) + kap * x0
+        c = c0 - (d + math.tan(psi) * x0 + 0.5 * kap * x0 * x0) / mpp
+        off = (w * 0.5) / mpp
+        return [a, b, c - off], [a, b, c + off]
+
     def fits(self, row):
+        if self.lm:
+            return self._fits_metric(row)
         lf = [row.get(k) for k in self.k_left]
         rf = [row.get(k) for k in self.k_right]
         num = lambda v: isinstance(v, (int, float))       # noqa: E731
@@ -328,6 +390,8 @@ class Renderer:
 
     def draw(self, frame_raw, row, px2m=0.006, show_tangent=True):
         """원본 프레임 + BEV 를 가로로 붙인 오버레이 한 장을 만든다."""
+        # 그 런이 실제로 쓴 축척을 안다면 인자 기본값보다 그것이 우선이다.
+        px2m = self.px2m or px2m
         if self.bd:
             return self.draw_bev_dist(frame_raw, row)
         src = self.und(frame_raw) if self.und else frame_raw

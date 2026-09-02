@@ -39,6 +39,10 @@ from .player import FRAME_TOPIC, _set_field
 
 CONTROL_TOPIC = "/testbed/control"
 
+#  저장 속도를 정하기 전에 모아 둘 장수. 기동 직후 몇 장은 간격이 1~2프레임으로
+#  몰려 오므로 12장쯤 봐야 중앙값이 실제 주기가 된다(그동안은 메모리에 든다).
+PROBE_FRAMES = 12
+
 
 class Viewer(Node):
     def __init__(self, contract, save_dir, overlay_signals, fps=15.0):
@@ -55,6 +59,13 @@ class Viewer(Node):
         # "0번이 start 번"이라는 보장이 없다. 그래서 실측해서 남긴다.
         self.first_frame = {}
         self.n_written = {}
+        # 영상 i 번째 장 = 원본 몇 번 프레임인가 (★장마다★ 실측해 남긴다).
+        # first_frame + i 로 계산하면 안 된다 — 노드가 디버그를 매 프레임 내는
+        # 보장이 없다. 실제로 1291프레임 런에서 663장만 온 적이 있고(≈2프레임당
+        # 1장), 그러면 웹앱의 디버그 영상이 뒤로 갈수록 2배씩 어긋난다.
+        self.written_frames = {}
+        self._pending = {}        # 주기를 재기 전까지 들고 있는 그림
+        self.rec_fps = {}         # 실제로 저장한 fps (원본 fps 와 다르다)
         self.save_dir = Path(save_dir) if save_dir else None
         self.overlay_signals = overlay_signals
         self.fps = fps
@@ -225,23 +236,67 @@ class Viewer(Node):
         return self._draw(img, "타임라인 저작", paused)
 
     def _record(self, topic, img):
+        """디버그 그림을 mp4 로 남긴다 — ★원본과 같은 속도로 보이게★.
+
+        노드가 매 프레임 디버그를 그리는 게 아니다. 7프레임에 한 장만 그린 런이
+        있었고, 그걸 원본 fps(30) 로 저장했더니 42.7초 장면이 6.2초짜리 =
+        7배속 영상이 됐다. 그래서 첫 몇 장을 모아 ★그리는 주기★를 재고 나서
+        파일을 연다(기동 직후 몇 장은 촘촘해서 두세 장으로는 못 잰다).
+
+        주기가 런 도중에 변하면(6프레임 → 7프레임) 고정 fps 파일은 10~15%
+        어긋난다 — 정확한 정렬은 웹앱이 아래 written_frames 로 따로 한다.
+        여기서 맞추는 것은 «mpv 로 열어도 배속이 안 걸리게» 까지다.
+        """
         if self.save_dir is None:
             return
+        self.written_frames.setdefault(topic, []).append(self.frame_idx)
+        self.n_written[topic] = self.n_written.get(topic, 0) + 1
+        if topic not in self.first_frame:
+            self.first_frame[topic] = self.frame_idx
         wtr = self.writers.get(topic)
         if wtr is None:
-            name = topic.strip("/").replace("/", "_") + ".mp4"
-            # 이 영상은 ★사람이 되돌려 보기 위한 것★이지 타이밍 기록이 아니다.
-            # 프레임 1개 = 처리 사이클 1개로 저장하고 재생 fps 는 고정값을 쓴다.
-            # 코덱은 encode.Writer 가 고른다 — mp4v 로 쓰면 웹앱에서 재생되지 않는다.
-            wtr = encode.Writer(self.save_dir / name, self.fps,
-                                (img.shape[1], img.shape[0]))
-            self.writers[topic] = wtr
-            self.first_frame[topic] = self.frame_idx
-            self.n_written[topic] = 0
+            buf = self._pending.setdefault(topic, [])
+            buf.append(img)
+            if len(buf) < PROBE_FRAMES:       # 아직 주기를 못 잰다 — 모아 둔다
+                return
+            wtr = self._open_writer(topic, img)
+            for im in buf:
+                wtr.write(im)
+            buf.clear()
+            return
         wtr.write(img)
-        self.n_written[topic] = self.n_written.get(topic, 0) + 1
+
+    def _open_writer(self, topic, img):
+        name = topic.strip("/").replace("/", "_") + ".mp4"
+        # 코덱은 encode.Writer 가 고른다 — mp4v 로 쓰면 웹앱에서 재생되지 않는다.
+        fps = self._rec_fps(topic)
+        wtr = encode.Writer(self.save_dir / name, fps,
+                            (img.shape[1], img.shape[0]))
+        self.writers[topic] = wtr
+        self.rec_fps[topic] = fps
+        return wtr
+
+    def _rec_fps(self, topic):
+        """몇 프레임에 한 장씩 그렸는지로 저장 속도를 정한다.
+
+        중앙값을 쓴다 — 기동 직후 몇 장은 1~2프레임 간격으로 몰려 오는데
+        평균을 쓰면 그 몇 장에 끌려 영상이 빨라진다.
+        """
+        d = sorted(b - a for a, b in zip(self.written_frames.get(topic, []),
+                                         self.written_frames.get(topic, [])[1:])
+                   if b > a)
+        if not d:
+            return self.fps
+        return max(0.5, self.fps / d[len(d) // 2])
 
     def close(self):
+        # 주기를 다 재기 전에 끝난 토픽 — 모아 둔 그림을 그대로 흘려 보낸다
+        for topic, buf in list(self._pending.items()):
+            if buf and topic not in self.writers:
+                w = self._open_writer(topic, buf[0])
+                for im in buf:
+                    w.write(im)
+            buf.clear()
         for w in self.writers.values():
             w.release()
         if self.save_dir and self.writers:
@@ -250,9 +305,13 @@ class Viewer(Node):
             for topic, w in self.writers.items():
                 name = w.path.name          # 코덱에 따라 .webm 일 수 있다
                 meta[name] = {
-                    "topic": topic, "fps": self.fps,
+                    # fps = 이 파일의 저장 속도, src_fps = 원본 영상의 fps.
+                    # 웹앱이 둘을 견줘 「원본과 같은 속도」 배속을 정한다.
+                    "topic": topic, "fps": self.rec_fps.get(topic, self.fps),
+                    "src_fps": self.fps,
                     "first_frame": self.first_frame.get(topic, -1),
                     "count": self.n_written.get(topic, 0),
+                    "frames": self.written_frames.get(topic, []),
                 }
             try:
                 (self.save_dir / "debug_meta.json").write_text(
@@ -290,7 +349,8 @@ def main(argv=None):
     ap.add_argument("--scale", type=float, default=1.0)
     ap.add_argument("--headless", action="store_true",
                     help="창을 띄우지 않고 mp4 저장만 한다")
-    ap.add_argument("--fps", type=float, default=15.0, help="저장할 mp4 재생 속도")
+    ap.add_argument("--fps", type=float, default=15.0,
+                    help="원본 영상의 fps (저장 속도는 디버그를 그리는 주기로 맞춘다)")
     ap.add_argument("--jpeg", default="",
                     help="매 프레임 이 경로에 최신 화면을 덮어쓴다(라이브 화면용)")
     ap.add_argument("--seconds", type=float, default=0.0, help="0=무제한")

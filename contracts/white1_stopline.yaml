@@ -33,9 +33,21 @@ nodes:
     node_name: traffic_light
     params:
       show_window: false        # 헤드리스 (실차 기본값은 true 다)
-      # 가중치(.pt/.engine)와 device 는 ★머신마다 다르다★ → local.yaml 의 params 로.
-      #   실차 기본값은 /home/mad2/... 의 .engine 이고, .engine 은 빌드한 GPU 에
-      #   묶이므로 다른 기계에서는 반드시 .pt 로 바꿔야 한다.
+      # 가중치 경로와 device 는 ★머신마다 다르다★ → local.yaml 의 params 로.
+      #   ★확장자는 머신마다 다른 값이 아니다★ — 아래 require_params 가 강제한다.
+    require_params:
+      # ★실차가 .engine 으로 돈다★ — .pt 로 재면 실차와 다른 것을 재게 된다.
+      #   (이 PC 의 .engine 은 2026-07-08 빌드 · TRT 11.1 · RTX 4060 Laptop 에서
+      #    역직렬화 확인함. 다른 기계로 옮겨 안 열리면 그 기계에서 .engine 을 다시
+      #    빌드한다 — .pt 로 되돌리는 건 재는 대상을 바꾸는 것이라 답이 아니다.)
+      tl_weights:
+        endswith: .engine
+        exists: true
+        why: "실차와 같은 TensorRT 백엔드로 재야 한다"
+      sl_weights:
+        endswith: .engine
+        exists: true
+        why: "위와 같다"
 
 # ── 2. 자극 ────────────────────────────────────────────────────────────
 stimulus:

@@ -660,6 +660,13 @@ def _stat_value(summary, rows, contract, chk):
         from .expr import evaluate
         src = [r for r in src if evaluate(chk["where"], r) is True]
     vals = _nums(src, sig)
+    # ★값이 하나도 없으면 None★ — 아래 차분 통계들은 빈 입력에서 0.0 을 돌려
+    #   준다. 그 자체는 「한 프레임뿐이라 튄 적이 없다」는 뜻으로 맞지만,
+    #   신호가 통째로 결측일 때까지 0.0 이 되면 상한 체크를 그냥 통과해 버린다
+    #   (perception 이 죽은 런에서 theta_deg.p95_abs_diff 가 ✅ 로 찍혔다).
+    #   못 쟀다는 것과 0 이라는 것은 다르다 — 결측은 여기서 잘라 낸다.
+    if not vals:
+        return None
     if stat == "p95_abs_diff":
         d = _abs_diffs(src, sig)
         return _p(d, 0.95) if d else 0.0
@@ -669,8 +676,6 @@ def _stat_value(summary, rows, contract, chk):
     if stat in ("decreases", "increases"):
         d = _steps(src, sig)
         return sum(1 for x in d if (x < 0 if stat == "decreases" else x > 0))
-    if not vals:
-        return None
     return {
         "mean": lambda: st.fmean(vals),
         "std": lambda: st.pstdev(vals) if len(vals) > 1 else 0.0,
@@ -787,6 +792,13 @@ def compare(base_rows, cur_rows, contract, tol=None):
         }
         if sa != sb:
             res["verdict"] = "DIFF"
+
+    # ★볼 신호가 하나도 없었으면 그건 통과가 아니다★ — 계약이 이 결과와 안 맞으면
+    #   없는 컬럼은 위에서 전부 조용히 건너뛰고 「PASS」로 끝난다(빈 런이 「전부
+    #   통과」로 찍히던 것과 같은 함정). 세어 두고 이름을 따로 붙인다.
+    res["compared"] = len(res["numeric"]) + len(res["categorical"]) + len(res["sequence"])
+    if not res["compared"]:
+        res["verdict"] = "NO_SIGNALS"
     return res
 
 
@@ -928,6 +940,9 @@ def report_run(summary, checks, drift, contract):
     a = L.append
     a(f"# 실행 리포트 — {m.get('run_id', '?')}")
     a("")
+    #  사람이 `--name` 으로 붙인 이름. 없으면 줄 자체를 넣지 않는다.
+    if m.get("label"):
+        a(f"- 이름: **{m['label']}**")
     a(f"- 계약: `{contract.name}` v{contract.version}")
     a(f"- 시나리오: `{m.get('scenario', '?')}`")
     a(f"- 영상: `{m.get('video', '?')}`  섭동: `{m.get('perturb', 'none')}`  "
@@ -1062,6 +1077,9 @@ def report_compare(res, base_id, cur_id):
     a("")
     a(f"- 공통 프레임 {res['frames_common']} "
       f"(기준 전용 {res['only_base']}, 현재 전용 {res['only_cur']})")
+    if res.get("compared") == 0:
+        a("- ⚠️ **비교한 신호 0개** — 계약이 이 결과와 맞지 않는다"
+          "(`--contract` 로 그 결과가 쓴 계약을 지정할 것).")
     a("")
     if res["numeric"]:
         a("## 수치 신호")

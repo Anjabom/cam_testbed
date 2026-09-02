@@ -70,7 +70,7 @@ def _verdict(run_dir):
     if not p.is_file():
         return None
     head = p.read_text()[:400]
-    for v in ("PASS", "DIFF", "NO_OVERLAP"):
+    for v in ("PASS", "DIFF", "NO_OVERLAP", "NO_SIGNALS"):
         if f"판정: {v}" in head:
             return v
     return None

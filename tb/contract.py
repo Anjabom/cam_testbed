@@ -186,3 +186,40 @@ def load(path):
     p = Path(path)
     with p.open() as f:
         return Contract(yaml.safe_load(f), p)
+
+
+def check_required(contract, params):
+    """계약의 노드별 `require_params:` 를 실효 파라미터에 대고 검사한다.
+
+    ★여기에 워크스페이스의 파라미터 이름을 쓰지 않는다★(경계 규칙 ①) — 무엇을
+    요구할지는 전부 계약이 말하고, 이 함수는 규칙 종류만 안다:
+
+        require_params:
+          <파라미터 이름>:
+            endswith: .engine     # 값이 이걸로 끝나야 한다
+            exists: true          # 그 경로에 파일이 있어야 한다
+            why: "왜 그래야 하는지"
+
+    반환: 사람이 읽는 문제 문자열 리스트(비었으면 통과).
+    """
+    import os
+    out = []
+    for n in contract.nodes:
+        req = n.get("require_params") or {}
+        merged = dict(n.get("params") or {})
+        merged.update(params.get(n["id"], {}) or {})
+        for key, rule in req.items():
+            why = str(rule.get("why", "")).strip()
+            tail = f" — {why}" if why else ""
+            if key not in merged:
+                out.append(f"{n['id']}.{key} 가 지정되지 않았다 "
+                           f"(local.yaml 의 params.{n['id']} 에 넣을 것){tail}")
+                continue
+            val = str(merged[key])
+            suf = rule.get("endswith")
+            if suf and not val.endswith(str(suf)):
+                out.append(f"{n['id']}.{key} 가 `{suf}` 로 끝나야 하는데 `{val}` 이다{tail}")
+                continue
+            if rule.get("exists") and not os.path.exists(val):
+                out.append(f"{n['id']}.{key} 의 파일이 없다: {val}{tail}")
+    return out

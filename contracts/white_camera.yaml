@@ -40,6 +40,19 @@ nodes:
     params:                       # 테스트 환경에서 반드시 꺼야 하는 것들
       show_window: false          # 헤드리스
       record_video: false         # 실차 녹화 비활성 (~/records 오염 방지)
+    require_params:
+      # ★실차가 TensorRT .engine 으로 돈다 — 테스트베드도 같은 백엔드여야 한다★
+      #   .pt(FP32) 로 재면 지연도, 마스크 두께도, 그래서 conf·s_ref 도 실차와 다른
+      #   것을 재게 된다. 그런데 리포트는 그대로 초록으로 나온다 — 로그를 뒤져야만
+      #   드러나는 거짓말이라, 실행 전에 막는다.
+      lane_weights_roi:
+        endswith: .engine
+        exists: true
+        why: "실차와 같은 TensorRT 백엔드로 재야 지연·마스크가 실차와 같다"
+      tl_weights_roi:
+        endswith: .engine
+        exists: true
+        why: "위와 같다"
 
   - id: camera_judgment
     package: white
