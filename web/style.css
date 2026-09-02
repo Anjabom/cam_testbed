@@ -143,10 +143,10 @@ canvas{display:block;width:100%;height:auto;cursor:crosshair}
 .back:hover{color:var(--ink)}
 .rowhd{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:16px}
 
-/* ── 시계열 + 영상 나란히 ─────────────────────── */
-.plotgrid{display:grid;gap:12px;margin-top:12px}
-@media (min-width:1000px){ .plotgrid{grid-template-columns:1fr 420px;align-items:start} }
-.plotgrid .plotwrap{margin-top:0}
+/* ── 영상 두 개를 나란히 ───────────────────────── */
+/* 경로 영상 ↔ 카메라 디버그 영상 — 나란히 놓고 같은 프레임을 본다.
+   1100px 아래에서는 위아래로 쌓는다(둘을 반으로 쪼개면 차선이 안 보인다). */
+.vidwrap video{max-height:60vh;object-fit:contain}
 .vidwrap{background:var(--surface);border:1px solid var(--line);border-radius:7px;
   padding:12px 14px}
 .vidbar{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:9px;
@@ -317,6 +317,8 @@ td.star .on{color:var(--accent)}
 .tag{font-family:var(--mono);font-size:10px;color:var(--muted);
   background:var(--surface-2);border-radius:3px;padding:1px 6px}
 .memo{font-size:11.5px;color:var(--muted);margin-top:2px}
+/* 실행할 때 붙인 이름 — 목록에서 시나리오보다 먼저 눈에 들어와야 한다 */
+.runlabel{font-weight:600}
 
 /* ── 피드백 ───────────────────────────────────── */
 .fbbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 10px}
@@ -343,3 +345,16 @@ textarea.note:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 }
 .sbanner b { color: #9a3412; }
 .sbanner a { margin-left: auto; color: #9a3412; font-weight: 600; }
+
+/* ── 코드 변천 ──────────────────────────────────── */
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}
+.chip{font-size:11.5px;padding:2px 8px;border-radius:4px;text-decoration:none;
+  background:var(--surface-2);color:var(--muted);border:1px solid var(--line-soft)}
+.chip:hover{color:var(--accent)}
+/* diff 는 ★가로로 안 접는다★ — 접으면 어느 줄이 바뀐 줄인지 눈이 못 따라간다 */
+pre.diff{font-family:var(--mono);font-size:11.5px;line-height:1.5;margin:8px 0 0;
+  padding:9px 11px;background:var(--surface-2);border:1px solid var(--line-soft);
+  border-radius:5px;overflow-x:auto;white-space:pre;max-height:60vh;overflow-y:auto}
+pre.diff .dp{color:var(--pass)}
+pre.diff .dm{color:var(--fail)}
+pre.diff .dh{color:var(--muted);font-weight:600}

@@ -313,6 +313,19 @@ def _one_run(sc, contract_path, variant, run_dir, domain_id, args):
     params = _deep_merge(_deep_merge(sc.get("params", {}),
                                      variant.get("params", {}) or {}),
                          loc.get("params", {}))
+    # ★replay 는 그때 값이 맨 뒤다★ 그 사이 캘리브가 바뀌어 있으면(ipm_src_pts·
+    # px2m 이 실제로 바뀐 적이 있다) 지금 local.yaml 로 돌린 그림은 그때 그림이
+    # 아니다. 되살리려는 것은 「그때 노드가 본 것」이므로 런에 적힌 값이 이긴다.
+    params = _deep_merge(params, getattr(args, "params_override", None) or {})
+    # ★계약이 요구한 파라미터를 실행 ★전★ 에 막는다★
+    #   백엔드(.pt/.engine)가 어긋난 채 돌면 리포트는 초록으로 나오는데 잰 대상이
+    #   실차와 다르다 — 로그를 뒤져야 알 수 있는 종류의 거짓말이라 여기서 끊는다.
+    from .contract import check_required
+    bad = check_required(contract, params)
+    if bad:
+        raise SystemExit("[run] 계약이 요구하는 파라미터가 안 맞는다:\n  · "
+                         + "\n  · ".join(bad))
+
     pref = ws_prefix(contract)
     procs = []
 
@@ -350,7 +363,7 @@ def _one_run(sc, contract_path, variant, run_dir, domain_id, args):
         #  있다(계약의 stimulus.aux[].keys → 타임라인 저작). 녹화는 그림이 있을 때만.
         authoring = any((a.get("keys") or {}) for a in (contract.aux or []))
         if ((watching and (contract.debug_topics or authoring))
-                or (getattr(args, "record_debug", False) and contract.debug_topics)):
+                or (getattr(args, "record_debug", True) and contract.debug_topics)):
             # 디버그 영상도 원본과 같은 속도로 저장한다(안 그러면 느리게 보인다).
             vfps = sc.get("view_fps") or _video_fps(resolve_video(sc, loc)) or 15.0
             vcmd = (f"{pref}exec python3 -m tb.viewer "
@@ -457,6 +470,18 @@ def _one_run(sc, contract_path, variant, run_dir, domain_id, args):
         for p in procs:
             p.stop()
 
+    # ── 3.9) 디버그 영상이 정말 남았나 ───────────────────────────────
+    #   ★사후에 만들 수 없는 유일한 기록★ 이라 조용히 빠지면 안 된다.
+    #   뷰어는 종료할 때 mp4 를 쓴다 — 노드가 먼저 죽거나 코덱이 없으면
+    #   런은 멀쩡히 끝나는데 영상만 없다. 그걸 여기서 말한다.
+    #   파일 이름은 ★토픽에서 나온다★(/lane/debug → lane_debug.mp4) — 계약마다
+    #   다르므로 이름을 여기 박지 않는다. 뷰어가 남기는 debug_meta.json 이
+    #   어느 파일을 썼는지 알려 주는 계약 무관한 표식이다.
+    if contract.debug_topics and getattr(args, "record_debug", True):
+        if not (run_dir / "debug_meta.json").exists():
+            print("  ⚠️  디버그 영상이 안 남았다 — "
+                  f"{run_dir / 'viewer.log'} 를 보라 (다시 만들 수 없는 기록이다)")
+
     # ── 4) 분석 ─────────────────────────────────────────────────────
     pstats = {}
     pj = run_dir / "player.json"
@@ -468,6 +493,11 @@ def _one_run(sc, contract_path, variant, run_dir, domain_id, args):
     analyze.write_csv(rows, contract, run_dir / "signals.csv")
     meta = {
         "run_id": run_dir.name, "scenario": sc.get("name", "?"),
+        # ★사람이 붙인 이름★ 시나리오 이름은 여러 런이 나눠 쓴다 — 같은
+        #   시나리오를 조건만 바꿔 열 번 돌리면 기록에서 그 한 번을 알아볼
+        #   길이 없다. 태그와 달리 디렉터리 이름이 아니라 ★표시용★ 이라
+        #   공백·한글을 그대로 쓴다. `reanalyze` 는 meta 를 물려받아 유지된다.
+        "label": (getattr(args, "name", "") or "").strip(),
         "variant": variant.get("name", "base"),
         "contract": contract.name, "contract_version": contract.version,
         # ★계약 파일 경로★ 이름만 남기면 나중에 이 런을 다시 그리거나 재분석할 때
@@ -507,7 +537,7 @@ def _one_run(sc, contract_path, variant, run_dir, domain_id, args):
         #   못 잡는다. 사다리꼴이 바뀌면 sl_px 의 뜻이 바뀐다(_calib_snapshot).
         "calib": _calib_snapshot(contract, run_dir),
         "when": datetime.now().isoformat(timespec="seconds"),
-        "code_fingerprint": _fingerprint(contract.workspace),
+        "code_fingerprint": _code_snapshot(contract.workspace, run_dir),
         "workspace": str(contract.workspace or ""),
     }
     summary = analyze.summarize(rows, contract, meta)
@@ -571,21 +601,109 @@ def _video_fps(path):
         return None
 
 
-def _fingerprint(ws):
-    """대상 소스의 지문 — 어떤 코드로 뽑은 결과인지 남긴다(git 없이도)."""
+def _code_snapshot(ws, run_dir):
+    """대상 소스의 지문 ★과 사본★ — 어떤 코드로 뽑은 결과인지 남긴다(git 없이도).
+
+    ★내용 해시다★ 예전엔 `이름+크기+mtime` 이었는데, 그러면 touch 만 해도
+    지문이 바뀌고 해시에서 내용을 되돌릴 수도 없어서 "런 사이에 뭐가 바뀌었나"에
+    답을 못 했다(과거 런 94개가 코드 상태 29개로 갈렸는데 그 내용은 영영 모른다).
+
+    그래서 두 가지를 남긴다:
+        code.json      파일별 해시 — 두 런을 비교하면 바뀐 파일이 바로 나온다
+        code_src.tar.gz  그 파일들의 사본 — 실제 diff 를 볼 수 있다 (0.2~0.6MB)
+
+    git 은 보조다. 대상이 git 이 아닐 수도 있고(gold_ws), git 이어도 개발이
+    커밋 안 된 작업 트리에서 진행되기도 한다(white_vote_ws 는 수정 8개였다).
+    """
+    import tarfile
+
+    if not ws or not (Path(ws) / "src").is_dir():
+        return {"n_files": 0, "sha": "no-src"}
+    root = Path(ws)
+    files, sha = _code_hashes(root)
+
+    try:
+        with tarfile.open(run_dir / "code_src.tar.gz", "w:gz") as t:
+            for rel in files:
+                t.add(root / rel, arcname=rel)
+        (run_dir / "code.json").write_text(json.dumps(
+            {"workspace": str(root), "sha": sha, "n_files": len(files),
+             "files": files, "git": _git_head(root)},
+            indent=1, ensure_ascii=False))
+    except OSError as e:
+        print(f"  ⚠️  코드 사본을 남기지 못했다: {e}")
+    return {"n_files": len(files), "sha": sha}
+
+
+def _code_hashes(root):
+    """소스의 파일별 내용 해시와 전체 지문. 아무것도 쓰지 않는다."""
+    import hashlib
+    files, digest = {}, hashlib.sha256()
+    for f in sorted((Path(root) / "src").rglob("*.py")):
+        try:
+            fh = hashlib.sha1(f.read_bytes()).hexdigest()[:12]
+        except OSError:
+            continue
+        rel = str(f.relative_to(root))
+        files[rel] = fh
+        digest.update(rel.encode())
+        digest.update(fh.encode())
+    return files, digest.hexdigest()[:12]
+
+
+def _fingerprint_legacy(ws):
+    """★예전 방식★ 지문 — 이름+크기+mtime.
+
+    2026-09-02 이전 런은 전부 이 방식으로 찍혀 있다. 내용 해시와는 값이 달라서
+    바로 견줄 수 없으므로, 옛 런과 대조할 때만 같은 방식으로 다시 계산한다.
+    파일을 건드리지 않았으면 mtime 이 그대로라 여전히 맞는다.
+    """
     import hashlib
     h = hashlib.sha256()
     if not ws or not (Path(ws) / "src").is_dir():
-        return {"n_files": 0, "sha": "no-src"}
-    files = sorted((Path(ws) / "src").rglob("*.py"))
-    for f in files:
+        return "no-src"
+    for f in sorted((Path(ws) / "src").rglob("*.py")):
         try:
             h.update(f.name.encode())
             h.update(str(f.stat().st_size).encode())
             h.update(str(int(f.stat().st_mtime)).encode())
         except OSError:
             pass
-    return {"n_files": len(files), "sha": h.hexdigest()[:12]}
+    return h.hexdigest()[:12]
+
+
+def _same_code(run_dir, meta, ws):
+    """그 런을 돌린 코드가 ★지금 워크스페이스와 같은가★.
+
+    새 런은 사본(code.json)이 있으니 내용 해시로, 옛 런은 옛 방식으로 견준다.
+    되돌려 볼 수 없는 질문이라 모르면 모른다고 답한다(None).
+    """
+    cj = run_dir / "code.json"
+    if cj.exists():
+        try:
+            want = json.loads(cj.read_text()).get("sha")
+        except (OSError, ValueError):
+            return None
+        return (_code_hashes(Path(ws))[1] == want) if want else None
+    then = (meta.get("code_fingerprint") or {}).get("sha")
+    if not then or then == "no-src":
+        return None
+    return _fingerprint_legacy(ws) == then
+
+
+def _git_head(ws):
+    """워크스페이스가 git 이면 HEAD 와 더러운 파일 수 — 아니면 None."""
+    try:
+        r = subprocess.run(["git", "-C", str(ws), "rev-parse", "--short", "HEAD"],
+                           capture_output=True, text=True, timeout=5)
+        if r.returncode != 0:
+            return None
+        d = subprocess.run(["git", "-C", str(ws), "status", "--porcelain"],
+                           capture_output=True, text=True, timeout=10)
+        return {"head": r.stdout.strip(),
+                "dirty": len([ln for ln in d.stdout.splitlines() if ln.strip()])}
+    except (OSError, subprocess.SubprocessError):
+        return None
 
 
 def _sigterm_to_interrupt(signum, frame):
@@ -618,9 +736,20 @@ def cmd_run(args):
         print(f"\n▶ 실행 {rd.name}  (perturb={v.get('perturb', 'none')}, "
               f"ROS_DOMAIN_ID={domain})")
         summary, checks, rd = _one_run(sc, contract_path, v, rd, domain, args)
+        # ★결측을 통과로 세지 않는다★ [2026-08-31] 노드가 죽어 신호가 하나도
+        #   없던 런이 「13/13 통과」로 찍혔다. run_checks 는 값이 없으면 ok=None
+        #   을 넣는데 여기서 `is False` 만 세는 바람에 결측이 통과 쪽으로 갔다.
+        #   아무것도 안 돈 런일수록 초록으로 보이는 셈이라 제일 나쁜 종류다.
+        #   ★판정 의미는 그대로 두고 세는 법만 고친다★ — 결측은 실패가 아니라
+        #   「못 쟀다」이므로 따로 찍는다(리포트의 ⚠️ · 웹의 «미판정» 과 같은 뜻).
+        passed = [c for c in checks if c["ok"] is True]
         failed = [c for c in checks if c["ok"] is False]
-        print(f"  행 {summary['rows']} · 유효 {summary.get('valid_rate', 0):.2f} · "
-              f"체크 {len(checks) - len(failed)}/{len(checks)} 통과")
+        unmeasured = len(checks) - len(passed) - len(failed)
+        line = (f"  행 {summary['rows']} · 유효 {summary.get('valid_rate', 0):.2f} · "
+                f"체크 {len(passed)}/{len(checks)} 통과")
+        if unmeasured:
+            line += f" · {unmeasured} 값없음"
+        print(line)
         print(f"  → {rd / 'report.md'}")
         results.append((rd, summary, checks))
 
@@ -668,28 +797,103 @@ def cmd_run(args):
     if bl.exists() and results:
         contract = load_contract(contract_path)
         rd, sm, _ = results[0]
-        warn = ""
-        bmeta_p = bl.with_suffix(".json")
-        if bmeta_p.exists():
-            d = _provenance_diff(json.loads(bmeta_p.read_text()), sm["meta"])
-            if d:
-                warn = ("\n> ⚠️ **기준과 실행 조건이 다르다 — 이 비교는 신뢰할 수 없다.**\n>\n"
-                        + "".join(f"> - `{k}`: `{va}` → `{vb}`\n" for k, va, vb in d)
-                        + "> \n> 조건을 되돌리거나, 새 조건으로 베이스라인을 다시 등록할 것.\n")
-                print("\n⚠️  기준과 조건이 다르다:")
-                for k, va, vb in d:
-                    print(f"      {k}: {va!r} → {vb!r}")
         res = analyze.compare(analyze.read_csv(bl),
                               analyze.read_csv(rd / "signals.csv"),
                               contract, sc.get("compare_tol"))
-        md = analyze.report_compare(res, bl.stem, rd.name)
-        if warn:
-            md = md.replace("\n\n- 공통 프레임", warn + "\n- 공통 프레임", 1)
+        # 경고 문구는 손으로 돌리는 `compare` 와 같은 것을 쓴다 — 한 벌만 있어야
+        # 두 경로가 서로 다른 말을 하지 않는다.
+        md = _with_provenance_warning(
+            analyze.report_compare(res, bl.stem, rd.name),
+            _result_meta(bl), sm["meta"])
         (rd / "compare.md").write_text(md)
         print(f"\n회귀 비교: {res['verdict']}  → {rd / 'compare.md'}")
     elif results:
         print(f"\n(기준 `{bl_name}` 없음 — `python3 -m tb.run baseline "
               f"{results[0][0].name} --name {bl_name}` 로 등록)")
+    return 0
+
+
+def cmd_replay(args):
+    """과거 런을 ★그때 설정 그대로★ 다시 돌린다 — 옛 런의 디버그 영상을 얻는 유일한 길.
+
+    디버그 영상은 대상 노드가 그리는 그림이라 ★실행 중에만★ 잡을 수 있다.
+    raw.jsonl 에는 계약의 observe 토픽(숫자)만 남아서 사후 생성이 안 된다
+    (런 104개 중 6개만 갖고 있었다). 그래서 "그때 무엇을 보고 그렇게 판정했나"를
+    다시 보려면 같은 조건으로 한 번 더 돌리는 수밖에 없다.
+
+    ★코드가 그때와 다르면 그건 복원이 아니다★ — 지문을 먼저 대조하고, 다르면
+    멈춘다(--force 로 강행하면 '지금 코드로 같은 영상을 돌린 결과'가 된다).
+    파라미터도 local.yaml 이 아니라 ★런에 적힌 값★ 을 쓴다.
+    """
+    signal.signal(signal.SIGTERM, _sigterm_to_interrupt)
+    rd0 = ROOT / "runs" / args.run
+    sj = rd0 / "summary.json"
+    if not sj.exists():
+        raise SystemExit(f"[replay] 분석 결과가 없는 런이다: {args.run}")
+    meta = json.loads(sj.read_text())["summary"]["meta"]
+
+    sp = Path(meta.get("scenario_file") or "")
+    if not sp.is_file():
+        sp = ROOT / "scenarios" / f"{meta.get('scenario')}.yaml"
+    if not sp.is_file():
+        raise SystemExit(f"[replay] 그때 쓴 시나리오를 못 찾았다: {sp}")
+    sc = load_yaml(sp)
+    #  meta 의 contract 는 ★이름★ 이고 경로는 contract_file 이다 — 이름을 경로로
+    #  넘기면 ROOT/white_vote 를 열려다 죽는다.
+    cf = Path(meta.get("contract_file") or "")
+    if not cf.is_file() and meta.get("contract"):
+        cf = ROOT / "contracts" / f"{meta['contract']}.yaml"
+    contract_path = cf if cf.is_file() else _resolve_contract(sc.get("contract"))
+    contract = load_contract(contract_path)
+
+    print(f"▶ 재현 {args.run}  ({meta.get('scenario')} · {meta.get('variant')})")
+    if not contract.debug_topics:
+        raise SystemExit(
+            f"[replay] 계약 '{meta.get('contract')}' 은 debug_topics 가 비어 있다 — "
+            "이 노드는 디버그 이미지를 내지 않으므로 다시 돌려도 영상이 없다.\n"
+            "         대신 «도구» 탭의 «경로 영상 만들기» 로 판정에 쓴 값을 그린다.")
+
+    same = _same_code(rd0, meta, contract.workspace)
+    if same is False and not args.force:
+        raise SystemExit(
+            f"[replay] ★코드가 그때와 다르다★ — {contract.workspace}\n"
+            f"         그때 지문 {(meta.get('code_fingerprint') or {}).get('sha')} / "
+            f"지금 {_fingerprint_legacy(contract.workspace)}\n"
+            "         지금 돌리면 그때 그림이 아니라 지금 코드의 그림이 나온다.\n"
+            "         그래도 돌리려면 --force.")
+    print("  코드 대조: " + {True: "그때와 같다 ✅",
+                             False: "다르다 (--force) ⚠️",
+                             None: "알 수 없다 (지문 없음) ⚠️"}[same])
+
+    #  그 사이 시나리오가 바뀌었어도 ★그때 조건★ 으로 돌린다
+    for k in ("start", "limit", "stride", "mode"):
+        if meta.get(k) is not None:
+            sc[k] = meta[k]
+    if meta.get("video") and Path(meta["video"]).is_file():
+        sc["video"] = meta["video"]        # resolve_video 는 절대경로를 그대로 쓴다
+    elif meta.get("video"):
+        print(f"  ⚠️  그때 영상이 없다({meta['video']}) — 시나리오의 영상으로 돈다")
+
+    vname = meta.get("variant") or "base"
+    variant = next((v for v in (sc.get("variants") or []) if v.get("name") == vname),
+                   {"name": vname, "perturb": meta.get("perturb") or "none"})
+
+    args.params_override = meta.get("params") or {}
+    args.record_debug = True               # 이걸 하려고 돌리는 것이다
+    args.watch = False
+    if not getattr(args, "name", ""):
+        args.name = f"{args.run} 재현"
+    stamp = datetime.now().strftime("%m%d_%H%M%S")
+    rd = ROOT / "runs" / f"{stamp}_replay_{vname}"
+    summary, checks, rd = _one_run(sc, contract_path, variant, rd,
+                                   args.domain or random.randint(30, 99), args)
+    (rd / "replay_of.txt").write_text(args.run + "\n")
+    passed = [c for c in checks if c["ok"] is True]
+    print(f"  행 {summary['rows']} · 체크 {len(passed)}/{len(checks)} 통과")
+    dm = rd / "debug_meta.json"          # 파일 이름은 계약의 토픽에서 나온다
+    names = list(json.loads(dm.read_text())) if dm.exists() else []
+    print(f"  → 디버그 영상 {rd / names[0]}" if names
+          else f"  ⚠️  디버그 영상이 안 생겼다 — {rd / 'viewer.log'} 를 보라")
     return 0
 
 
@@ -1163,13 +1367,103 @@ def _provenance(meta):
 
 
 def _provenance_diff(a, b):
-    """두 결과의 조건 차이. 비어 있으면 같은 조건에서 나온 것."""
+    """두 결과의 조건 차이. 비어 있으면 같은 조건에서 나온 것.
+
+    `params`·`calib` 처럼 dict 인 것은 ★바뀐 키만★ 펴서 내놓는다 — 통째로 찍으면
+    파라미터 20개짜리 dict 두 벌이 한 줄로 나와서, 정작 무엇이 달라졌는지
+    (가중치가 .engine → .pt 로 바뀌었다 같은 것) 아무도 못 읽는다.
+    """
+    pa, pb = _provenance(a), _provenance(b)
     out = []
-    for k in _provenance(a):
-        va, vb = _provenance(a).get(k), _provenance(b).get(k)
-        if va != vb:
+    for k in pa:
+        va, vb = pa.get(k), pb.get(k)
+        if va == vb:
+            continue
+        if isinstance(va, dict) and isinstance(vb, dict):
+            out.extend(_flat_diff(f"{k}.", va, vb))
+        else:
             out.append((k, va, vb))
     return out
+
+
+def _flat_diff(prefix, a, b):
+    """중첩 dict 두 벌의 차이를 `노드.파라미터` 한 줄씩으로."""
+    out = []
+    for k in sorted(set(a) | set(b)):
+        va, vb = a.get(k), b.get(k)
+        if va == vb:
+            continue
+        if isinstance(va, dict) and isinstance(vb, dict):
+            out.extend(_flat_diff(f"{prefix}{k}.", va, vb))
+        else:
+            out.append((prefix + k, va, vb))
+    return out
+
+
+def _result_meta(csv_path):
+    """그 결과가 ★어떤 조건에서 나왔는가★ — 런이든 기준이든 같은 모양으로 돌려준다.
+
+    런은 `summary.json` 의 meta, 기준은 `baselines/<이름>.json`(등록할 때 그 meta 를
+    통째로 복사해 둔 것). 아무것도 모르면 빈 dict — 이때는 조건 비교를 하지 않는다
+    (모르는 것을 「다르다」로 세면 경고가 늘 켜져 아무도 안 보게 된다).
+    """
+    p = Path(csv_path)
+    if p.parent == ROOT / "baselines":
+        j = p.with_suffix(".json")
+        return json.loads(j.read_text()) if j.exists() else {}
+    sj = p.parent / "summary.json"
+    if not sj.exists():
+        return {}
+    try:
+        return json.loads(sj.read_text())["summary"]["meta"]
+    except (KeyError, ValueError):
+        return {}
+
+
+def _contract_of_meta(meta):
+    """meta 가 가리키는 계약 파일. 경로가 먼저, 옛 결과(경로가 없다)면 이름으로 찾는다."""
+    f = (meta or {}).get("contract_file")
+    if f and Path(f).exists():
+        return f
+    want = (meta or {}).get("contract")
+    if not want:
+        return None
+    for cand in sorted((ROOT / "contracts").glob("*.yaml")):
+        try:
+            if load_contract(cand).name == want:
+                return str(cand)
+        except Exception:                                  # noqa: BLE001
+            continue
+    return None
+
+
+def _result_id(csv_path):
+    """리포트에 쓸 이름. 기준은 파일 이름, 런은 런 폴더 이름이다.
+
+    (런에 `.stem` 을 쓰면 죄다 `signals` 라고 적힌다 — 어느 런인지 알 수 없다.)
+    """
+    p = Path(csv_path)
+    return p.stem if p.parent == ROOT / "baselines" else p.parent.name
+
+
+def _with_provenance_warning(md, base_meta, cur_meta):
+    """조건이 다르면 리포트 머리에 경고를 박고 콘솔에도 찍는다.
+
+    공통 프레임이 있어 비교가 성립해 ★보여도★ 영상·구간·파라미터·기하가 다르면
+    숫자는 아무 뜻이 없다. 조용히 넘기는 것이 제일 나쁘다.
+    """
+    if not (base_meta and cur_meta):
+        return md
+    d = _provenance_diff(base_meta, cur_meta)
+    if not d:
+        return md
+    warn = ("\n> ⚠️ **기준과 실행 조건이 다르다 — 이 비교는 신뢰할 수 없다.**\n>\n"
+            + "".join(f"> - `{k}`: `{va}` → `{vb}`\n" for k, va, vb in d)
+            + "> \n> 조건을 되돌리거나, 새 조건으로 베이스라인을 다시 등록할 것.\n")
+    print("\n⚠️  기준과 조건이 다르다:")
+    for k, va, vb in d:
+        print(f"      {k}: {va!r} → {vb!r}")
+    return md.replace("\n\n- 공통 프레임", warn + "\n- 공통 프레임", 1)
 
 
 def cmd_baseline(args):
@@ -1209,46 +1503,53 @@ def cmd_baseline(args):
 
 
 def cmd_compare(args):
+    """두 결과를 비교한다 — ★맥락을 결과 자신에게서 물려받는다★.
+
+    계약(어느 신호를 볼지) · 시나리오의 `compare_tol`(얼마까지 같다고 볼지) ·
+    실행 조건(비교가 성립하는지). 셋 중 하나라도 안 물려받으면 조용히 틀린다:
+
+    - 계약이 기본값으로 열리면 없는 컬럼은 그냥 건너뛴다 → ★본 신호가 0개인데 PASS★.
+      (실측: stopline 결과를 white_camera 계약으로 열면 수치 3 · 이산 2 가 사라진다.)
+    - tol 이 없으면 전부 `_default`(1e-6) 라 정상 부동소수 잡음도 DIFF 가 된다.
+    - 조건 경고가 없으면 다른 영상·다른 구간을 비교해 놓고 그 숫자를 믿게 된다.
+
+    인자로 준 것이 언제나 우선이다 — 계약을 바꿔 가며 옛 결과를 새 해석으로 보는 것이
+    회귀 확인의 절반이다.
+    """
     a = _resolve_csv(args.a)
     b = _resolve_csv(args.b)
-    sc0 = load_yaml(args.scenario) if args.scenario else {}
-    contract = load_contract(_resolve_contract(args.contract or sc0.get("contract")))
-    tol = sc0.get("compare_tol")
-    res = analyze.compare(analyze.read_csv(a), analyze.read_csv(b), contract, tol)
-    md = analyze.report_compare(res, Path(a).stem, Path(b).parent.name)
+    ameta, bmeta = _result_meta(a), _result_meta(b)
+    # 시나리오는 compare_tol 을 가지러 읽는다. ★현재 쪽(b)★ 이 쓴 것을 먼저 본다.
+    scp = args.scenario or bmeta.get("scenario_file") or ameta.get("scenario_file") or ""
+    sc0 = load_yaml(scp) if scp and Path(scp).exists() else {}
+    contract = load_contract(_resolve_contract(
+        args.contract or sc0.get("contract")
+        or _contract_of_meta(bmeta) or _contract_of_meta(ameta)))
+    res = analyze.compare(analyze.read_csv(a), analyze.read_csv(b),
+                          contract, sc0.get("compare_tol"))
+    md = _with_provenance_warning(
+        analyze.report_compare(res, _result_id(a), _result_id(b)), ameta, bmeta)
     print(md)
-    if Path(b).parent.is_dir():
-        (Path(b).parent / "compare.md").write_text(md)
-    return 0 if res["verdict"] == "PASS" else 1
+    # ★런 직후 자동 회귀 비교의 compare.md 를 덮어쓰지 않는다★ — 이름을 나눈다.
+    #   손으로 고른 짝의 결과가 그 런의 «기준 비교» 인 척하면 목록의 배지가 거짓말을 한다.
+    bdir = Path(b).parent
+    if bdir.parent == ROOT / "runs":
+        (bdir / "compare_manual.md").write_text(md)
+        print(f"\n→ {bdir / 'compare_manual.md'}")
+    # ★DIFF 는 명령 실패가 아니다★ — 판정은 리포트가 한다. 0 이 아닌 코드로 끝내면
+    #   웹에서 빨간 「종료코드 1」 로 떠서 비교가 터진 것처럼 보인다.
+    return 0
 
 
 def contract_of_run(run_dir):
     """그 런이 ★실제로 쓴★ 계약 파일. 없으면 None.
 
     메타의 contract_file 을 먼저 보고, 옛 런(그 항목이 없다)이면 이름으로 찾는다.
-    이것이 없으면 `--contract` 를 생략한 render·harvest·reanalyze 가 기본 계약으로
-    열려서, 신호가 전부 결측인 그림·리포트를 조용히 만들어 낸다.
+    이것이 없으면 `--contract` 를 생략한 render·harvest·reanalyze·compare 가 기본
+    계약으로 열려서, 신호가 전부 결측인 그림·리포트를 조용히 만들어 낸다.
+    (compare 는 더 나쁘다 — 볼 신호가 하나도 안 남아도 「PASS」로 끝난다.)
     """
-    sj = Path(run_dir) / "summary.json"
-    if not sj.exists():
-        return None
-    try:
-        meta = json.loads(sj.read_text())["summary"]["meta"]
-    except (KeyError, ValueError):
-        return None
-    f = meta.get("contract_file")
-    if f and Path(f).exists():
-        return f
-    want = meta.get("contract")
-    if not want:
-        return None
-    for cand in sorted((ROOT / "contracts").glob("*.yaml")):
-        try:
-            if load_contract(cand).name == want:
-                return str(cand)
-        except Exception:                                  # noqa: BLE001
-            continue
-    return None
+    return _contract_of_meta(_result_meta(Path(run_dir) / "signals.csv"))
 
 
 def scenario_of_run(run_dir):
@@ -1421,14 +1722,31 @@ def main(argv=None):
     r.add_argument("--contract", default="", help="시나리오의 contract: 를 덮어쓴다")
     r.add_argument("--variant", action="append")
     r.add_argument("--tag", default="")
+    #  태그는 런 디렉터리 이름에 들어가고(파일명 안전 문자만), 이름은
+    #  실행 기록에 그대로 보인다 — 둘은 쓰임이 다르다.
+    r.add_argument("--name", default="",
+                   help="실행 기록에 표시할 이름 (시나리오와 별개)")
     r.add_argument("--domain", type=int, default=0)
     r.add_argument("--baseline", default="")
     r.add_argument("--watch", action="store_true",
                    help="디버그 영상 창을 띄워 보면서 실행 (space=정지, n=한프레임)")
-    r.add_argument("--record-debug", action="store_true",
-                   help="창 없이 디버그 영상을 mp4 로 남긴다")
+    #  ★기본이 켜짐★ — 나중에 "그때 노드가 뭘 봤나"를 물으면 답할 방법이
+    #  이 mp4 뿐이다. raw.jsonl 에는 이미지가 없어서 사후에 만들 수 없다
+    #  (런 104개 중 6개만 갖고 있었다). 런당 2~7MB 면 싼 보험이다.
+    r.add_argument("--record-debug", action=argparse.BooleanOptionalAction,
+                   default=True,
+                   help="창 없이 디버그 영상을 mp4 로 남긴다 (기본 켜짐)")
     r.add_argument("--keep-going", action="store_true")
     r.set_defaults(fn=cmd_run)
+
+    rp = sub.add_parser("replay",
+                        help="과거 런을 그때 설정 그대로 다시 돌려 디버그 영상을 남긴다")
+    rp.add_argument("run")
+    rp.add_argument("--force", action="store_true",
+                    help="코드가 그때와 달라도 강행 (그때 그림이 아니게 된다)")
+    rp.add_argument("--name", default="", help="실행 기록에 표시할 이름")
+    rp.add_argument("--domain", type=int, default=0)
+    rp.set_defaults(fn=cmd_replay)
 
     rn = sub.add_parser("render",
                         help="판정에 쓴 값으로 차선·중심선·θ 를 그려 저장")

@@ -138,6 +138,55 @@ def t_compare():
     d = [{"frame": 0, "st": "STOP"}, {"frame": 1, "st": "GO"}, {"frame": 2, "st": "GO"}]
     eq("시퀀스 역전=fail", analyze.compare(a, d, c)["sequence"]["st"]["ok"], False)
 
+    #  ★계약이 이 결과와 안 맞으면 통과가 아니다★ — 없는 컬럼은 조용히 건너뛰므로
+    #  세지 않으면 「본 신호 0개」인 채 PASS 로 끝난다(빈 런이 「전부 통과」로
+    #  찍히던 것과 같은 함정). 다른 워크스페이스 계약으로 열었을 때가 이 경우다.
+    wrong = _contract(compare_signals=["없는신호"], compare_sequence=[])
+    r0 = analyze.compare(base, same, wrong)
+    eq("본 신호 0개", r0["compared"], 0)
+    eq("0개는 PASS 아님", r0["verdict"], "NO_SIGNALS")
+    eq("맞는 계약은 셋다", analyze.compare(base, same, c)["compared"], 3)
+
+
+def t_compare_context():
+    """비교가 ★맥락을 결과에서 물려받는가★ — 이게 틀리면 조용히 틀린 판정이 나온다.
+
+    계약을 못 물려받으면 볼 신호가 통째로 빠지고(위 t_compare 의 NO_SIGNALS),
+    이름을 못 물려받으면 리포트가 죄다 `signals` 라고 적혀 어느 런인지 알 수 없다.
+    """
+    import json as J
+    from . import run as R
+
+    d = Path(tempfile.mkdtemp()) / "0101_000000_x_base"
+    d.mkdir()
+    (d / "summary.json").write_text(J.dumps({"summary": {"meta": {
+        "contract": "t", "contract_file": "/없는/경로.yaml",
+        "scenario_file": "/없는/시나리오.yaml", "video": "v1"}}}))
+    eq("런 meta 를 읽는다", R._result_meta(d / "signals.csv").get("video"), "v1")
+    eq("런 이름은 폴더 이름", R._result_id(d / "signals.csv"), "0101_000000_x_base")
+
+    #  기준은 baselines/<이름>.json 에 meta 가 통째로 들어 있다
+    bl = R.ROOT / "baselines" / "_selftest_cmp.csv"
+    bj = bl.with_suffix(".json")
+    try:
+        bj.write_text(J.dumps({"video": "v2", "contract": "없는계약"}))
+        eq("기준 meta 를 읽는다", R._result_meta(bl).get("video"), "v2")
+        eq("기준 이름은 파일 이름", R._result_id(bl), "_selftest_cmp")
+        eq("없는 계약이름은 None", R._contract_of_meta({"contract": "없는계약이름"}), None)
+        #  meta 를 모르면 조건 경고를 켜지 않는다 — 늘 켜진 경고는 아무도 안 본다
+        eq("한쪽이 비면 경고 없음",
+           R._with_provenance_warning("md", {}, {"video": "v2"}), "md")
+        #  알 때 다르면 반드시 경고가 붙는다 (콘솔로도 찍으므로 여기선 삼킨다)
+        import contextlib
+        import io as _io
+        with contextlib.redirect_stdout(_io.StringIO()):
+            got = R._with_provenance_warning("x\n\n- 공통 프레임 5",
+                                             {"video": "v1"}, {"video": "v2"})
+        eq("조건 다르면 경고", "신뢰할 수 없다" in got, True)
+    finally:
+        if bj.exists():
+            bj.unlink()
+
 
 def t_mirror():
     rows = [{"frame": 0, "a": 1.0, "th": 2.0, "st": "GO"}]
@@ -267,6 +316,46 @@ def t_theta_quality():
     eq("대역 밖은 낮음", A.theta_quality(rows, c)["vibration_frac"] < 0.1, True)
 
     eq("선언 없으면 빈 결과", A.theta_quality(rows, Contract({"name": "t"}, "mem")), {})
+
+
+def t_render_lane_metric():
+    """미터 단위 차선 모델(d, ψ, κ, 폭) → BEV 픽셀 다항식 변환.
+
+    lane_vote 처럼 폴리핏 계수를 아예 안 내는 노드를 위한 경로다. 변환이 틀리면
+    ★경로 그림만 조용히 어긋난다★ — 리포트 숫자는 멀쩡하므로 아무도 모른다.
+    그래서 기댓값을 render.py 가 아니라 ★기하 정의에서 직접★ 계산해 대조한다.
+        x(r) = x_min + (H−r)·mpp,  y_c = d + tanψ·x + ½κx²,  col = c0 − y_c/mpp
+    """
+    import math as _m
+    from .contract import Contract
+    from .render import Renderer, _poly_x
+    MPP, XMIN, H, W = 0.007, 0.55, 480, 640
+    c = Contract({"name": "t", "calibration": {"bev": {"w": W, "h": H}, "targets": {}},
+                  "render": {"lane_metric": {"d": "vd", "psi": "vp", "kappa": "vk",
+                                             "width": "vw", "mpp": MPP, "x_min": XMIN}}},
+                 "mem")
+    R = Renderer(c)
+    eq("lane_metric mpp", R.lm_mpp, MPP)
+
+    worst = 0.0
+    for d, pdeg, k, w in ((0, 0, 0, 3.0), (0.3, 0, 0, 3.0), (-0.25, 6, 0, 3.0),
+                          (0.1, -8, 0.05, 2.8), (0.4, 12, -0.09, 3.2)):
+        psi = _m.radians(pdeg)
+        lf, rf = R.fits({"vd": d, "vp": psi, "vk": k, "vw": w})
+        for r in (0, 120, 240, 360, 479):
+            x = XMIN + (H - r) * MPP
+            yc = d + _m.tan(psi) * x + 0.5 * k * x * x
+            for fit, sgn in ((lf, +1), (rf, -1)):
+                want = (W - 1) / 2.0 - (yc + sgn * w / 2) / MPP
+                worst = max(worst, abs(want - _poly_x(fit, r)))
+    eq("다항식 변환 오차 < 1e-6 px", worst < 1e-6, True)
+
+    # 좌차선이 열 인덱스가 작은 쪽 — 여기가 뒤집히면 좌우가 통째로 바뀐다
+    lf, rf = R.fits({"vd": 0.0, "vp": 0.0, "vk": 0.0, "vw": 3.0})
+    eq("좌차선이 col 작은 쪽", lf[2] < rf[2], True)
+
+    # 결과 없는 프레임(전 필드 0) 은 그리지 않는다 — 거짓 그림 방지
+    eq("폭 0 이면 미표시", R.fits({"vd": 0, "vp": 0, "vk": 0, "vw": 0}), (None, None))
 
 
 def t_expr():
@@ -731,9 +820,11 @@ def t_calib_provenance():
         eq("무관한 파라미터는 조건이 아니다", "무관한것" in snap["n"], False)
 
     now = {"n": {"und": True, "q": [1, 2, 3, 4, 5, 6, 7, 8], "bp": 645.0}}
+    #  ★바뀐 키까지 짚는다★ — dict 를 통째로 찍으면 두 벌이 한 줄로 나와서
+    #  무엇이 달라졌는지 사람이 못 읽는다(경고가 있으나 마나가 된다).
     eq("범퍼행이 바뀌면 비교 불가",
-       [k for k, _a, _b in _provenance_diff({"calib": snap}, {"calib": now})],
-       ["calib"])
+       _provenance_diff({"calib": snap}, {"calib": now}),
+       [("calib.n.bp", 480.0, 645.0)])
     eq("같으면 조용하다", _provenance_diff({"calib": snap}, {"calib": snap}), [])
     #  옛 런에는 calib 이 없다(None) — None 끼리는 같으므로 종전 기준이 그대로 산다
     eq("옛 런끼리는 종전대로", _provenance_diff({}, {}), [])
@@ -1253,6 +1344,63 @@ def t_publish_names():
     eq("app.js 에 TEXTY 가 있다", bool(m), True)
     if m:
         eq("TEXTY 가 양쪽 같다", set(re.findall(r"(\w+):", m.group(1))), TEXTY)
+
+
+def t_same_code():
+    """재현(replay)의 안전장치 — 「그때 코드와 같은가」.
+
+    여기서 거짓 양성이 나면 ★그때 그림이 아닌 영상★ 을 그때 것이라고 믿게 된다.
+    모르면 모른다(None)고 답해야 하고, 사본이 있으면 내용으로 견줘야 한다.
+    """
+    import json as _json
+    import tempfile
+    from .run import _code_hashes, _fingerprint_legacy, _same_code
+
+    with tempfile.TemporaryDirectory() as td:
+        ws = Path(td) / "ws"
+        (ws / "src/pkg").mkdir(parents=True)
+        (ws / "src/pkg/a.py").write_text("v = 1\n")
+        rd = Path(td) / "run"
+        rd.mkdir()
+
+        _, sha = _code_hashes(ws)
+        eq("지문 없는 옛 런은 모른다", _same_code(rd, {}, ws), None)
+        (rd / "code.json").write_text(_json.dumps({"sha": sha}))
+        eq("사본이 있고 같으면 True", _same_code(rd, {}, ws), True)
+        (ws / "src/pkg/a.py").write_text("v = 2\n")     # 내용만 바꾼다
+        eq("내용이 바뀌면 False", _same_code(rd, {}, ws), False)
+
+        #  옛 런은 옛 방식(mtime)으로만 견줄 수 있다
+        (rd / "code.json").unlink()
+        legacy = _fingerprint_legacy(ws)
+        eq("옛 지문이 같으면 True",
+           _same_code(rd, {"code_fingerprint": {"sha": legacy}}, ws), True)
+        eq("옛 지문이 다르면 False",
+           _same_code(rd, {"code_fingerprint": {"sha": "0" * 12}}, ws), False)
+        eq("no-src 는 모른다",
+           _same_code(rd, {"code_fingerprint": {"sha": "no-src"}}, ws), None)
+
+
+def t_code_changes():
+    """코드 변경 분류 — 여기가 틀리면 「무엇을 고쳐서 결과가 달라졌나」가 통째로 거짓말이 된다.
+
+    사본이 없는 예전 런은 ★빈 목록★ 이어야 한다. 한쪽만 있다고 전부 '추가'로
+    적으면, 지문만 있던 옛 런이 갑자기 48개 파일을 새로 만든 것처럼 보인다.
+    """
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "web"))
+    import server as sv                                    # noqa: PLC0415
+
+    a = {"src/a.py": "111", "src/b.py": "222", "src/gone.py": "333"}
+    b = {"src/a.py": "111", "src/b.py": "999", "src/new.py": "444"}
+    got = {(c["path"], c["status"]) for c in sv._diff_maps(a, b)}
+    eq("안 바뀐 파일은 안 나온다", ("src/a.py", "changed") in got, False)
+    eq("바뀐 파일", ("src/b.py", "changed") in got, True)
+    eq("생긴 파일", ("src/new.py", "added") in got, True)
+    eq("없어진 파일", ("src/gone.py", "removed") in got, True)
+    eq("개수", len(got), 3)
+    eq("사본 없는 쪽이 있으면 빈 목록", sv._diff_maps({}, b), [])
+    eq("반대쪽이 비어도 빈 목록", sv._diff_maps(a, {}), [])
 
 
 def t_web_auth():

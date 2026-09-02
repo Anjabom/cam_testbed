@@ -17,10 +17,11 @@
      «결과 비교» 는 비교 작업을 띄우는 화면이라 여기 든다 — 이미 나온 비교는
      실행 상세의 «비교» 탭에 그대로 있다. */
   var SERVERONLY = { newtest: 1, exec: 1, calib: 1, check: 1, tools: 1,
-                     compare: 1, trash: 1, visual: 1 };
+                     compare: 1, trash: 1, visual: 1, code: 1 };
   var SECNAME = { newtest: '테스트 준비', exec: '테스트 실행', calib: '카메라 보정',
                   check: '환경 점검', tools: '도구', compare: '결과 비교',
-                  trash: '휴지통', frames: '프레임 탐색', visual: '시각화' };
+                  trash: '휴지통', frames: '프레임 탐색', visual: '시각화',
+                  code: '코드 변천' };
 
   /* 라우트를 구운 파일 이름으로. ★tb/publish.py 가 같은 규칙으로 쓴다★ —
      한쪽만 고치면 화면이 통째로 빈다. 쿼리는 경로 한 칸이 된다
@@ -93,7 +94,10 @@
   function checkBadge(r) {
     if (!r.checks_total) return badge('—', 'n');
     var bad = r.checks_bad || 0;
-    return badge(r.checks_ok + '/' + r.checks_total, bad ? 'r' : 'g');
+    // 못 잰 체크가 있으면 초록으로 칠하지 않는다 — 실패는 아니지만 통과도 아니다.
+    // (신호가 통째로 결측이면 서버의 checks_ok 가 줄어든다 — ok===true 만 센다.)
+    var cls = bad ? 'r' : ((r.checks_ok || 0) < r.checks_total ? 'y' : 'g');
+    return badge(r.checks_ok + '/' + r.checks_total, cls);
   }
   function cmpBadge(v) {
     if (!v) return badge('—', 'n');
@@ -112,6 +116,7 @@
   var JOBNAME = { run: '실행', inject: '주입 검증', doctor: '환경 점검',
                   selftest: '자체 검사', discover: '계약 초안',
                   render: '경로 영상 만들기', harvest: '프레임 추출',
+                  replay: '다시 돌리기',
                   baseline: '기준 등록', reanalyze: '재분석', compare: '결과 비교' };
   function postJob(kind, args, onDone) {
     if (STATIC) return readOnly();
@@ -153,6 +158,8 @@
      + '파라미터도 여기서 고칩니다.'],
     ['#/runs', '실행 기록',
      '지난 결과를 모아 봅니다. 검색·고정·메모·삭제, 그리고 클로드 코드에 넘길 피드백 만들기.'],
+    ['#/code', '코드 변천',
+     '대상 워크스페이스의 소스가 실행들 사이에서 어떻게 바뀌어 왔는지. 실행 결과와 코드가 한자리에 놓입니다.'],
     ['#/compare', '결과 비교',
      '기준과 실행, 또는 두 실행의 신호 차이를 봅니다.'],
     ['#/calib', '카메라 보정',
@@ -214,7 +221,8 @@
   function matchRun(r) {
     var q = RUNQ.q.trim().toLowerCase();
     if (q) {
-      var hay = [r.id, r.scenario, r.variant, r.memo, (r.tags || []).join(' ')]
+      var hay = [r.id, r.label, r.scenario, r.variant, r.memo,
+                 (r.tags || []).join(' ')]
         .filter(Boolean).join(' ').toLowerCase();
       if (hay.indexOf(q) < 0) return false;
     }
@@ -341,7 +349,12 @@
           onchange: function () { SEL[r.id] = this.checked; paintSel(); } })]);
     }
     function nameCell(r) {
-      var kids = [h('div', { text: r.scenario || r.id.slice(0, 14) })];
+      //  ★붙인 이름이 먼저★ 같은 시나리오를 여러 번 돌리면 시나리오 이름만으로는
+      //  어느 런인지 구분되지 않는다. 시나리오는 아래에 흐리게 남긴다.
+      var kids = [];
+      if (r.label) kids.push(h('div', { class: 'runlabel', text: r.label }));
+      kids.push(h('div', { class: r.label ? 'mut' : '',
+                           text: r.scenario || r.id.slice(0, 14) }));
       var tags = (r.tags || []).map(function (t) {
         return h('span', { class: 'tag', text: t });
       });
@@ -360,7 +373,9 @@
         return;
       }
       // [보이는 이름, 마우스를 올렸을 때 나오는 설명]
-      var head = [['', ''], ['', ''], ['시각', ''], ['시나리오', ''], ['변형', ''],
+      var head = [['', ''], ['', ''], ['시각', ''],
+                  ['이름 · 시나리오', '실행할 때 붙인 이름 (없으면 시나리오)'],
+                  ['변형', ''],
                   ['모드', 'lockstep = 한 프레임씩 · realtime = 실제 속도로'],
                   ['결과 행', '분석에 쓰인 출력 행 수'],
                   ['인식률', '차선을 본 프레임의 비율'],
@@ -720,28 +735,103 @@
     return note;
   }
 
-  function makeVideoPanel(id, align, metaStart) {
+  /* fspan = 이 런의 프레임 범위 {first,last} — 예전 런(장별 실측 목록이 없는)의
+     정렬을 비율로 추정할 때만 쓴다. */
+  function makeVideoPanel(id, align, metaStart, fspan, onFrame) {
     var first = (align && align.first_frame >= 0) ? align.first_frame
                 : (metaStart != null ? metaStart : 0);
     var fps = (align && align.fps) ? align.fps : 15;
     var offset = 0;
 
+    /* 원본 frame → 디버그 영상의 몇 번째 장인가.
+       ★first + i 로 계산하면 안 된다★ — 노드가 매 프레임 디버그를 내지 않는다.
+       1291프레임 런에서 663장만 온 적이 있고, 그때 뒤로 갈수록 2배 어긋났다.
+       뷰어가 장마다 원본 프레임 번호를 남기므로(debug_meta 의 frames) 그걸 쓰고,
+       없는 예전 런은 「쓴 장수 ÷ 프레임 범위」 비율로 추정한다. */
+    var flist = (align && align.frames && align.frames.length > 1) ? align.frames : null;
+    var step = 1;
+    if (!flist && align && align.count > 1 && fspan && fspan.last > fspan.first) {
+      step = (fspan.last - fspan.first + 1) / align.count;
+    }
+    var exactAlign = !!flist;
+    if (flist) {                    // 몇 프레임에 한 장씩 그렸나 — 중앙값
+      var dd = [];
+      for (var q = 1; q < flist.length; q++) {
+        if (flist[q] > flist[q - 1]) dd.push(flist[q] - flist[q - 1]);
+      }
+      dd.sort(function (x, y) { return x - y; });
+      if (dd.length) step = dd[dd.length >> 1];
+    }
+    /* 이 영상이 1× 에서 1초에 훑는 ★원본 프레임 수★. */
+    var dofps = fps * Math.max(1e-6, step);
+    /* ★원본과 같은 속도로 보이는 배속★.
+       노드가 7프레임에 한 장만 그렸는데 파일이 원본 fps(30) 로 저장돼 있으면
+       그대로 틀 때 7배속이 된다(42.7초 장면이 6.2초로 나왔다). 저장 속도를
+       고친 뒤의 런은 이 값이 1 이라 아무 일도 안 일어난다. */
+    var srcFps = (align && align.src_fps) || fps;
+    var natural = Math.min(8, Math.max(0.06, srcFps / dofps));
+    function idxOf(fr) {
+      if (!flist) return (fr - first) / step;
+      var lo = 0, hi = flist.length - 1;
+      while (lo < hi) {                       // 가장 가까운 장을 이분 탐색
+        var mid = (lo + hi) >> 1;
+        if (flist[mid] < fr) lo = mid + 1; else hi = mid;
+      }
+      if (lo > 0 && Math.abs(flist[lo - 1] - fr) < Math.abs(flist[lo] - fr)) lo -= 1;
+      return lo;
+    }
+
     var vurl = '/api/runs/' + encodeURIComponent(id) + '/video';
+    /* muted — 자동재생 정책에 막히지 않게 한다(디버그 영상에는 소리가 없다). */
     var vid = h('video', { src: vurl,
                            preload: 'metadata', controls: 'controls',
+                           muted: 'muted', playsinline: 'playsinline',
                            style: 'width:100%;border-radius:5px;background:#000' });
+    vid.muted = true;
+    vid.playbackRate = natural;
+    vid.addEventListener('loadedmetadata', function () { vid.playbackRate = natural; });
     var vnote = videoDiag(vid, vurl);
     var label = h('span', { class: 'mut' });
     var exact = h('span', { class: 'mut' });
+    var sync = h('span', { class: 'mut',
+      title: '노드가 ' + (Math.round(step * 10) / 10) + '프레임에 한 장씩 그렸습니다 — '
+             + '파일 그대로 틀면 그만큼 빨라져서, 원본과 같은 속도가 되게 깎은 배속입니다',
+      text: Math.abs(natural - 1) > 0.02 ? '원본 속도 ' + natural.toFixed(2) + '×' : '' });
 
-    function setFrame(fr) {
-      if (fr == null) { label.textContent = ''; return; }
-      var idx = fr - first + offset;
-      var t = Math.max(0, idx / fps);
-      if (isFinite(t)) { try { vid.currentTime = t; } catch (e) { /* 로딩 전 */ } }
-      label.textContent = 'frame ' + fr + '  →  영상 ' + idx + '번째 ('
-                         + t.toFixed(2) + '초)';
+    function timeAt(fr) { return Math.max(0, (idxOf(fr) + offset) / fps); }
+    /* 재생 위치 → 원본 frame — idxOf 의 역이다. 경로 영상이 있던 자리라
+       ★이 영상이 재생 주체★ 다: 그래프 커서를 여기서 몰아 준다. */
+    function frameAt(t) {
+      var i = Math.round(t * fps) - offset;
+      if (flist) return flist[Math.max(0, Math.min(flist.length - 1, i))];
+      return Math.round(first + Math.max(0, i) * step);
     }
+    function show(fr, t) {
+      label.textContent = 'frame ' + fr + '  →  영상 '
+                         + Math.round(idxOf(fr) + offset)
+                         + '번째 (' + t.toFixed(2) + '초)';
+    }
+    /* 그래프를 눌러 옮긴 seek 이 도로 커서를 옮기면 둘이 서로 밀어내며 튄다 —
+       옮기는 동안은 내보내지 않는다. */
+    var syncing = false;
+    function setFrame(fr) {              // 그래프를 눌렀을 때 — 딱 그 프레임으로
+      if (fr == null) { label.textContent = ''; return; }
+      var t = timeAt(fr);
+      if (!isFinite(t)) return;
+      syncing = true;
+      try { vid.currentTime = t; } catch (e) { /* 로딩 전 */ }
+      setTimeout(function () { syncing = false; }, 250);
+      show(fr, t);
+    }
+    function emit() {
+      var fr = frameAt(vid.currentTime);
+      if (fr == null || !isFinite(fr)) return;
+      show(fr, vid.currentTime);
+      if (!syncing && onFrame) onFrame(fr);
+    }
+    ['timeupdate', 'seeked', 'play', 'pause'].forEach(function (ev) {
+      vid.addEventListener(ev, emit);
+    });
     function bump(d) {
       offset += d;
       exact.textContent = '맞춤 ' + (offset >= 0 ? '+' : '') + offset + '프레임';
@@ -750,9 +840,11 @@
 
     var panel = h('div', { class: 'vidwrap' }, [
       h('div', { class: 'vidbar' }, [
-        h('span', { class: 'vt', text: '디버그 영상' }),
+        h('span', { class: 'vt', text: '카메라 디버그 영상' }),
+        (align && align.topic
+          ? h('span', { class: 'mono mut', text: align.topic }) : null),
         label, h('span', { class: 'spacer' }),
-        exact,
+        sync, exact,
         h('button', { text: '−1', title: '영상을 1프레임 앞으로 당깁니다',
                       onclick: function () { bump(-1); } }),
         h('button', { text: '+1', title: '영상을 1프레임 뒤로 밉니다',
@@ -761,158 +853,72 @@
       vid,
       vnote,
       h('div', { class: 'mut', style: 'font-size:11.5px;margin-top:7px',
-        text: '그래프의 한 점을 누르면 영상이 그 프레임으로 갑니다. 어긋나면 ± 로 맞추세요.' }),
+        text: '노드가 그린 화면입니다. 재생하면 아래 그래프의 커서가 따라오고, '
+              + '그래프의 한 점을 누르면 그 프레임으로 갑니다. '
+              + (exactAlign
+                 ? '정렬은 장마다 실측한 값입니다. 어긋나면 ± 로 맞추세요.'
+                 : '★이 실행에는 장별 프레임 기록이 없어 비율로 추정합니다★ — '
+                   + '어긋나면 ± 로 맞추거나, 다시 돌려 새로 기록하세요.') }),
     ]);
     panel.setFrame = setFrame;
     return panel;
   }
 
-  /* 경로 오버레이 영상 — 정지 이미지 한 장이 아니라 ★영상★으로 본다.
-   * mp4 는 frame 순서대로 담기고 progress.json 에 frames 목록이 남으므로
-   * 재생 시간 ↔ frame 번호를 정확히 오갈 수 있다. */
-  function makePathPanel(id, onFrame) {
-    var wrap = h('div', { class: 'vidwrap' });
-    var body = h('div', {});
-    wrap.appendChild(h('div', { class: 'vidbar' }, [
-      h('span', { class: 'vt', text: '경로 영상' }),
-      h('span', { class: 'mut', id: 'pv-st' }),
-    ]));
-    wrap.appendChild(body);
+  /* 예전 런 구제 — 디버그 영상이 없고 경로 영상이 ★이미 구워져★ 있는 런만.
+   * `--record-debug` 없이 돌린 런은 raw.jsonl 에 이미지가 없어서(observe 는
+   * 숫자 토픽뿐이다) 디버그 영상을 사후에 만들 수 없다 — 104개 중 6개만
+   * 가지고 있었다. 그래서 남아 있는 path_overlay 를 그대로 틀어 준다.
+   * 새로 굽는 버튼·옵션은 없다: 앞으로 보는 영상은 디버그 영상이다. */
+  function makeLegacyPathPanel(id, onFrame) {
+    var wrap = h('div', { class: 'vidwrap', style: 'display:none' });
     var st = { frames: [], fps: 10, vid: null, syncing: false };
 
     function toFrame(t) {
-      var i = Math.round(t * st.fps);
-      i = Math.max(0, Math.min(st.frames.length - 1, i));
+      var i = Math.max(0, Math.min(st.frames.length - 1, Math.round(t * st.fps)));
       return st.frames[i];
     }
-    function toTime(fr) {
-      var i = st.frames.indexOf(fr);
-      if (i < 0) {                       // 가장 가까운 것
-        i = 0;
-        for (var k = 0; k < st.frames.length; k++) {
-          if (Math.abs(st.frames[k] - fr) < Math.abs(st.frames[i] - fr)) i = k;
-        }
+    function toTime(fr) {                 // 가장 가까운 장
+      var i = 0;
+      for (var k = 0; k < st.frames.length; k++) {
+        if (Math.abs(st.frames[k] - fr) < Math.abs(st.frames[i] - fr)) i = k;
       }
       return i / st.fps;
     }
-
-    function build(meta) {
-      clear(body);
-      var purl = '/api/runs/' + encodeURIComponent(id) + '/pathvideo';
-      var vid = h('video', {
-        src: purl, controls: 'controls', preload: 'metadata',
-        style: 'width:100%;border-radius:5px;background:#000' });
-      var pnote = videoDiag(vid, purl);
-      st.vid = vid;
-      st.frames = meta.frames || [];
-      st.fps = meta.fps || 10;
-      vid.addEventListener('timeupdate', function () {
-        if (st.syncing) return;
-        var fr = toFrame(vid.currentTime);
-        if (fr != null && onFrame) onFrame(fr, true);
-      });
-      body.appendChild(vid);
-      body.appendChild(pnote);
-      body.appendChild(h('div', { class: 'mut', style: 'font-size:11.5px;margin-top:7px',
-        text: '재생하면 아래 그래프의 커서가 따라가고, 그래프를 누르면 영상이 그 프레임으로 갑니다. '
-              + '왼쪽 차선 파랑 · 오른쪽 차선 빨강 · 중심선(주행 경로) 주황 · '
-              + 'θ 를 잰 두 점을 이은 선 노랑 · 접선 회색' }));
-      // 배속은 ★다시 굽지 않고★ playbackRate 로 바꾼다 — 즉시 반영되고
-      // 프레임↔시간 대응(toFrame/toTime)도 그대로 유지된다.
-      var rates = [0.25, 0.5, 1, 2];
-      var rbtns = rates.map(function (r) {
-        return h('button', { text: r + '×', class: r === 1 ? 'primary' : '',
-          onclick: function () {
-            vid.playbackRate = r;
-            rbtns.forEach(function (b2, i) { b2.className = rates[i] === r ? 'primary' : ''; });
-          } });
-      });
-      var b = h('div', { class: 'framebar' }, [
-        h('span', { class: 'mut', text: '배속' }),
-      ].concat(rbtns).concat([
-        h('span', { class: 'spacer' }),
-        h('span', { class: 'mut mono',
-          text: (meta.fps ? meta.fps.toFixed(1) + 'fps · ' : '') +
-                (st.frames.length ? st.frames.length + '프레임' : '') }),
-        h('button', { text: '다시 만들기', onclick: make }),
-      ]));
-      body.appendChild(b);
-      body.appendChild(rdOptions());
-    }
-
-    /* 만들 때 쓰는 인자 — 기본값은 「전체 프레임을 원본 속도로」다.
-       CLI 의 `tb.run render` 가 받는 나머지는 아래 «영상 옵션» 에서 바꾼다. */
-    var rdLimit = h('input', { type: 'number', value: '0', style: 'width:90px' });
-    var rdWidth = h('input', { type: 'number', value: '1400', style: 'width:90px' });
-    var rdFps = h('input', { type: 'number', step: 'any', placeholder: '원본과 같게',
-                             style: 'width:110px' });
-    var rdWhere = h('input', { type: 'text', placeholder: '(전부)', size: '24' });
-    var rdFrames = h('input', { type: 'text', placeholder: '예: 1090,850', size: '18' });
-    function rdArgs() {
-      // --fps 를 주지 않으면 엔진이 ★원본 영상과 같은 속도★로 맞춘다.
-      // 예전에는 10 을 박아 30fps 영상이 1/3 배속으로 나왔다.
-      var a = [id, '--mp4', 'auto',
-               '--limit', String(Number(rdLimit.value) || 0),
-               '--width', String(Number(rdWidth.value) || 1400)];
-      if (rdFps.value && Number(rdFps.value)) a.push('--fps', rdFps.value);
-      if (rdWhere.value.trim()) a.push('--where', rdWhere.value.trim());
-      if (rdFrames.value.trim()) a.push('--frames', rdFrames.value.trim());
-      return a;
-    }
-    function rdOptions() {
-      var det = h('details', { class: 'reg' });
-      det.appendChild(h('summary', { text: '영상 옵션' }));
-      det.appendChild(h('div', { class: 'regbody toolform' }, [
-        h('div', { class: 'toolopt' }, [h('label', { class: 'mono', text: '--limit' }), rdLimit,
-          h('span', { class: 'mut', text: '몇 장까지 (0=전부)' })]),
-        h('div', { class: 'toolopt' }, [h('label', { class: 'mono', text: '--width' }), rdWidth,
-          h('span', { class: 'mut', text: '가로 픽셀' })]),
-        h('div', { class: 'toolopt' }, [h('label', { class: 'mono', text: '--fps' }), rdFps,
-          h('span', { class: 'mut', text: '재생 속도 (비우면 원본과 같게)' })]),
-        h('div', { class: 'toolopt' }, [h('label', { class: 'mono', text: '--where' }), rdWhere,
-          h('span', { class: 'mut', text: '조건에 맞는 프레임만' })]),
-        h('div', { class: 'toolopt' }, [h('label', { class: 'mono', text: '--frames' }), rdFrames,
-          h('span', { class: 'mut', text: '프레임 번호를 쉼표로' })]),
-      ]));
-      return det;
-    }
-
-    function make() {
-      clear(body);
-      body.appendChild(spinner('경로 영상을 만드는 중… (400프레임 약 30초)'));
-      postJob('render', rdArgs());
-      var t = setInterval(function () {
-        get('/api/runs/' + encodeURIComponent(id) + '/pathmeta').then(function (m) {
-          var el = body.querySelector('.spin span');
-          if (m.total && !m.finished && el) {
-            el.textContent = '만드는 중 ' + m.done + '/' + m.total +
-                             '  (약 ' + Math.round(m.eta_s || 0) + '초 남음)';
-          }
-          if (m.finished && m.exists) { clearInterval(t); build(m); }
-        }).catch(function () {});
-      }, 1200);
-    }
-
-    get('/api/runs/' + encodeURIComponent(id) + '/pathmeta').then(function (m) {
-      if (m.exists && m.finished) { build(m); return; }
-      clear(body);
-      body.appendChild(h('p', { class: 'sub',
-        text: '아직 경로 영상이 없습니다. 만들면 좌·우 차선과 중심선, θ 가 '
-              + '그려진 영상을 재생할 수 있습니다.' }));
-      body.appendChild(h('button', { class: 'primary', text: '경로 영상 만들기', onclick: make }));
-      body.appendChild(rdOptions());
-    }).catch(function () {});
-
-    wrap.seekFrame = function (fr) {
-      if (!st.vid || !st.frames.length) return;
+    wrap.setFrame = function (fr) {        // 그래프를 눌렀을 때
+      if (!st.vid || !st.frames.length || fr == null) return;
       st.syncing = true;
       try { st.vid.currentTime = toTime(fr); } catch (e) { /* 로딩 전 */ }
       setTimeout(function () { st.syncing = false; }, 250);
     };
+
+    get('/api/runs/' + encodeURIComponent(id) + '/pathmeta').then(function (m) {
+      if (!m || !m.exists || !m.finished) return;
+      st.frames = m.frames || [];
+      st.fps = m.fps || 10;
+      var purl = '/api/runs/' + encodeURIComponent(id) + '/pathvideo';
+      var vid = h('video', { src: purl, controls: 'controls', preload: 'metadata',
+                             style: 'width:100%;border-radius:5px;background:#000' });
+      st.vid = vid;
+      vid.addEventListener('timeupdate', function () {
+        if (st.syncing || !onFrame) return;
+        var fr = toFrame(vid.currentTime);
+        if (fr != null) onFrame(fr);
+      });
+      wrap.appendChild(h('div', { class: 'vidbar' }, [
+        h('span', { class: 'vt', text: '경로 영상 (예전 실행)' }),
+        h('span', { class: 'mut', text: '판정에 쓴 값으로 그린 화면입니다' }),
+      ]));
+      wrap.appendChild(vid);
+      wrap.appendChild(videoDiag(vid, purl));
+      wrap.appendChild(h('div', { class: 'mut', style: 'font-size:11.5px;margin-top:7px',
+        text: '왼쪽 차선 파랑 · 오른쪽 차선 빨강 · 중심선 주황 · '
+              + 'θ 를 잰 두 점을 이은 선 노랑 · 접선 회색' }));
+      wrap.style.display = '';
+    }).catch(function () {});
     return wrap;
   }
 
-  function renderPlot(id, rows, videoPanel, ref, pathPanel) {
+  function renderPlot(id, rows, videoPanel, ref) {
     if (!rows || !rows.length) return null;
     var numeric = [];
     var sample = rows[Math.floor(rows.length / 2)] || rows[0];
@@ -965,7 +971,6 @@
         readout.appendChild(h('span', { text: k + ' ' }, [h('b', { text: f(row[k]) })]));
       });
       if (videoPanel && videoPanel.setFrame) videoPanel.setFrame(row.frame);
-      if (pathPanel && pathPanel.seekFrame) pathPanel.seekFrame(row.frame);
     };
     if (ref) {
       ref.readout = function (fr) {                 // 영상 재생 → 판독값 갱신
@@ -1002,7 +1007,7 @@
                    checks_bad: checks.filter(function (c) { return c.ok === false; }).length }),
     ]));
     view.appendChild(h('p', { class: 'sub',
-      text: [m.scenario, m.variant, m.mode,
+      text: [m.label, m.scenario, m.variant, m.mode,
              m.perturb && m.perturb !== 'none' ? '섭동 ' + m.perturb : null,
              (m.video || '').split('/').pop(), shortTime(m.when)]
         .filter(Boolean).join(' · ') }));
@@ -1070,26 +1075,60 @@
         } }),
         h('button', { text: '재분석', title: '계약을 고친 뒤 raw.jsonl 로 다시 분석합니다',
                       onclick: function () { postJob('reanalyze', [id]); } }),
+        /* 디버그 영상은 실행 중에만 잡힌다 — 옛 실행의 영상을 보는 유일한 길이
+           그때 설정 그대로 한 번 더 돌리는 것이다. */
+        h('button', { text: '다시 돌리기',
+                      title: '그때 시나리오·영상·구간·파라미터 그대로 다시 돌려 '
+                             + '디버그 영상을 남깁니다. 코드가 그때와 다르면 멈춥니다.',
+                      onclick: function () {
+                        if (confirm('이 실행을 그때 설정 그대로 다시 돌립니다. '
+                                    + '새 실행으로 기록되고 디버그 영상이 남습니다.')) {
+                          postJob('replay', [id]);
+                        }
+                      } }),
       ]));
       pane.appendChild(cli('python3 -m tb.run reanalyze ' + id));
 
     } else if (tab === 'visual') {
       var plotRef = { plot: null };
-      var pathPanel = makePathPanel(id, function (fr) {
-        if (plotRef.plot) plotRef.plot.setCursorFrame(fr, false);
-        if (plotRef.readout) plotRef.readout(fr);
+      /* 예전 런의 정렬 추정에 쓸 프레임 범위 */
+      var fspan = null;
+      (signals || []).forEach(function (r) {
+        if (typeof r.frame !== 'number') return;
+        if (!fspan) fspan = { first: r.frame, last: r.frame };
+        if (r.frame < fspan.first) fspan.first = r.frame;
+        if (r.frame > fspan.last) fspan.last = r.frame;
       });
-      pane.appendChild(sectionTitle('경로 영상 — 판정에 쓴 값으로 다시 그린 화면'));
-      pane.appendChild(pathPanel);
+      /* ★영상은 노드가 그린 디버그 화면 하나로 본다★ — 재생하면 그래프
+         커서가 따라오고, 그래프를 누르면 그 프레임으로 간다. */
+      var vpanel = (data.video
+                    ? makeVideoPanel(id, data.video.align, m.start, fspan,
+                                     function (fr) {
+                                       if (plotRef.plot) plotRef.plot.setCursorFrame(fr, false);
+                                       if (plotRef.readout) plotRef.readout(fr);
+                                     }) : null);
 
-      var vpanel = (data.video ? makeVideoPanel(id, data.video.align, m.start) : null);
-      var pl = renderPlot(id, signals, vpanel, plotRef, pathPanel);
+      if (vpanel) {
+        pane.appendChild(sectionTitle('영상 — 노드가 그린 디버그 화면'));
+        pane.appendChild(vpanel);
+      } else {
+        // 디버그 영상이 없는 예전 런 — 남아 있는 경로 영상으로 대신한다
+        vpanel = makeLegacyPathPanel(id, function (fr) {
+          if (plotRef.plot) plotRef.plot.setCursorFrame(fr, false);
+          if (plotRef.readout) plotRef.readout(fr);
+        });
+        pane.appendChild(sectionTitle('영상'));
+        pane.appendChild(vpanel);
+        pane.appendChild(h('p', { class: 'sub',
+          text: '이 실행에는 디버그 영상이 없습니다 — 테스트 실행에서 '
+                + '«디버그 영상 기록» 을 켜고 돌리면 여기에 나옵니다. '
+                + '예전에 구워 둔 경로 영상이 있으면 위에 그것을 틉니다.' }));
+      }
+
+      var pl = renderPlot(id, signals, vpanel, plotRef);
       if (pl) {
         pane.appendChild(sectionTitle('신호 그래프'));
-        var grid = h('div', { class: 'plotgrid' });
-        grid.appendChild(pl);
-        if (vpanel) grid.appendChild(vpanel);
-        pane.appendChild(grid);
+        pane.appendChild(pl);
       }
 
     } else if (tab === 'feedback') {
@@ -1102,6 +1141,7 @@
       if (stt) { pane.appendChild(sectionTitle('신호 통계')); pane.appendChild(stt); }
       var dr = renderDrift(data.drift);
       if (dr) { pane.appendChild(sectionTitle('신호 경로 점검')); pane.appendChild(dr); }
+      renderRunCode(pane, id);
 
     } else {
       var box = h('div', {});
@@ -1519,7 +1559,13 @@
     if (cfg.suggest && scenarios.indexOf(cfg.suggest) >= 0) scSel.value = cfg.suggest;
     var tagIn = h('input', { type: 'text', placeholder: '태그 (선택)', size: '12' });
     tagIn.addEventListener('input', function () { syncCmd(); });
-    var recCb = h('input', { type: 'checkbox' });
+    /* 이름은 ★기록에 보이는 것★, 태그는 ★런 폴더 이름에 들어가는 것★ 이다.
+       그래서 이름에는 공백·한글을 그대로 쓴다. */
+    var nameIn = h('input', { type: 'text', placeholder: '이름 (선택)', size: '20' });
+    nameIn.addEventListener('input', function () { syncCmd(); });
+    /* ★기본 켜짐★ — 사후에 만들 수 없는 유일한 기록이다(raw.jsonl 에 이미지가
+       없다). 끄면 --no-record-debug 로 넘어간다. */
+    var recCb = h('input', { type: 'checkbox', checked: 'checked' });
     recCb.addEventListener('change', function () { syncCmd(); });
 
     /* 고급 옵션 — CLI 의 `tb.run run` 이 받는 나머지 인자들.
@@ -1544,6 +1590,7 @@
     view.appendChild(h('div', { class: 'framebar' }, [
       h('span', { class: 'mut', text: '시나리오' }), scSel,
       h('span', { class: 'spacer' }),
+      h('span', { class: 'mut', text: '이름' }), nameIn,
       h('span', { class: 'mut', text: '태그' }), tagIn,
       h('label', { class: 'mut', style: 'display:flex;gap:5px;align-items:center' },
         [recCb, h('span', { text: '디버그 영상 기록' })]),
@@ -1740,10 +1787,11 @@
         v = v.trim();
         if (v) a.push('--variant', v);
       });
+      if (nameIn.value.trim()) a.push('--name', nameIn.value.trim());
       if (tagIn.value.trim()) a.push('--tag', tagIn.value.trim());
       if (advBase.value) a.push('--baseline', advBase.value);
       if (advDom.value && Number(advDom.value)) a.push('--domain', advDom.value);
-      if (recCb.checked) a.push('--record-debug');
+      if (!recCb.checked) a.push('--no-record-debug');
       if (advWatch.checked) a.push('--watch');
       if (advKeep.checked) a.push('--keep-going');
       return a;
@@ -1806,7 +1854,11 @@
     // 값이 바뀌는 족족 다시 쓴다 — 실행하고 나서야 무엇이 나갔는지 알면 늦다.
     function syncCmd() {
       clear(cmdPrev);
-      cmdPrev.appendChild(cli('python3 -m tb.run run ' + args().join(' ')));
+      //  이름에는 공백이 들어갈 수 있다 — 그대로 이어 붙이면 복사해 붙였을 때
+      //  터미널에서 인자가 갈라진다.
+      cmdPrev.appendChild(cli('python3 -m tb.run run ' + args().map(function (x) {
+        return /\s/.test(x) ? "'" + x + "'" : x;
+      }).join(' ')));
     }
 
     function start(kind, a) {
@@ -1968,7 +2020,9 @@
     clear(view);
     view.appendChild(h('h1', { text: '결과 비교' }));
     view.appendChild(h('p', { class: 'sub',
-      text: '기준과 실행, 또는 두 실행을 골라 신호별 차이를 봅니다. 조건이 다르면 결과 위에 경고가 붙습니다.' }));
+      text: '기준과 실행, 또는 두 실행을 골라 신호별 차이를 봅니다. 볼 신호(계약)와 '
+            + '허용오차(시나리오의 compare_tol)는 ★고른 실행이 실제로 쓴 것★ 을 그대로 '
+            + '물려받습니다. 영상·구간·파라미터가 다르면 결과 위에 경고가 붙습니다.' }));
 
     function opts(list) {
       return list.map(function (x) { return h('option', { value: x, text: x }); });
@@ -1976,9 +2030,17 @@
     var aSel = h('select', {}, opts(state.baselines.concat(state.runs)));
     var bSel = h('select', {}, opts(state.runs));
     if (state.runs.length) bSel.value = state.runs[0];
-    var out = h('div', { class: 'md' });
-    /* 계약·시나리오를 바꿔 가며 비교할 수 있다 — 계약을 고친 뒤 옛 결과를
-       새 해석으로 다시 보는 것이 회귀 확인의 절반이다. */
+    var out = h('div', {});
+    function showCompare(md) {
+      clear(out);
+      var v = /판정: (\w+)/.exec(md);
+      if (v) out.appendChild(h('p', { class: 'sub' },
+        [badge(v[1], v[1] === 'PASS' ? 'g' : 'r')]));
+      out.appendChild(h('div', { class: 'md', text: md }));
+    }
+    /* 계약·시나리오를 바꿔 가며 비교할 수 있다 — 물려받은 것 대신 다른 계약으로
+       옛 결과를 다시 보는 것이 회귀 확인의 절반이다(신호를 고르는 것이지
+       raw.jsonl 을 다시 읽는 것은 아니다 — 그건 «재분석»). */
     var cSel = h('select', {}, [h('option', { value: '', text: '(기본)' })].concat(
       (state.contracts || []).map(function (x) { return h('option', { value: x, text: x }); })));
     var sSel = h('select', {}, [h('option', { value: '', text: '(기본)' })].concat(
@@ -1994,13 +2056,26 @@
       h('span', { class: 'mut', text: '기준' }), aSel,
       h('span', { class: 'mut', text: '→ 현재' }), bSel,
       h('button', { class: 'primary', text: '비교', onclick: function () {
+        clear(out);
         out.textContent = '비교 중…';
-        postJob('compare', cmpArgs()).then(function () {
-          setTimeout(function () {
-            get('/api/status').then(function (st) {
+        var b = bSel.value;
+        postJob('compare', cmpArgs()).then(function (j) {
+          if (j && j.error) { out.textContent = j.error; return; }
+          /* ★고정 대기는 거짓말을 한다★ — 정해 둔 시간 뒤에 로그를 읽으면 큰 CSV
+             에서는 아직 안 끝난 화면이 결과인 척한다. 끝나는 것을 보고 읽는다. */
+          waitJob(function (st) {
+            /* 실패했으면 파일을 읽지 않는다 — 지난번 비교의 compare_manual.md 가
+               남아 있어서, 터진 명령의 결과인 척 옛 표가 그대로 뜬다. */
+            if (st && st.returncode !== 0) {
               out.textContent = st.log_tail || '(출력 없음)';
-            });
-          }, 1500);
+              return;
+            }
+            get('/api/runs/' + encodeURIComponent(b) + '/compare_manual')
+              .then(showCompare)
+              .catch(function () {
+                out.textContent = (st && st.log_tail) || '(출력 없음)';
+              });
+          });
         });
       } }),
     ]));
@@ -2008,9 +2083,11 @@
     adv.appendChild(h('summary', { text: '고급 옵션' }));
     adv.appendChild(h('div', { class: 'regbody toolform' }, [
       h('div', { class: 'toolopt' }, [h('label', { class: 'mono', text: '--contract' }), cSel,
-        h('span', { class: 'mut', text: '이 계약으로 다시 해석해 비교한다' })]),
+        h('span', { class: 'mut',
+          text: '볼 신호를 이 계약에서 고른다 (비우면 고른 실행이 쓴 계약)' })]),
       h('div', { class: 'toolopt' }, [h('label', { class: 'mono', text: '--scenario' }), sSel,
-        h('span', { class: 'mut', text: '허용오차(compare_tol)를 이 시나리오 것으로 쓴다' })]),
+        h('span', { class: 'mut',
+          text: '허용오차(compare_tol)를 이 시나리오 것으로 (비우면 실행이 쓴 시나리오)' })]),
     ]));
     view.appendChild(adv);
     view.appendChild(out);
@@ -3627,7 +3704,8 @@
       ['태그', '같은 시나리오를 조건만 바꿔 여러 번 돌릴 때 실행 이름에 붙는 꼬리표다. ' +
        '<b>기준 비교는 태그가 아니라 시나리오 이름으로 갈린다</b> — 태그를 붙여도 회귀 비교는 그대로 된다.'],
       ['디버그 영상 기록', '대상 노드의 디버그 화면을 영상으로 남긴다. ' +
-       '<b>결과 숫자는 바뀌지 않는다</b>(실측 확인). 원본과 같은 속도로 저장된다.'],
+       '<b>결과 숫자는 바뀌지 않는다</b>(실측 확인). 원본과 같은 속도로 저장된다. ' +
+       '남겨 두면 <b>시각화</b> 탭에서 경로 영상 옆에 나란히 재생된다.'],
       ['중지', 'SIGINT 를 보낸다. 한 번에 한 작업만 돈다 — ROS 노드가 겹치면 서로를 방해한다.'],
     ]));
 
@@ -3650,7 +3728,10 @@
        '<code>진동 대역 비중</code> 이 크면 카메라가 조향 떨림을 만든다.'],
       ['④ 왜 그런가', '<b>시각화</b> 탭에서 경로 영상을 본다. 차선을 놓쳤는지, ' +
        '봤는데 값이 틀렸는지가 눈으로 갈린다. 영상은 <b>원본과 같은 속도</b>로 만들어지고, ' +
-       '천천히 볼 때는 <code>배속</code> 버튼(0.25×~2×)을 쓴다 — 다시 굽지 않는다.'],
+       '천천히 볼 때는 <code>배속</code> 버튼(0.25×~2×)을 쓴다 — 다시 굽지 않는다. ' +
+       '«디버그 영상 기록» 을 켜고 돌린 실행이면 <b>카메라 디버그 영상</b>이 그 옆에 ' +
+       '나란히 뜬다 — 재생·배속·프레임이 묶여 있어 우리가 다시 그린 그림과 ' +
+       '노드가 그린 그림을 같은 프레임에서 비교할 수 있다.'],
       ['⑤ 어제와 달라졌나', '<b>리포트</b> 탭의 기준 비교. 같은 코드면 ' +
        '<code>max|Δ| = 0.0000</code> 이 나온다 — 차이가 있으면 전부 코드 탓이다.'],
     ]));
@@ -3916,6 +3997,126 @@
       '멀리서 브라우저로 붙었다면 라이브 화면이 그 자리를 대신한다.'));
   }
 
+  /* ── 코드 변경점 ────────────────────────────────────────────────
+   * 런은 대상 워크스페이스 소스의 ★내용 해시와 사본★ 을 같이 남긴다
+   * (tb/run.py 의 _code_snapshot). 그래서 "이 결과가 나온 코드가 앞 실행과
+   * 뭐가 달랐나"를 런 안에서 바로 답할 수 있다.
+   * 사본이 없던 예전 런은 지문만 있어 ★바뀌었다는 사실까지만★ 말한다. */
+  function codeDiffBox(id, path) {
+    var box = h('pre', { class: 'diff' });
+    box.appendChild(spinner());
+    get('/api/runs/' + encodeURIComponent(id) + '/code?file=' + encodeURIComponent(path))
+      .then(function (txt) {
+        clear(box);
+        (txt || '(내용이 같습니다)').split('\n').forEach(function (ln) {
+          var c = ln[0] === '+' ? 'dp' : (ln[0] === '-' ? 'dm' : (ln[0] === '@' ? 'dh' : ''));
+          box.appendChild(h('div', { class: c, text: ln }));
+        });
+      }).catch(function (e) {
+        clear(box);
+        box.appendChild(h('div', { class: 'mut', text: 'diff 를 불러오지 못했습니다: ' + e.message }));
+      });
+    return box;
+  }
+
+  function renderRunCode(pane, id) {
+    var box = h('div', {});
+    pane.appendChild(box);
+    get('/api/runs/' + encodeURIComponent(id) + '/code').then(function (c) {
+      clear(box);
+      box.appendChild(sectionTitle('코드 변경점'));
+      var bits = [h('span', { class: 'mono', text: '지문 ' + (c.sha || '?') }),
+                  h('span', { class: 'mut', text: (c.n_files || 0) + '개 파일' })];
+      if (c.git) {
+        bits.push(h('span', { class: 'mono mut',
+          text: 'git ' + c.git.head + (c.git.dirty ? ' +수정' + c.git.dirty : '') }));
+      }
+      box.appendChild(h('p', { class: 'sub' }, bits));
+      if (!c.snapshot) {
+        box.appendChild(h('p', { class: 'sub',
+          text: '이 실행에는 코드 사본이 없습니다 — 지문만 있어 앞 실행과 '
+                + '같은 코드였는지까지만 알 수 있고, 무엇이 바뀌었는지는 알 수 없습니다.' }));
+        return;
+      }
+      if (!c.prev) {
+        box.appendChild(h('p', { class: 'sub', text: '이 워크스페이스의 첫 실행입니다.' }));
+        return;
+      }
+      box.appendChild(h('p', { class: 'sub' }, [
+        h('span', { text: '직전 실행 ' }),
+        h('a', { href: '#/run/' + encodeURIComponent(c.prev), class: 'mono', text: c.prev }),
+        h('span', { text: ' 대비 ' }),
+        h('b', { text: c.changed.length ? c.changed.length + '개 파일' : '변경 없음' }),
+      ]));
+      c.changed.forEach(function (f) {
+        var det = h('details', { class: 'reg' });
+        det.appendChild(h('summary', {}, [
+          badge({ added: '추가', removed: '삭제', changed: '수정' }[f.status] || f.status,
+                 f.status === 'changed' ? 'n' : (f.status === 'added' ? 'g' : 'r')),
+          h('span', { class: 'mono', text: ' ' + f.path }),
+        ]));
+        var filled = false;
+        det.addEventListener('toggle', function () {      // 열 때 한 번만 받아 온다
+          if (det.open && !filled) { filled = true; det.appendChild(codeDiffBox(id, f.path)); }
+        });
+        box.appendChild(det);
+      });
+    }).catch(function () { clear(box); });        // 정적 사이트에는 이 API 가 없다
+  }
+
+  /* 워크스페이스 코드가 실행들 사이에서 어떻게 변해 왔나 — 한 화면.
+     지문이 바뀐 지점이 곧 개발의 마디다. */
+  function renderCodeTimeline(d) {
+    clear(view);
+    view.appendChild(h('h1', { text: '코드 변천' }));
+    view.appendChild(h('p', { class: 'sub',
+      text: '대상 워크스페이스의 소스가 실행들 사이에서 어떻게 바뀌었는지입니다. '
+            + '지문이 바뀐 지점마다 한 칸이고, 사본이 있는 칸은 무엇이 바뀌었는지까지 펼쳐 볼 수 있습니다.' }));
+    var wss = Object.keys(d.workspaces || {});
+    if (!wss.length) {
+      view.appendChild(h('div', { class: 'empty', text: '기록이 없습니다.' }));
+      return;
+    }
+    wss.forEach(function (ws) {
+      var lane = (d.workspaces[ws] || []).slice().reverse();   // 최근이 위
+      view.appendChild(sectionTitle(ws + '  ·  코드 상태 ' + lane.length + '개'));
+      lane.forEach(function (e) {
+        var det = h('details', { class: 'reg' });
+        det.appendChild(h('summary', {}, [
+          h('span', { class: 'mono', text: e.sha }),
+          h('span', { class: 'mut', text: '  ' + shortTime(e.first)
+                      + (e.last !== e.first ? ' ~ ' + shortTime(e.last) : '') }),
+          h('span', { class: 'mut', text: '  실행 ' + e.runs.length + '개' }),
+          (e.snapshot ? null
+            : h('span', { class: 'mut', text: '  · 사본 없음(내용 불명)' })),
+          (e.changed && e.changed.length
+            ? badge(e.changed.length + '개 파일 바뀜', 'n') : null),
+        ]));
+        var body = h('div', { class: 'regbody' });
+        body.appendChild(h('p', { class: 'sub',
+          text: '시나리오: ' + (e.scenarios || []).join(', ') }));
+        body.appendChild(h('div', { class: 'chips' }, e.runs.map(function (r) {
+          return h('a', { class: 'chip mono', href: '#/run/' + encodeURIComponent(r), text: r });
+        })));
+        (e.changed || []).forEach(function (f) {
+          var fd = h('details', {});
+          fd.appendChild(h('summary', {}, [
+            badge({ added: '추가', removed: '삭제', changed: '수정' }[f.status] || f.status,
+                   f.status === 'changed' ? 'n' : (f.status === 'added' ? 'g' : 'r')),
+            h('span', { class: 'mono', text: ' ' + f.path }),
+          ]));
+          var filled = false;
+          fd.addEventListener('toggle', function () {
+            if (fd.open && !filled) { filled = true; fd.appendChild(codeDiffBox(e.runs[0], f.path)); }
+          });
+          body.appendChild(fd);
+        });
+        det.appendChild(body);
+        view.appendChild(det);
+      });
+    });
+  }
+
   // ── 라우팅 ──────────────────────────────────────────────────────
   function setNav(name) {
     document.querySelectorAll('[data-nav]').forEach(function (a) {
@@ -3963,6 +4164,10 @@
     if (hash === '/trash') {
       setNav('runs');
       return get('/api/trash').then(renderTrash).catch(fail);
+    }
+    if (hash === '/code') {
+      setNav('code');
+      return get('/api/code').then(renderCodeTimeline).catch(fail);
     }
     if (hash === '/help') { setNav('help'); renderHelp(); return null; }
     if (hash === '/newtest') {

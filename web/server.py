@@ -117,6 +117,8 @@ def run_brief(d):
     m = s.get("meta", {})
     b.update({
         "when": m.get("when"), "scenario": m.get("scenario"),
+        # 실행할 때 사람이 붙인 이름(`--name`). 옛 런에는 없다 → 빈 문자열.
+        "label": m.get("label", ""),
         "variant": m.get("variant"), "mode": m.get("mode"),
         "video": m.get("video"), "video_key": m.get("video_key"),
         "perturb": m.get("perturb"), "contract": m.get("contract"),
@@ -137,7 +139,7 @@ def run_brief(d):
     cmp_md = d / "compare.md"
     if cmp_md.exists():
         head = cmp_md.read_text()[:400]
-        for verdict in ("PASS", "DIFF", "NO_OVERLAP"):
+        for verdict in ("PASS", "DIFF", "NO_OVERLAP", "NO_SIGNALS"):
             if f"판정: {verdict}" in head:
                 b["compare"] = verdict
                 break
@@ -145,6 +147,11 @@ def run_brief(d):
                          for n in ("lane_debug.mp4", "debug.mp4"))
     b["has_path_video"] = (d / "path_overlay.mp4").exists()
     b["has_inject"] = (d / "inject.json").exists()
+    cf = m.get("code_fingerprint") or {}
+    b["code"] = {"sha": cf.get("sha"), "n_files": cf.get("n_files"),
+                 "ws": (m.get("workspace") or "").rstrip("/").split("/")[-1],
+                 # 사본이 있는 런만 실제 diff 를 볼 수 있다 (예전 런에는 없다)
+                 "snapshot": (d / "code.json").exists()}
     return b
 
 
@@ -177,6 +184,98 @@ def list_runs():
         b["has_feedback"] = (d / "feedback.md").exists()
         out.append(b)
     return sorted(out, key=lambda x: x["id"], reverse=True)
+
+
+def code_timeline():
+    """워크스페이스별 코드 변천 — 런의 코드 지문이 바뀐 지점이 곧 개발의 마디다.
+
+    ★과거 런도 마디까지는 보인다★ 예전 지문은 mtime 기반이라 내용을 되돌릴 수
+    없지만, "이 런과 저 런 사이에 코드가 바뀌었다"는 사실은 그대로 남아 있다.
+    사본(code.json)이 있는 구간만 무엇이 바뀌었는지까지 말할 수 있다.
+    """
+    runs = [r for r in list_runs() if r.get("code", {}).get("sha")]
+    runs.sort(key=lambda r: (r.get("when") or "", r["id"]))
+    out = {}
+    for r in runs:
+        ws = r["code"]["ws"] or "(없음)"
+        lane = out.setdefault(ws, [])
+        if lane and lane[-1]["sha"] == r["code"]["sha"]:
+            lane[-1]["runs"].append(r["id"])
+            lane[-1]["last"] = r.get("when")
+            lane[-1]["snapshot"] = lane[-1]["snapshot"] or r["code"]["snapshot"]
+            lane[-1]["scenarios"].add(r.get("scenario") or "?")
+            continue
+        lane.append({"sha": r["code"]["sha"], "n_files": r["code"]["n_files"],
+                     "first": r.get("when"), "last": r.get("when"),
+                     "runs": [r["id"]], "snapshot": r["code"]["snapshot"],
+                     "scenarios": {r.get("scenario") or "?"}})
+    for lane in out.values():
+        for i, e in enumerate(lane):
+            e["scenarios"] = sorted(e["scenarios"])
+            e["changed"] = (code_changes(lane[i - 1]["runs"][-1], e["runs"][0])
+                            if i else [])
+    return out
+
+
+def _code_files(rid):
+    """그 런이 남긴 파일별 해시. 사본이 없는 예전 런은 빈 dict."""
+    return (_read_json(RUNS / rid / "code.json", {}) or {}).get("files") or {}
+
+
+def _diff_maps(a, b):
+    """파일별 해시 두 장을 견준다 — 한쪽이라도 비면 ★아무 말도 하지 않는다★.
+
+    사본이 없는 예전 런을 '전부 추가'로 적으면 개발 이력이 거짓이 된다.
+    """
+    if not a or not b:
+        return []
+    out = [{"path": p, "status": "added"} for p in sorted(set(b) - set(a))]
+    out += [{"path": p, "status": "removed"} for p in sorted(set(a) - set(b))]
+    out += [{"path": p, "status": "changed"}
+            for p in sorted(set(a) & set(b)) if a[p] != b[p]]
+    return out
+
+
+def code_changes(old_id, new_id):
+    """두 런 사이에 바뀐 파일 — 양쪽 다 사본이 있어야 말할 수 있다."""
+    return _diff_maps(_code_files(old_id), _code_files(new_id))
+
+
+def code_diff(old_id, new_id, rel):
+    """두 런의 사본에서 그 파일을 꺼내 unified diff — 표준 라이브러리만 쓴다."""
+    import difflib
+    import tarfile
+
+    def read(rid):
+        tf = RUNS / rid / "code_src.tar.gz"
+        if not tf.exists():
+            return None
+        try:
+            with tarfile.open(tf, "r:gz") as t:
+                f = t.extractfile(rel)
+                return f.read().decode("utf-8", "replace").splitlines() if f else []
+        except (OSError, tarfile.TarError, KeyError):
+            return None
+
+    a, b = read(old_id), read(new_id)
+    if a is None or b is None:
+        return None
+    return "\n".join(difflib.unified_diff(a, b, f"{old_id}/{rel}",
+                                           f"{new_id}/{rel}", lineterm=""))
+
+
+def prev_code_run(rid):
+    """같은 워크스페이스에서 ★바로 앞★ 런 — 코드 변경점을 재는 기준."""
+    runs = [r for r in list_runs() if r.get("code", {}).get("sha")]
+    runs.sort(key=lambda r: (r.get("when") or "", r["id"]))
+    ws = next((r["code"]["ws"] for r in runs if r["id"] == rid), None)
+    prev = None
+    for r in runs:
+        if r["id"] == rid:
+            return prev
+        if r["code"]["ws"] == ws:
+            prev = r["id"]
+    return None
 
 
 def list_trash():
@@ -840,11 +939,13 @@ COMMANDS = {
             {"flag": "--variant", "type": "name", "repeat": True,
              "help": "이 변형만 돌린다 (쉼표로 여러 개)"},
             {"flag": "--tag", "type": "name", "help": "런 이름에 붙일 꼬리표"},
+            {"flag": "--name", "type": "text",
+             "help": "실행 기록에 표시할 이름 (시나리오와 별개. 공백·한글 가능)"},
             {"flag": "--baseline", "type": "choice", "src": "baselines",
              "help": "끝나고 이 기준과 자동 비교"},
             {"flag": "--domain", "type": "int", "help": "ROS_DOMAIN_ID (0=기본)"},
-            {"flag": "--record-debug", "type": "flag",
-             "help": "디버그 영상을 mp4 로 남긴다 (보정 화면의 «노드와 대조» 에 필요)"},
+            {"flag": "--no-record-debug", "type": "flag",
+             "help": "디버그 영상을 남기지 않는다 (기본은 남긴다 — 런당 2~7MB)"},
             {"flag": "--watch", "type": "flag",
              "help": "디버그 영상 창을 띄운다 — ★서버가 도는 PC 의 화면★에 뜬다"},
             {"flag": "--keep-going", "type": "flag",
@@ -857,6 +958,19 @@ COMMANDS = {
         "pos": [], "args": [
             _ARG_SCEN, _ARG_CONT,
             {"flag": "--cases", "type": "path", "help": "검사 케이스 YAML (비우면 기본)"},
+            {"flag": "--domain", "type": "int", "help": "ROS_DOMAIN_ID (0=기본)"},
+        ]},
+
+    "replay": {
+        "title": "다시 돌려 디버그 영상 남기기", "module": ["tb.run", "replay"],
+        "desc": "과거 실행을 그때 시나리오·영상·구간·파라미터 그대로 다시 돌린다. "
+                "디버그 영상은 실행 중에만 잡히므로 옛 실행의 영상을 보려면 이 길뿐이다.",
+        "pos": [{"name": "run", "type": "run", "required": True,
+                 "help": "다시 돌릴 실행"}],
+        "args": [
+            {"flag": "--name", "type": "text", "help": "실행 기록에 표시할 이름"},
+            {"flag": "--force", "type": "flag",
+             "help": "코드가 그때와 달라도 강행 (그때 그림이 아니게 된다)"},
             {"flag": "--domain", "type": "int", "help": "ROS_DOMAIN_ID (0=기본)"},
         ]},
 
@@ -1060,7 +1174,10 @@ def command_specs():
         "choices": {
             "scenarios": [s["file"] for s in snap["scenarios"]],
             "contracts": [c["file"] for c in snap["contracts"]],
-            "runs": [d.name for d in sorted(_run_dirs(), reverse=True)],
+            # 분석 결과가 없는 런은 뺀다 — render·compare·baseline 전부 signals.csv
+            # 를 읽는다. 고를 수 있게 두면 「CSV 를 찾을 수 없다」로만 끝난다.
+            "runs": [d.name for d in sorted(_run_dirs(), reverse=True)
+                     if (d / "summary.json").exists()],
             "baselines": [b["name"] for b in list_baselines()],
         },
         # 웹에 두지 않는 것과 그 이유 — 화면이 그대로 보여 준다
@@ -1357,6 +1474,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"baselines": list_baselines()})
         if route == "trash":
             return self._json({"trash": list_trash()})
+        if route == "code":
+            return self._json({"workspaces": code_timeline()})
         if route == "status":
             return self._json(job_status())
         if route == "tunnel":
@@ -1423,7 +1542,9 @@ class Handler(BaseHTTPRequestHandler):
                 f = d / "feedback.md"
                 return (self._text(f.read_text()) if f.exists()
                         else self._err(404, "아직 만들지 않았습니다"))
-            if sub in ("report", "compare"):
+            # compare.md = 런 직후 ★기준★ 과의 자동 비교, compare_manual.md = 사람이
+            # 「결과 비교」 탭에서 짝을 골라 돌린 것. 섞이면 배지가 거짓말을 한다.
+            if sub in ("report", "compare", "compare_manual"):
                 f = d / f"{sub}.md"
                 return (self._text(f.read_text()) if f.exists()
                         else self._err(404, f"{sub}.md 가 없습니다"))
@@ -1483,6 +1604,22 @@ class Handler(BaseHTTPRequestHandler):
             if sub == "video":
                 v = find_video(d)
                 return self._video(v) if v else self._err(404, "영상이 없습니다")
+            if sub == "code":
+                cj = _read_json(d / "code.json", {}) or {}
+                prev = prev_code_run(d.name)
+                #  ?file= 이면 그 파일의 diff 원문 (직전 런 대비)
+                rel = q.get("file", [""])[0]
+                if rel:
+                    if not prev:
+                        return self._err(404, "비교할 앞 실행이 없습니다")
+                    df = code_diff(prev, d.name, rel)
+                    return (self._text(df) if df is not None
+                            else self._err(404, "그 파일의 사본이 없습니다"))
+                return self._json({
+                    "sha": cj.get("sha"), "n_files": cj.get("n_files"),
+                    "git": cj.get("git"), "workspace": cj.get("workspace"),
+                    "snapshot": bool(cj), "prev": prev,
+                    "changed": code_changes(prev, d.name) if prev else []})
             if sub == "log":
                 nm = q.get("name", ["perception"])[0]
                 if not _SAFE.match(nm):
