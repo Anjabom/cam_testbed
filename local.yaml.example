@@ -15,20 +15,26 @@ videos:
 # 모든 시나리오를 무시하고 이 영상으로 (비상 스위치, 보통은 주석)
 # video: /path/to/one_off.mp4
 
+# ── 가중치 ─────────────────────────────────────────────────────────
+#   ★.pt 로 내리지 않는다★ 실차가 TensorRT .engine 으로 돈다. .pt(FP32) 로 재면
+#   지연도 마스크 두께도, 그래서 conf·s_ref 도 실차와 다른 것을 재게 되는데
+#   리포트는 그대로 초록으로 나온다 — 로그를 뒤져야만 드러나는 거짓말이라
+#   계약의 require_params 가 실행 ★전★ 에 막는다(확장자·파일 존재 둘 다).
+#   ★이 노트북이 곧 실차다★ 그래서 여기 적힌 경로가 실차 경로 그대로다.
+#   다른 기계로 옮겨 .engine 이 안 열리면(빌드한 GPU/TRT 버전에 묶인다)
+#   그 기계에서 .engine 을 다시 빌드한다 — .pt 로 되돌리는 건 재는 대상을
+#   바꾸는 것이라 답이 아니다.
 params:
   # ── white1 / traffic_light (정지선·신호등) ──────────────────────────
-  #   실차 기본값은 /home/mad2/... 의 ★.engine★ 이다. .engine 은 빌드한 GPU 에
-  #   묶여 있어 다른 기계에서는 안 열린다 — 같은 학습 결과의 .pt 를 쓴다.
   traffic_light:
-    tl_weights: /home/<사용자>/runs2/runs/detect/combined_light/weights/best.pt
-    sl_weights: /home/<사용자>/runs2/runs/segment/lane_line_new2/weights/best.pt
+    tl_weights: /home/mad2/runs2/runs/detect/combined_light/weights/best.engine
+    sl_weights: /home/mad2/runs2/runs/segment/lane_line_new2/weights/best.engine
     device: cuda:0
 
+  # ── white / perception (차선) ───────────────────────────────────────
   perception:
-    # 실차는 TensorRT .engine 을 쓰지만 GPU/TRT 버전이 다르면 안 열린다.
-    # 데스크톱에서는 같은 학습 결과의 .pt 를 쓴다.
-    lane_weights_roi: /home/anjabom/runs2/runs/segment/lane_line_new2/weights/best.pt
-    tl_weights_roi:   /home/anjabom/runs2/runs/detect/combined_light/weights/best.pt
+    lane_weights_roi: /home/mad2/runs2/runs/segment/lane_line_new2/weights/best.engine
+    tl_weights_roi:   /home/mad2/runs2/runs/detect/combined_light/weights/best.engine
     device: cuda
 
 env:

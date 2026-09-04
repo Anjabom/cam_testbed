@@ -1270,9 +1270,9 @@ videos:                          # ★논리 이름 → 이 머신의 실제 경
 
 params:
   perception:
-    lane_weights_roi: /경로/best.pt   # 실차는 TensorRT .engine 이지만
-    tl_weights_roi:   /경로/best.pt   # GPU/TRT 버전이 다르면 안 열린다 → .pt
-    device: cuda                      # ★GPU 가 없으면 cpu★
+    lane_weights_roi: /경로/best.engine  # ★계약이 .engine 을 강제한다★ .pt 로
+    tl_weights_roi:   /경로/best.engine  #  재면 실차와 다른 것을 재게 된다
+    device: cuda                         # ★GPU 가 없으면 cpu★
 ```
 
 논리 이름을 안 쓰고 시나리오에 절대경로를 박으면 다음 머신에서 또 고쳐야 한다.
@@ -1320,7 +1320,7 @@ python3 -m tb.run doctor --scenario scenarios/regression.yaml
   ✅ 실행파일 white camera_judgment
 ── 시나리오 ──
   ✅ 영상  'track_a' → /home/…/track_record.mp4
-  ✅ perception.lane_weights_roi  /home/…/best.pt
+  ✅ perception.lane_weights_roi  /home/…/best.engine
 
 판정: OK
 ```
@@ -1408,7 +1408,7 @@ python3 -m tb.run run   --scenario scenarios/other_reg.yaml
 | 웹앱에서 영상이 검은 화면 | `ffmpeg` 이 없어 `cv2/mp4v` 로 찍혔다 | `sudo apt install ffmpeg` 후 재실행 |
 | 첫 회귀가 전부 DIFF | 추론 백엔드가 달라졌다 | 정상. 그 머신 기준을 새로 등록 |
 | `WIDTH_BAD` 가 절반 넘게 뜬다 | 영상의 트랙 규격과 `lane_width_m` 불일치 | §11 「새 영상을 찍었을 때」 |
-| YOLO 가 `.engine` 을 못 연다 | TensorRT/GPU 버전이 다르다 | `local.yaml` 에서 `.pt` 로 덮어쓴다 |
+| YOLO 가 `.engine` 을 못 연다 | TensorRT/GPU 버전이 다르다 | 그 기계에서 `.engine` 을 다시 빌드한다 (`.pt` 로 되돌리면 재는 대상이 바뀐다 — 계약이 막는다) |
 
 ### 되돌려 보내기
 
@@ -1607,12 +1607,14 @@ cd ~/Downloads/gold-main/gold_ws
 colcon build --symlink-install --packages-up-to white1
 
 # ② 가중치는 local.yaml 에 (머신에 묶인 값이다)
-#    실차 기본값은 /home/mad2/… 의 .engine 이고, .engine 은 ★빌드한 GPU★ 에
-#    묶여 다른 기계에서 안 열린다 → 같은 학습 결과의 .pt 를 준다.
+#    실차가 .engine 으로 도니 테스트베드도 .engine 이어야 한다 — 계약의
+#    require_params 가 확장자·파일 존재를 실행 ★전★ 에 막는다.
+#    .engine 은 ★빌드한 GPU★ 에 묶여 다른 기계에서 안 열린다 → 그 기계에서
+#    다시 빌드한다(.pt 로 되돌리는 건 재는 대상을 바꾸는 것이라 답이 아니다).
 #      params:
 #        traffic_light:
-#          tl_weights: …/detect/combined_light/weights/best.pt
-#          sl_weights: …/segment/lane_line_new2/weights/best.pt
+#          tl_weights: …/detect/combined_light/weights/best.engine
+#          sl_weights: …/segment/lane_line_new2/weights/best.engine
 #          device: cuda:0
 
 # ③ 점검

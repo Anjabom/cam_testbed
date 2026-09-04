@@ -17,7 +17,7 @@
 version: 1
 name: white_vote
 
-workspace: /home/anjabom/white_vote_ws
+workspace: /home/mad2/white_vote_ws
 
 nodes:
   - id: perception

@@ -122,7 +122,7 @@ checks:
   - {stat: "log:boot_undistort_on", min: 1,
      why: "0-3 카메라 보정 ON — OFF 면 BEV 거리를 믿을 수 없다"}
   - {stat: "log:boot_weight_fail", max: 0,
-     why: "0-1 .engine 은 빌드한 GPU 에 묶인다 — 이 기계에서는 .pt 를 줄 것"}
+     why: "0-1 .engine 은 빌드한 GPU 에 묶인다 — 안 열리면 이 기계에서 다시 빌드할 것"}
   - {stat: "log:boot_class_missing", max: 0,
      why: "★여기서 멈춘다★ 다른 클래스를 정지선으로 읽으면 엉뚱한 곳에서 선다"}
 
