@@ -1,0 +1,17 @@
+# ※ 옛 시나리오에서 옮겨 온 프리셋이다 — 판정(checks)·회귀 허용오차는
+#   더 이상 YAML 에 없다(잰 값을 사람이·클로드가 읽는다).
+#   프리셋이 담는 것은 ★재생 조건★ 뿐이다: 영상·구간·모드·파라미터.
+# 실차 타이밍 재현 프리셋 — 30fps 로 밀어 넣고 유실/지연을 잰다.
+#   회귀 비교용이 아니다(머신마다 유실 패턴이 달라서 값이 재현되지 않는다).
+#   처리율·지연·게이트 반응(신호등 hold 시간 등)을 보는 용도.
+
+name: realtime
+contract: contracts/white_camera.yaml
+video: /home/anjabom/track_record.mp4
+mode: realtime
+rate: 1.0
+limit: 0
+warmup_s: 8.0
+discard_first: 10
+params:
+  perception: {show_window: false, record_video: false, enable_undistort: true}

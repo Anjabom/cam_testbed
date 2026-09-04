@@ -1,8 +1,0 @@
-# 돌고 있는 외부 시스템을 15초 기록해서 지표만 낸다.
-name: demo_foreign
-contract: contracts/demo_foreign.yaml
-record_seconds: 15
-discard_first: 0
-checks:
-  - {signal: quality, stat: mean, min: 0.5, why: "품질 지표가 절반은 넘어야"}
-  - {signal: speed,   stat: max,  max: 3.0, why: "속도 상한"}

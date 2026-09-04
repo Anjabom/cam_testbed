@@ -1,5 +1,5 @@
 # 다른 워크스페이스 붙이기 예시 — 이 워크스페이스(white)와 아무 관계가 없다.
-# tb.discover 로 초안을 뽑고 이름만 손본 결과다.
+# 돌고 있는 그래프를 `ros2 topic` 으로 읽어 초안을 뽑고 이름만 손본 결과다.
 version: 1
 name: demo_foreign
 workspace: /tmp/does_not_matter     # attach 모드라 노드를 안 띄운다

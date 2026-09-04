@@ -1,0 +1,286 @@
+# ══════════════════════════════════════════════════════════════════════════
+#  계약 — black_ws (lane_vote 판 카메라 인지, 1/5카 대상)
+# ══════════════════════════════════════════════════════════════════════════
+#  white_vote.yaml 의 사본이 아니라 ★같은 테스트베드에 붙는 세 번째 워크스페이스★다.
+#  tb/*.py 는 한 줄도 안 바뀌었다 — 이 파일 하나만 다르다.
+#
+#  white_vote.yaml 과의 차이 (2026-09-04 이식 시점):
+#    ① 패키지가 white → black, 워크스페이스가 /home/mad2/black_ws.
+#    ② ★camera_judgment 가 계측 전용이다★ — /cmd_vel_drive 를 구독하지 않고
+#       /cmd_vel_raw · /judgment_state 를 발행하지 않는다. black 은 driving 이
+#       /cmd_vel_raw 를 motor 로 직접 발행하기 때문이다(kasa 는 judgment 가 중계).
+#       그래서 stimulus.aux(/cmd_vel_drive 주입)와 cmd_* · judgment_state 신호가
+#       전부 빠졌다. 있어도 영원히 조용할 뿐이지만, 조용한 신호는 리포트에서
+#       '고장'과 구별되지 않는다.
+#    ③ /lane/state[12] · /lane_metrics[10] 스키마와 부호는 ★완전히 같다★.
+#       그래서 white_vote 리포트와 나란히 놓고 읽을 수 있다 — 이식이 무결한지를
+#       재는 방법이 바로 그 대조다.
+#
+#  ⚠️ 지금 계약이 겨누는 값은 ★자작차 캘리브★ 다(night_a/b 영상을 찍은 차).
+#     black_ws 소스 기본값이 그 값이라 그렇다. 1/5카 영상이 생기면 calibration 절과
+#     render 절의 숫자를 black_ws 의 config/vehicle_black.yaml 과 같이 갱신한다.
+#     (측정 순서: black_ws/src/black/docs/1_5car_calibration.md)
+# ══════════════════════════════════════════════════════════════════════════
+version: 1
+name: black_vote
+
+workspace: /home/mad2/black_ws
+
+nodes:
+  - id: perception
+    package: black
+    executable: perception
+    node_name: perception_node
+    params:
+      show_window: false
+      record_video: false
+    require_params:
+      # ★실차가 TensorRT .engine 으로 돈다 — 테스트베드도 같은 백엔드여야 한다★
+      #   .pt(FP32) 로 재면 지연도, 마스크 두께도, 그래서 conf·s_ref 도 실차와 다른
+      #   것을 재게 된다. 그런데 리포트는 그대로 초록으로 나온다 — 로그를 뒤져야만
+      #   드러나는 거짓말이라, 실행 전에 막는다.
+      lane_weights_roi:
+        endswith: .engine
+        exists: true
+        why: "실차와 같은 TensorRT 백엔드로 재야 지연·마스크가 실차와 같다"
+      tl_weights_roi:
+        endswith: .engine
+        exists: true
+        why: "위와 같다"
+
+  - id: camera_judgment
+    package: black
+    executable: camera_judgment
+    node_name: camera_judgment
+    params: {}
+
+stimulus:
+  image_topic: /image_raw
+  # ★aux 주입이 없다★ black 의 camera_judgment 는 계측 전용이라 /cmd_vel_drive 를
+  #   구독하지 않는다. white_vote 판에는 그 중계를 깨우려는 주입이 있었다.
+
+sync_topic: /lane/state
+
+debug_topics:
+  - /lane/debug
+
+calibration:
+  # ★perception 이 소스에 박아 둔 어안 보정 모델과 같은 값이어야 한다★
+  undistort:
+    size:  [1920, 1080]
+    K:     [956.30137, 962.44368, 979.72871, 531.00886]
+    D:     [-0.276622, 0.050981, 0.000303, -0.001998, 0.0]
+    alpha: 0.0
+    param: enable_undistort
+  bev: {w: 640, h: 1000}
+
+  verify:
+    video: lane_debug.mp4
+    # ★3판이다★ 원본 | BEV사진 | 투표마스크 — BEV 는 가운데 1/3.
+    #   (white_camera 판은 2판이라 [0.5, 1.0] 이었다.)
+    bev_pane: [0.3333, 0.6667]
+
+  targets:
+    ipm_src:
+      kind: quad
+      nodes: [perception]
+      param: ipm_src_pts
+      hint: "좌우 변을 ★차선 위에★ 올려라. 그러면 BEV 에서 차선이 수직이 된다."
+    lane_roi:
+      kind: rect
+      nodes: [perception]
+      params: [lane_roi_xmin, lane_roi_ymin, lane_roi_xmax, lane_roi_ymax]
+      hint: "차선 세그멘테이션을 돌릴 영역. 하늘·차체를 빼면 빨라진다."
+    px2m:
+      kind: scale
+      nodes: [perception, camera_judgment]
+      param: pixel_to_meter_bev
+      hint: "BEV 에서 실측 길이를 아는 두 점을 찍어라(차선폭이 제일 쉽다).
+             ★lane_vote 에서는 이 값이 격자 해상도 자체다★ — d 는 픽셀 해상도로 풀린다."
+    lane_width:
+      kind: length_m
+      nodes: [perception]
+      param: lane_width_m
+      hint: "좌우 차선 중심 간 거리 [m]. lane_vote 의 폭 후보 3개가 여기서 나온다
+             (width ± lane_width_span_m). camera_judgment 는 이제 폭을 안 쓴다."
+
+observe:
+  - /lane/state
+  - /lane_metrics
+  - /stop_line_dist
+  - /crosswalk_dist
+
+signals:
+  # /lane/state = [d, psi, kappa, width, conf, sep, mag, bal, L, R, mode, ms]
+  vote_d:        { topic: /lane/state,   path: ["data[0]"] }
+  vote_psi:      { topic: /lane/state,   path: ["data[1]"] }
+  vote_kappa:    { topic: /lane/state,   path: ["data[2]"] }
+  vote_width:    { topic: /lane/state,   path: ["data[3]"] }
+  conf:          { topic: /lane/state,   path: ["data[4]"] }
+  vote_sep:      { topic: /lane/state,   path: ["data[5]"] }
+  vote_mag:      { topic: /lane/state,   path: ["data[6]"] }
+  vote_bal:      { topic: /lane/state,   path: ["data[7]"] }
+  left_ok:       { topic: /lane/state,   path: ["data[8]"] }
+  right_ok:      { topic: /lane/state,   path: ["data[9]"] }
+  vote_mode:     { topic: /lane/state,   path: ["data[10]"] }
+  solve_ms:      { topic: /lane/state,   path: ["data[11]"] }
+
+  # /lane_metrics 는 ★스키마가 그대로다★ — 다운스트림 계약이 안 바뀌었다는 증거.
+  cte_rear_m:    { topic: /lane_metrics, path: ["data[0]", cte_rear_m] }
+  cte_near_m:    { topic: /lane_metrics, path: ["data[1]", cte_near_m] }
+  theta_deg:     { topic: /lane_metrics, path: ["data[2]", theta_lane_deg] }
+  curvature:     { topic: /lane_metrics, path: ["data[3]", curvature_1pm] }
+  conf_eff:      { topic: /lane_metrics, path: ["data[4]", conf_eff] }
+  lane_width_m:  { topic: /lane_metrics, path: ["data[5]", lane_width_m] }
+  flags:         { topic: /lane_metrics, path: ["data[6]", flags] }
+  d_near_m:      { topic: /lane_metrics, path: ["data[7]", d_near_m] }
+  conf_raw:      { topic: /lane_metrics, path: ["data[8]", conf_raw] }
+  seq:           { topic: /lane_metrics, path: ["data[9]", seq] }
+
+  stop_line_dist:  { topic: /stop_line_dist,  path: [data] }
+  crosswalk_dist:  { topic: /crosswalk_dist,  path: [data] }
+
+flag_bits:
+  signal: flags
+  bits:
+    1:  NO_LANE
+    2:  WIDTH_BAD
+    4:  CTE_JUMP
+    8:  CONF_LOW
+    16: SINGLE
+
+compare_signals:
+  - cte_rear_m
+  - theta_deg
+  - conf_raw
+  - conf_eff
+  - lane_width_m
+  - curvature
+  - flags
+  - vote_sep
+  - vote_mag
+  - vote_bal
+
+compare_categorical: []
+
+# 계측 전용이라 순서를 비교할 상태 토픽이 없다(/judgment_state 발행자 없음).
+compare_sequence: []
+
+hold_signals:
+  - stop_line_dist
+  - crosswalk_dist
+
+# ── 시각화 — 테스트베드가 ★판정에 쓴 값 그대로★ 다시 그릴 때 필요한 것 ──
+#   대상 노드의 /lane/debug 는 그 노드가 보여 주고 싶은 것이고, 이건 리포트의 숫자가
+#   어디서 나왔는지를 대조하기 위한 것이다 — 둘이 어긋나면 그 자체가 발견이다.
+render:
+  bottom_ratio:    0.92     # 근점 y = bev_h × 이 값 (camera_judgment 와 같아야)
+  lookahead_ratio: 0.45     # 전방점 y
+  ipm_src_pts: [790.6, 610.4, 1117.1, 609.7, 1899.6, 1068.0, -21.0, 1092.5]  # 시나리오 params 우선
+  # ★폴리핏 계수가 아니라 미터 단위 모델을 준다★
+  #   tb/render.py 가 x(r)=x_min+(H−r)·mpp / y_c=d+tanψ·x+½κx² / col=c0−y_c/mpp 로
+  #   픽셀 다항식을 복원해 기존 그리기를 그대로 쓴다(자체검사 t_render_lane_metric).
+  #   mpp 를 생략하면 calibration.targets 의 kind: scale 값(=그 런이 실제로 쓴 px2m)을 쓴다.
+  lane_metric:
+    d:      vote_d
+    psi:    vote_psi
+    kappa:  vote_kappa
+    width:  vote_width
+    x_min:  0.55            # perception·camera_judgment 의 bev_bottom_ahead_rear_m 와 같아야
+  readout: [theta_deg, cte_rear_m, cte_near_m, conf_eff, lane_width_m,
+            vote_sep, vote_mag, vote_bal, flags]
+
+# ── θ 품질 — gps_imu 가 쓰는 유일한 값 ────────────────────────────────
+theta_quality:
+  signal: theta_deg
+  fps: 30.0
+  straight_max_rate_dps: 10.0
+  vibration_band_hz: [0.08, 0.18]
+
+# ── 신호 주입 — 변환 수학을 영상 없이 격리 검증 ───────────────────────
+injection:
+  nodes: [camera_judgment]
+  input:  {topic: /lane/state,   type: std_msgs/msg/Float32MultiArray}
+  output: {topic: /lane_metrics}
+  cases:  cases/vote_math.yaml
+
+# ── 받는 쪽 — 임계값을 지어내지 않기 위해 소비자 상수를 그대로 옮겨 적는다 ──
+consumers:
+  - id: gps_imu_heading
+    label: GPS/IMU 헤딩 보정
+    source: gps_imu.py CAM_HEAD_*
+    stages:
+      - name: 차선 검출
+        expr: "int(flags) % 2 == 0"
+        why: "F_NO_LANE 비트. 좌우 어느 쪽도 못 본 프레임"
+      - name: 폭 게이트
+        expr: "int(flags) % 4 < 2"
+        why: "F_WIDTH_BAD. 서면 camera_judgment 가 conf_eff 를 0 으로 만든다"
+        const: "width_min_m=1.8, width_max_m=4.5"
+      - name: conf 임계값
+        expr: "conf_eff >= 0.35"
+        why: "gps_imu 는 0.35 를 쓴다 — camera_judgment 의 conf_min 0.15 보다 훨씬 높다"
+        const: "CAM_HEAD_CONF_MIN=0.35"
+      - name: θ 상한
+        expr: "abs(theta_deg) <= 15.0"
+        why: "15° 초과는 오검출로 gps_imu 가 버린다. ★하한(데드밴드)은 2026-09-01 에
+              제거됐다★ — 편향된 θ 에 대칭 문턱을 걸면 0 근처의 정직한 관측만 골라
+              버리고 편향된 꼬리만 통과시키는 정류기로 작동했다(gps_imu.py 주석 참조)"
+        const: "CAM_HEAD_MIN_DEG=0.0, CAM_HEAD_MAX_DEG=15.0"
+      - name: 신선도
+        expr: "latency_ms <= 400"
+        why: "이보다 오래된 /lane_metrics 는 gps_imu 가 무시한다"
+        const: "CAM_HEAD_MAX_AGE=0.40s"
+
+  - id: judgment_gate
+    label: 차선 게이트 통과
+    source: camera_judgment.py
+    stages:
+      - name: 차선 검출
+        expr: "int(flags) % 2 == 0"
+      - name: 치명 플래그 없음
+        expr: "conf_eff > 0"
+        why: "없음·폭·점프·conf 중 하나라도 걸리면 conf_eff=0 → 융합에서 카메라 미반영"
+
+  # lane_vote 고유 — 왜 신뢰도가 떨어졌는지를 세 성분으로 갈라 본다.
+  # conf = sqrt(sep)·mag·(0.5+0.5·bal) 이므로 어느 항이 범인인지가 곧 처방이다.
+  - id: vote_health
+    label: 투표 신뢰도 분해
+    source: black/lane_vote/confidence.py
+    stages:
+      - name: 피크 유일성 (sep)
+        expr: "vote_sep >= 0.5"
+        why: "합류·분기·이중차선에서 떨어진다. 별도 예외처리 없이 자동으로 낮아진다"
+      - name: 신호 세기 (mag)
+        expr: "vote_mag >= 0.5"
+        why: "마스크가 얇거나 끊기면 떨어진다. s_ref 를 실측으로 교체하기 전엔 절대값 무의미"
+        const: "s_ref=0.9 (★실주행 로그의 score_p90 으로 교체할 것★)"
+      - name: 좌우 균형 (bal)
+        expr: "vote_bal >= 0.3"
+        why: "한쪽 차선만 보이면 0 으로 간다. 0 이어도 d 는 유효하다(폭 가정)"
+
+frame_presets:
+  - {label: 전부,             where: ""}
+  - {label: 플래그 있음,      where: "int(flags) != 0", default: true}
+  - {label: 차선 없음,        where: "int(flags) % 2 == 1"}
+  - {label: 폭 게이트 탈락,   where: "int(flags) % 4 >= 2"}
+  - {label: 한쪽 차선만,      where: "int(flags) % 32 >= 16"}
+  - {label: conf 낮음,        where: "conf_raw < 0.3"}
+  - {label: θ 대역 밖,        where: "abs(theta_deg) > 15"}
+  - {label: 격자 경계(κ 포화), where: "abs(vote_kappa) >= 0.119"}
+  - {label: 전역 재탐색,      where: "vote_mode < 0.5"}
+  - {label: 받는 쪽이 쓴 프레임,
+     where: "int(flags) == 0 and conf_eff >= 0.35 and abs(theta_deg) <= 15"}
+frame_columns: [theta_deg, cte_rear_m, lane_width_m, conf_raw, vote_sep, vote_mag, vote_bal]
+
+# ── 메타모픽 : 좌우 반전하면 부호만 뒤집혀야 하는 신호 ────────────────
+#   ★curvature 가 여기 새로 들어왔다★ — lane_vote 의 κ 는 부호를 갖는다
+#   (예전 perception 은 |a| 를 냈다). 반전 시 값이 같으면 오히려 버그다.
+mirror_odd_signals:
+  - cte_rear_m
+  - cte_near_m
+  - theta_deg
+  - curvature
+  - vote_d
+  - vote_psi
+  - vote_kappa

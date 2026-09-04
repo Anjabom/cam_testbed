@@ -1,0 +1,21 @@
+# ※ 옛 시나리오에서 옮겨 온 프리셋이다 — 판정(checks)·회귀 허용오차는
+#   더 이상 YAML 에 없다(잰 값을 사람이·클로드가 읽는다).
+#   프리셋이 담는 것은 ★재생 조건★ 뿐이다: 영상·구간·모드·파라미터.
+# 차선 알고리즘(perception + camera_judgment) 시험 — 실차 야간 영상 A
+#   regression.yaml 은 실내 모형 트랙(track_a) 용이라 차선폭 규격이 다르다.
+#   이 파일은 실차 카메라로 찍은 실도로 영상이라 local.yaml 의 실차 기본값
+#   (lane_width_m 3.0, width_min/max 는 노드 기본값)을 그대로 쓴다 — 덮어쓰지 않는다.
+
+name: lane_night_a
+contract: contracts/white_camera.yaml
+video: /home/mad2/video/night_a.mp4
+mode: lockstep
+start: 0
+limit: 0
+stride: 1
+warmup_s: 8.0
+sync_timeout: 4.0
+discard_first: 5
+params:
+  perception: {show_window: false, record_video: false, enable_undistort: true}
+  camera_judgment: {}

@@ -1,4 +1,4 @@
-"""테스트베드를 ★별도의 창★으로 띄운다 — 여전히 표준 라이브러리만 쓴다.
+"""보정 스튜디오를 ★별도의 창★으로 띄운다 — 여전히 표준 라이브러리만 쓴다.
 
 ★왜 창인가★
 주소를 외워 브라우저에 치고, 열어 둔 탭 스무 개 사이에서 찾는 것은 도구가 아니다.
@@ -15,7 +15,7 @@ UI 는 이미 `web/` 에 다 있다. 필요한 것은 그 화면을 담을 창 �
 영상 재생(H.264)·플롯이 지금 검증된 그대로 동작한다.
 
     python3 -m tb.run app              # 별도 창
-    python3 -m tb.run app --page exec  # 바로 '테스트 실행' 화면으로
+    python3 -m tb.run app --page help  # 바로 «사용 안내» 로
 """
 from __future__ import annotations
 
@@ -80,9 +80,10 @@ def launch(host="127.0.0.1", port=8770, page="", size="1600,1000"):
     else:
         srv = ThreadingHTTPServer((host, port), srv_mod.Handler)
         threading.Thread(target=srv.serve_forever, daemon=True).start()
-        print(f"테스트베드 → {url}")
-        print(f"  실행 {len(srv_mod.list_runs())}개 · "
-              f"베이스라인 {len(srv_mod.list_baselines())}개", flush=True)
+        profs = srv_mod.list_profiles()
+        print(f"카메라 보정 스튜디오 → {url}")
+        print(f"  프로필 {len(profs)}개: "
+              + ", ".join(x["id"] for x in profs[:6]), flush=True)
 
     prof = _profile_dir()
     first = not prof.exists()

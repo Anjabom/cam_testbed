@@ -1,0 +1,23 @@
+# ※ 옛 시나리오에서 옮겨 온 프리셋이다 — 판정(checks)·회귀 허용오차는
+#   더 이상 YAML 에 없다(잰 값을 사람이·클로드가 읽는다).
+#   프리셋이 담는 것은 ★재생 조건★ 뿐이다: 영상·구간·모드·파라미터.
+# ★skilltest_night_a★ — presets/vote_night_a.yaml 를 본으로 떠서 만들었다 (2026-09-02 18:34)
+#   cam-test 스킬의 전체 고리 실전 검증 — 사용자가 준 영상 경로로 돌린 첫 런
+#   ⚠️ 본의 판정 기준을 그대로 물려받았다 — 이 영상에 맞는지 확인할 것.
+# lane_vote 차선 알고리즘 시험 — 실차 야간 영상 A
+#   white_camera 판의 lane_night_a.yaml 과 ★같은 영상·같은 검사★ 를 쓴다.
+#   그래야 두 알고리즘의 리포트를 나란히 놓고 읽을 수 있다.
+
+name: skilltest_night_a
+contract: contracts/white_vote.yaml
+video: skilltest_vid
+mode: lockstep
+start: 0
+limit: 0
+stride: 1
+warmup_s: 8.0
+sync_timeout: 4.0
+discard_first: 5
+params:
+  perception: {show_window: false, record_video: false, enable_undistort: true}
+  camera_judgment: {}

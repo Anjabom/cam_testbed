@@ -1,14 +1,17 @@
-"""분석 — JSONL 원기록 → 신호 테이블 → 지표/불변식/회귀비교.
+"""계측 — JSONL 원기록 → 신호 테이블 → 통계·리포트.
 
-여기에도 white 의 토픽·필드 이름은 없다. 전부 Contract 를 통해 온다.
+대상 워크스페이스의 토픽·필드 이름은 여기 없다. 전부 Contract 를 통해 온다.
 
-★GT 가 없을 때 무엇을 근거로 판정하는가★
-  1) 회귀(golden) : 같은 영상 · 같은 파라미터에서 이전 버전과 값이 같은가.
-                    코드 변경의 부작용을 잡는다. GT 불필요.
-  2) 불변식       : 진실을 몰라도 반드시 성립해야 하는 성질
-                    (차선폭은 거의 일정하다 / θ 는 프레임 간 튀지 않는다 …)
-  3) 섭동 대조    : 같은 장면을 밝기·블러·압축만 바꿔 넣었을 때
-                    출력이 얼마나 무너지는가 = 강건성. 역시 GT 불필요.
+★재기만 한다 — 판정하지 않는다★ [2026-09-04]
+예전에는 시나리오의 `checks:` 가 임계값으로 합격/불합격을 찍었다(`run_checks`).
+그 숫자는 첫 런의 실측에서 나온 것이라 근거가 약했고, 리포트 맨 위의 「13/13 통과」
+한 줄이 나머지를 안 읽게 만들었다. 지금 이 파일이 내놓는 것은 전부 ★관측값★ 이다:
+
+  · 신호별 통계 (mean/std/min/max/p95|Δ|) 와 이산 신호의 분포·전이
+  · 게이트 통과율(funnel) · θ 품질 · 단계 전이 시각 · 노드 로그 이벤트
+  · 계약 정합(스키마 드리프트) — 「잰 자리가 맞는가」라, 이건 판정이 아니라 신뢰도다
+
+좋은지 나쁜지는 이 결과를 읽는 사람(과 클로드)이 말한다.
 """
 from __future__ import annotations
 
@@ -25,6 +28,8 @@ NUM = (int, float)
 # ══════════════════════════════════════════════════════════════════════
 #  JSONL → 프레임별 신호 테이블
 # ══════════════════════════════════════════════════════════════════════
+
+
 def build_table(jsonl_path, contract, discard_first=0):
     """프레임 번호를 행 키로 삼아 신호를 모은다.
 
@@ -110,6 +115,8 @@ def read_csv(path):
 # ══════════════════════════════════════════════════════════════════════
 #  통계 도우미
 # ══════════════════════════════════════════════════════════════════════
+
+
 def _nums(rows, key):
     out = []
     for r in rows:
@@ -186,6 +193,8 @@ def valid_rows(rows, contract):
 #  좌우되지만 프레임 번호는 ★장면 안의 시간★ 이다. 그래서 초 단위 값은 전부
 #  (프레임 차이 ÷ 영상 fps) 로 잰다 — 실차에서 실제로 흐른 시간과 같다.
 # ══════════════════════════════════════════════════════════════════════
+
+
 def scene_fps(meta, contract=None):
     """초 단위 판정에 쓸 fps — ★노드가 겪은 시간★ 의 기준이다.
 
@@ -219,73 +228,6 @@ def _frame_span_s(rows, i0, i1, fps):
     return (float(f1) - float(f0) + 1.0) / fps
 
 
-def spans(rows, where):
-    """조건식이 참인 ★연속 구간★ [(i0, i1)] — i1 포함.
-
-    값이 없어 판정 보류(None)인 행은 구간을 ★끊지 않고 건너뛴다★. 상태 신호는
-    hold_signals 로 채워지지만 첫 발행 이전 구간은 비어 있을 수 있어서다.
-    """
-    from .expr import evaluate
-    out, start, last = [], None, None
-    for i, r in enumerate(rows):
-        v = evaluate(where, r)
-        if v is None:
-            continue
-        if v:
-            if start is None:
-                start = i
-            last = i
-        elif start is not None:
-            out.append((start, last))
-            start = None
-    if start is not None:
-        out.append((start, last))
-    return out
-
-
-def span_stats(rows, where, fps):
-    """조건식 하나에서 나오는 값들.
-
-    count 조건에 맞은 행 수 · frac 그 비율 · runs 구간 개수
-    run_max_frames 가장 긴 구간의 행 수 · run_max_s 그 구간의 ★영상 시간★
-    """
-    sp = spans(rows, where)
-    n = sum((i1 - i0 + 1) for i0, i1 in sp)
-    return {
-        "count": n,
-        "frac": (n / len(rows)) if rows else 0.0,
-        "runs": len(sp),
-        "run_max_frames": max(((i1 - i0 + 1) for i0, i1 in sp), default=0),
-        "run_max_s": max((_frame_span_s(rows, i0, i1, fps) for i0, i1 in sp),
-                         default=0.0),
-        "first_frame": (rows[sp[0][0]].get("frame") if sp else None),
-        "last_frame": (rows[sp[-1][1]].get("frame") if sp else None),
-    }
-
-
-def _val_match(v, pat):
-    """전이 규격의 한쪽(`0` · `RED` · `*`)이 실제 값 v 와 맞는가."""
-    if pat == "*":
-        return True
-    if isinstance(v, NUM) and not isinstance(v, bool):
-        try:
-            return abs(float(v) - float(pat)) < 1e-9
-        except (TypeError, ValueError):
-            return False
-    if isinstance(v, bool):
-        return str(pat).lower() in (("true", "1") if v else ("false", "0"))
-    return str(v) == pat
-
-
-def parse_event(spec):
-    """`brake_level:0->1` · `tl_state:*->RED` → (신호, 이전, 이후)."""
-    sig, _, rest = str(spec).partition(":")
-    a, _, b = rest.partition("->")
-    if not sig.strip() or not rest or not b.strip():
-        raise ValueError(f"이벤트 규격이 아니다: {spec!r}  (예: brake_level:0->1)")
-    return sig.strip(), a.strip(), b.strip()
-
-
 def transitions(rows, sig):
     """신호 값이 바뀐 지점 [(i, 이전값, 이후값)]. 결측 행은 건너뛴다."""
     out, prev, seen = [], None, False
@@ -296,21 +238,6 @@ def transitions(rows, sig):
         if seen and v != prev:
             out.append((i, prev, v))
         prev, seen = v, True
-    return out
-
-
-def find_events(rows, spec, fps):
-    """전이 규격에 맞는 사건 목록 — 각각 어느 행(i)·어느 프레임·몇 초인지."""
-    sig, a, b = parse_event(spec)
-    f0 = rows[0].get("frame") if rows else None
-    out = []
-    for i, prev, cur in transitions(rows, sig):
-        if not (_val_match(prev, a) and _val_match(cur, b)):
-            continue
-        fr = rows[i].get("frame")
-        t = ((float(fr) - float(f0)) / fps
-             if isinstance(fr, NUM) and isinstance(f0, NUM) else None)
-        out.append({"i": i, "frame": fr, "from": prev, "to": cur, "t_s": t})
     return out
 
 
@@ -380,6 +307,8 @@ def log_events(run_dir, contract):
 # ══════════════════════════════════════════════════════════════════════
 #  단일 런 지표
 # ══════════════════════════════════════════════════════════════════════
+
+
 def summarize(rows, contract, meta=None):
     meta = meta or {}
     s = {"meta": meta, "rows": len(rows)}
@@ -461,6 +390,8 @@ def summarize(rows, contract, meta=None):
 #    · 저주파 진동  조향 진동 대역에 파워가 있으면 카메라가 진동을 ★만든다★
 #                  (실측으로 조향진동의 최대 52% 가 카메라 탓이라 trust 를 낮춘 이력)
 # ══════════════════════════════════════════════════════════════════════
+
+
 def theta_quality(rows, contract):
     cfg = contract.raw.get("theta_quality") or {}
     if not cfg:
@@ -541,6 +472,8 @@ def report_theta(tq):
 #  게이트를 못 넘으면 주행에 ★한 프레임도 기여하지 않는다★.
 #  단계별 탈락률을 보면 무엇을 고쳐야 하는지가 바로 나온다.
 # ══════════════════════════════════════════════════════════════════════
+
+
 def funnel(rows, contract):
     from .expr import evaluate
     out = []
@@ -606,233 +539,6 @@ def report_funnel(funnels):
     return "\n".join(L)
 
 
-# ══════════════════════════════════════════════════════════════════════
-#  선언적 체크 (시나리오 YAML 의 checks:)
-# ══════════════════════════════════════════════════════════════════════
-def _stat_value(summary, rows, contract, chk):
-    stat = chk["stat"]
-    sig = chk.get("signal")
-    fps = summary.get("scene_fps") or scene_fps(summary.get("meta"), contract)
-
-    # ── 조건식 체크 ──────────────────────────────────────────────────
-    #    signal 이 없으면 ★구간★ 을 잰다 (count/frac/runs/run_max_frames/run_max_s)
-    #        {where: "sl_wait and brake_level > 0", stat: count, max: 0}
-    #    signal 이 있으면 ★그 조건에 맞는 행만 골라★ 평소의 신호 통계를 낸다
-    #        {where: "sl_px >= 0", signal: sl_px, stat: increases, max: 3}
-    if chk.get("where") is not None and sig is None:
-        src_rows = valid_rows(rows, contract) if chk.get("when_valid") else rows
-        return span_stats(src_rows, chk["where"], fps).get(stat)
-
-    # ── 전이 체크 : 값이 바뀐 그 순간 ────────────────────────────────
-    #    {event: "brake_level:0->1", stat: "at:sl_px", min: 230, max: 250}
-    #    stat 은 count / frame / t_s / at:<신호>. 사건이 여럿이면 ★첫 번째★ 를
-    #    쓴다(접근 1회를 재는 것이 목적이다). last: true 면 마지막 것.
-    if chk.get("event") is not None:
-        evs = find_events(rows, chk["event"], fps)
-        if stat == "count":
-            return len(evs)
-        if not evs:
-            return None
-        e = evs[-1] if chk.get("last") else evs[0]
-        if stat in ("frame", "t_s"):
-            return e.get(stat)
-        if stat.startswith("at:"):
-            return rows[e["i"]].get(stat.split(":", 1)[1])
-        return None
-
-    if sig is None:
-        if stat.startswith("log:"):
-            e = (summary.get("log_events") or {}).get(stat.split(":", 1)[1])
-            return None if e is None else e.get("count")
-        if stat.startswith("flag_rate:"):
-            return (summary.get("flag_rate") or {}).get(stat.split(":", 1)[1])
-        if stat.startswith("theta:"):
-            return (summary.get("theta_quality") or {}).get(stat.split(":", 1)[1])
-        if stat.startswith("contribution:"):
-            key = stat.split(":", 1)[1]
-            for f in (summary.get("funnel") or []):
-                if f["id"] == key:
-                    return f["rate"]
-            return None
-        return summary.get(stat)
-    src = valid_rows(rows, contract) if chk.get("when_valid") else rows
-    if chk.get("where") is not None:
-        from .expr import evaluate
-        src = [r for r in src if evaluate(chk["where"], r) is True]
-    vals = _nums(src, sig)
-    # ★값이 하나도 없으면 None★ — 아래 차분 통계들은 빈 입력에서 0.0 을 돌려
-    #   준다. 그 자체는 「한 프레임뿐이라 튄 적이 없다」는 뜻으로 맞지만,
-    #   신호가 통째로 결측일 때까지 0.0 이 되면 상한 체크를 그냥 통과해 버린다
-    #   (perception 이 죽은 런에서 theta_deg.p95_abs_diff 가 ✅ 로 찍혔다).
-    #   못 쟀다는 것과 0 이라는 것은 다르다 — 결측은 여기서 잘라 낸다.
-    if not vals:
-        return None
-    if stat == "p95_abs_diff":
-        d = _abs_diffs(src, sig)
-        return _p(d, 0.95) if d else 0.0
-    if stat == "max_abs_diff":
-        d = _abs_diffs(src, sig)
-        return max(d) if d else 0.0
-    if stat in ("decreases", "increases"):
-        d = _steps(src, sig)
-        return sum(1 for x in d if (x < 0 if stat == "decreases" else x > 0))
-    return {
-        "mean": lambda: st.fmean(vals),
-        "std": lambda: st.pstdev(vals) if len(vals) > 1 else 0.0,
-        "min": lambda: min(vals),
-        "max": lambda: max(vals),
-        "p95": lambda: _p(vals, 0.95),
-        "frac_nonzero": lambda: sum(1 for v in vals if v != 0.0) / len(vals),
-        "frac_zero": lambda: sum(1 for v in vals if v == 0.0) / len(vals),
-    }.get(stat, lambda: None)()
-
-
-def run_checks(summary, rows, contract, checks):
-    out = []
-    for chk in checks or []:
-        try:
-            v = _stat_value(summary, rows, contract, chk)
-        except (ValueError, SyntaxError) as e:
-            out.append({"check": str(chk.get("where") or chk.get("event")
-                                     or chk.get("stat")),
-                        "value": None, "ok": False, "note": f"체크 정의 오류: {e}"})
-            continue
-        head = (chk.get("event") or chk.get("where") or chk.get("signal", ""))
-        label = f"{head}.{chk['stat']}".lstrip(".")
-        if v is None:
-            out.append({"check": label, "value": None, "ok": None,
-                        "note": "값 없음(신호 결측)"})
-            continue
-        ok, notes = True, []
-        try:
-            if "min" in chk and v < chk["min"]:
-                ok = False; notes.append(f"< {chk['min']}")
-            if "max" in chk and v > chk["max"]:
-                ok = False; notes.append(f"> {chk['max']}")
-            if "eq" in chk and v != chk["eq"]:
-                ok = False; notes.append(f"≠ {chk['eq']}")
-        except TypeError:
-            # 문자열 신호에 크기 비교를 걸었다 — 판정 불가로 남긴다(죽지 않는다)
-            out.append({"check": label, "value": v, "ok": None,
-                        "note": "숫자가 아니라 크기 비교를 할 수 없다"})
-            continue
-        out.append({"check": label, "value": v, "ok": ok,
-                    "bound": {k: chk[k] for k in ("min", "max") if k in chk},
-                    "note": chk.get("why", "") or ", ".join(notes)})
-    return out
-
-
-# ══════════════════════════════════════════════════════════════════════
-#  회귀 비교
-# ══════════════════════════════════════════════════════════════════════
-def compare(base_rows, cur_rows, contract, tol=None):
-    tol = tol or {}
-    bi = {r["frame"]: r for r in base_rows}
-    ci = {r["frame"]: r for r in cur_rows}
-    common = sorted(set(bi) & set(ci))
-    res = {
-        "frames_base": len(bi), "frames_cur": len(ci), "frames_common": len(common),
-        "only_base": len(set(bi) - set(ci)), "only_cur": len(set(ci) - set(bi)),
-        "numeric": {}, "categorical": {}, "verdict": "PASS",
-    }
-    if not common:
-        res["verdict"] = "NO_OVERLAP"
-        return res
-
-    names = contract.compare_signals or [
-        n for n in contract.signals
-        if any(isinstance(bi[f].get(n), NUM) for f in common[:50])]
-    for name in names:
-        d, nb = [], 0
-        for f in common:
-            a, b = bi[f].get(name), ci[f].get(name)
-            if isinstance(a, NUM) and isinstance(b, NUM):
-                d.append(abs(float(b) - float(a)))
-                nb += 1
-        if not d:
-            continue
-        t = float(tol.get(name, tol.get("_default", 1e-6)))
-        res["numeric"][name] = {
-            "n": nb, "max": max(d), "rms": math.sqrt(sum(x * x for x in d) / len(d)),
-            "p95": _p(d, 0.95), "tol": t,
-            "changed_frac": sum(1 for x in d if x > t) / len(d),
-            "ok": max(d) <= t,
-        }
-        if max(d) > t:
-            res["verdict"] = "DIFF"
-
-    for name in contract.compare_categorical:
-        diff = [f for f in common
-                if str(bi[f].get(name)) != str(ci[f].get(name))]
-        if not any(name in bi[f] for f in common[:50]):
-            continue
-        res["categorical"][name] = {
-            "n": len(common), "differing": len(diff),
-            "frac": len(diff) / len(common),
-            "first_diff": (diff[0] if diff else None),
-            "example": ([f"frame {f}: {bi[f].get(name)} → {ci[f].get(name)}"
-                         for f in diff[:3]] if diff else []),
-            "ok": not diff,
-        }
-        if diff:
-            res["verdict"] = "DIFF"
-
-    # 타이머/변화시 발행 신호 — 프레임 위치가 아니라 "값이 바뀐 순서"만 본다
-    res["sequence"] = {}
-    for name in contract.compare_sequence:
-        sa, sb = _rle(base_rows, name), _rle(cur_rows, name)
-        if not sa and not sb:
-            continue
-        first = next((i for i, (x, y) in enumerate(zip(sa, sb)) if x != y),
-                     None if sa == sb else min(len(sa), len(sb)))
-        res["sequence"][name] = {
-            "len_base": len(sa), "len_cur": len(sb), "ok": sa == sb,
-            "first_diff": first,
-            "base": " → ".join(sa[:8]), "cur": " → ".join(sb[:8]),
-        }
-        if sa != sb:
-            res["verdict"] = "DIFF"
-
-    # ★볼 신호가 하나도 없었으면 그건 통과가 아니다★ — 계약이 이 결과와 안 맞으면
-    #   없는 컬럼은 위에서 전부 조용히 건너뛰고 「PASS」로 끝난다(빈 런이 「전부
-    #   통과」로 찍히던 것과 같은 함정). 세어 두고 이름을 따로 붙인다.
-    res["compared"] = len(res["numeric"]) + len(res["categorical"]) + len(res["sequence"])
-    if not res["compared"]:
-        res["verdict"] = "NO_SIGNALS"
-    return res
-
-
-def _rle(rows, name):
-    """연속 중복을 지운 값 시퀀스."""
-    out = []
-    for r in rows:
-        v = r.get(name)
-        if v is None:
-            continue
-        v = str(v)
-        if not out or out[-1] != v:
-            out.append(v)
-    return out
-
-
-def mirror_rows(rows, odd_names):
-    """메타모픽: 좌우 반전 런의 값을 원본과 같은 좌표계로 되돌린다.
-
-    부호홀수(odd) 신호는 부호를 뒤집고, 나머지는 그대로 둔다.
-    이렇게 맞춘 뒤에도 값이 다르면 좌/우 처리에 비대칭 버그가 있거나
-    IPM src_pts 가 좌우대칭이 아니라는 뜻이다.
-    """
-    odd = set(odd_names)
-    out = []
-    for r in rows:
-        o = dict(r)
-        for k in odd:
-            if isinstance(o.get(k), NUM):
-                o[k] = -float(o[k])
-        out.append(o)
-    return out
-
-
 def diff_stats(base_rows, cur_rows, names, contract=None):
     """두 런의 공통 프레임에서 신호별 차이 통계. 판정 없이 숫자만.
 
@@ -876,54 +582,6 @@ def diff_stats(base_rows, cur_rows, names, contract=None):
     return out
 
 
-def report_robustness(base_name, entries, contract):
-    """섭동별로 기준 대비 얼마나 무너졌는가. GT 없이 재는 강건성 지표."""
-    L = ["# 섭동 대조 (강건성 / 메타모픽)", "",
-         f"기준 런: `{base_name}`", "",
-         "같은 프레임에 조건만 바꿔 넣었다. 장면이 같으므로 **출력도 같아야 한다** —",
-         "차이가 크다는 것은 그 조건에서 인지가 무너진다는 뜻이다(GT 불필요).", "",
-         "열화는 두 갈래로 나타난다:", "",
-         "- **놓친다** — 검출 자체가 갈린다. `검출 엇갈림` 은 기준과 검출 여부가 "
-         "달라진 프레임 비율.",
-         "- **틀린다** — 검출은 했는데 값이 어긋난다. `p95\\|Δ\\|` 는 "
-         "**양쪽 다 온전한(플래그 0)** 프레임에서만 잰다.",
-         "  비교할 신호는 계약의 `compare_signals` 앞쪽 넷이다.", "",
-         ]
-    # ★어느 신호를 비교할지는 계약이 정한다★ 표를 특정 워크스페이스의 신호 이름에
-    #   맞춰 박아 두면(전에는 cte·θ·차선폭이 박혀 있었다) 다른 계약에서는 빈 칸만
-    #   나오는 표가 된다. compare_signals 앞쪽 넷을 그대로 쓴다.
-    cols = list(contract.compare_signals)[:4]
-    fsig, _b = flag_names(contract)
-    head = ["변형"]
-    if fsig:
-        head += ["유효율", "차선없음", "단독차선"]
-    head += ["검출 엇갈림", "둘다비교"] + [rf"p95\|Δ{c}\|" for c in cols]
-    L += ["| " + " | ".join(head) + " |",
-          "|" + "---|" * len(head)]
-    for e in entries:
-        d, sm = e["diff"], e["summary"]
-        fr = sm.get("flag_rate") or {}
-        g = lambda k: _f((d.get(k) or {}).get("p95"), 4)   # noqa: E731
-        note = " 🪞" if e.get("mirror") else ""
-        cells = [f"{e['name']}{note}"]
-        if fsig:
-            cells += [_f(sm.get("valid_rate"), 3), _f(fr.get("NO_LANE"), 3),
-                      _f(fr.get("SINGLE"), 3)]
-        cells += [_f(d.get("mismatch_rate"), 3), str(d.get("n_both_valid", 0))]
-        cells += [g(c) for c in cols]
-        L.append("| " + " | ".join(cells) + " |")
-    if any(e.get("mirror") for e in entries):
-        L += ["", "🪞 = 메타모픽 변형. 좌우 반전 후 부호홀수 신호"
-                  f"(`{'`, `'.join(contract.mirror_odd) or '없음'}`)를 되돌려 비교했다.",
-              "반전만으로 값이 크게 달라지면 좌/우 처리 비대칭이거나 IPM `src_pts` 가 "
-              "좌우대칭이 아니라는 뜻이다."]
-    L.append("")
-    return "\n".join(L)
-
-
-# ══════════════════════════════════════════════════════════════════════
-#  리포트 (마크다운)
-# ══════════════════════════════════════════════════════════════════════
 def _f(v, n=4):
     if v is None:
         return "—"
@@ -934,7 +592,7 @@ def _f(v, n=4):
     return str(v)
 
 
-def report_run(summary, checks, drift, contract):
+def report_run(summary, drift, contract):
     m = summary.get("meta", {})
     L = []
     a = L.append
@@ -943,11 +601,18 @@ def report_run(summary, checks, drift, contract):
     #  사람이 `--name` 으로 붙인 이름. 없으면 줄 자체를 넣지 않는다.
     if m.get("label"):
         a(f"- 이름: **{m['label']}**")
+    #  ★무엇을 보려고 돌렸는가★ 판정표가 있던 자리다. 의도가 없으면 나중에
+    #  이 숫자들이 무엇을 묻고 있었는지 아무도 복원하지 못한다.
+    if m.get("note"):
+        a(f"- 보려던 것: **{m['note']}**")
     a(f"- 계약: `{contract.name}` v{contract.version}")
-    a(f"- 시나리오: `{m.get('scenario', '?')}`")
+    if m.get("preset") and m.get("preset_file"):
+        a(f"- 프리셋: `{m['preset']}`")
     a(f"- 영상: `{m.get('video', '?')}`  섭동: `{m.get('perturb', 'none')}`  "
       f"모드: `{m.get('mode', '?')}`")
-    a(f"- 투입 프레임 {summary.get('frames_pushed', '?')} → "
+    a(f"- 구간: start={m.get('start', 0)} limit={m.get('limit', 0)} "
+      f"stride={m.get('stride', 1)}\n"
+      f"- 투입 프레임 {summary.get('frames_pushed', '?')} → "
       f"출력 행 {summary.get('rows', 0)} (유실 {_f(summary.get('drop_rate'), 3)})")
     if "latency_p95_ms" in summary:
         a(f"- 지연: p50 {_f(summary['latency_p50_ms'], 1)} ms / "
@@ -955,16 +620,12 @@ def report_run(summary, checks, drift, contract):
           f"max {_f(summary['latency_max_ms'], 1)} ms")
     a("")
 
-    if checks:
-        a("## 판정")
-        a("")
-        a("| 체크 | 값 | 기준 | 결과 |")
-        a("|---|---|---|---|")
-        for c in checks:
-            b = c.get("bound") or {}
-            bd = " / ".join(f"{k}={v}" for k, v in b.items()) or "—"
-            mark = "✅" if c["ok"] else ("⚠️" if c["ok"] is None else "❌")
-            a(f"| {c['check']} | {_f(c['value'], 4)} | {bd} | {mark} {c.get('note', '')} |")
+    #  ★행이 0 이면 그 뒤는 전부 뜻이 없다★ 예전에는 이런 런이 「13/13 통과」로
+    #  찍혔다 — 위반할 것이 없으면 위반도 없기 때문이다. 이제 판정은 없지만,
+    #  잰 것이 없다는 사실만은 맨 앞에서 말한다.
+    if not summary.get("rows"):
+        a("> ⚠️ **행이 0 이다 — 잰 것이 하나도 없다.** 노드 로그와 아래 「계약 정합」을")
+        a("> 먼저 볼 것. 이 아래의 표들은 전부 빈 입력에서 나온 값이다.")
         a("")
 
     fn = report_funnel(summary.get("funnel"))
@@ -1065,61 +726,4 @@ def report_run(summary, checks, drift, contract):
         a("> **대체경로**: 두 번째 이후 경로로 잡혔다 — 마이그레이션 중이라는 뜻이고 동작은 정상.")
         a("> **미수신**: 그 토픽에 메시지가 한 번도 안 왔다(발행 조건 미충족일 수 있다).")
     a("")
-    return "\n".join(L)
-
-
-def report_compare(res, base_id, cur_id):
-    L = []
-    a = L.append
-    a(f"# 회귀 비교 — `{base_id}` → `{cur_id}`")
-    a("")
-    a(f"**판정: {res['verdict']}**")
-    a("")
-    a(f"- 공통 프레임 {res['frames_common']} "
-      f"(기준 전용 {res['only_base']}, 현재 전용 {res['only_cur']})")
-    if res.get("compared") == 0:
-        a("- ⚠️ **비교한 신호 0개** — 계약이 이 결과와 맞지 않는다"
-          "(`--contract` 로 그 결과가 쓴 계약을 지정할 것).")
-    a("")
-    if res["numeric"]:
-        a("## 수치 신호")
-        a("")
-        a("| 신호 | n | max\\|Δ\\| | RMS Δ | p95\\|Δ\\| | 허용 | 변화 비율 | |")
-        a("|---|---|---|---|---|---|---|---|")
-        for k, v in res["numeric"].items():
-            a(f"| {k} | {v['n']} | {_f(v['max'])} | {_f(v['rms'])} | {_f(v['p95'])} | "
-              f"{_f(v['tol'])} | {_f(v['changed_frac'], 3)} | "
-              f"{'✅' if v['ok'] else '❌'} |")
-        a("")
-    if res["categorical"]:
-        a("## 이산 신호 (상태 시퀀스)")
-        a("")
-        a("| 신호 | 불일치 프레임 | 비율 | 첫 불일치 | |")
-        a("|---|---|---|---|---|")
-        for k, v in res["categorical"].items():
-            a(f"| {k} | {v['differing']} | {_f(v['frac'], 3)} | "
-              f"{v['first_diff'] if v['first_diff'] is not None else '—'} | "
-              f"{'✅' if v['ok'] else '❌'} |")
-        a("")
-        for k, v in res["categorical"].items():
-            for ex in v["example"]:
-                a(f"- `{k}` {ex}")
-        a("")
-    if res.get("sequence"):
-        a("## 상태 전이 시퀀스 (타이머 발행 신호)")
-        a("")
-        a("프레임 위치가 아니라 값이 바뀐 순서만 비교한다.")
-        a("")
-        a("| 신호 | 기준 길이 | 현재 길이 | 첫 불일치 | |")
-        a("|---|---|---|---|---|")
-        for k, v in res["sequence"].items():
-            a(f"| {k} | {v['len_base']} | {v['len_cur']} | "
-              f"{v['first_diff'] if v['first_diff'] is not None else '—'} | "
-              f"{'✅' if v['ok'] else '❌'} |")
-        a("")
-        for k, v in res["sequence"].items():
-            if not v["ok"]:
-                a(f"- `{k}` 기준: `{v['base']}`")
-                a(f"- `{k}` 현재: `{v['cur']}`")
-        a("")
     return "\n".join(L)

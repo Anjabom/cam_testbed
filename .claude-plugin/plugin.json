@@ -1,7 +1,7 @@
 {
   "name": "cam-test",
-  "version": "0.1.0",
-  "description": "ROS 2 카메라 인지 워크스페이스를 밖에서 시험한다 — 영상 재생·지표 판정·디버그 영상·회귀 비교·개선 피드백. 워크스페이스를 import 하지 않고 DDS 로만 대화한다.",
+  "version": "0.2.0",
+  "description": "ROS 2 카메라 인지 워크스페이스를 밖에서 시험한다 — 영상을 밀어 넣어 돌리고, 계측 리포트와 디버그 영상을 그 워크스페이스에 남긴다. 판정하지 않는다(합격/불합격을 찍지 않는다). 워크스페이스를 import 하지 않고 DDS 로만 대화한다.",
   "author": { "name": "Anjabom" },
   "keywords": ["ros2", "camera", "perception", "testing", "regression"]
 }

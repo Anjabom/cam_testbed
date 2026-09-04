@@ -1,0 +1,19 @@
+# ※ 옛 시나리오에서 옮겨 온 프리셋이다 — 판정(checks)·회귀 허용오차는
+#   더 이상 YAML 에 없다(잰 값을 사람이·클로드가 읽는다).
+#   프리셋이 담는 것은 ★재생 조건★ 뿐이다: 영상·구간·모드·파라미터.
+# 강건성/메타모픽 프리셋 — 같은 장면, 조건만 바꿔서 얼마나 무너지는지 잰다.
+#   GT 가 없어도 "정확도의 필요조건"은 잴 수 있다:
+#   장면이 같은데 밝기만 바뀌었다고 차선 위치가 바뀌면 그건 명백한 오류다.
+
+name: robustness
+contract: contracts/white_camera.yaml
+video: /home/anjabom/track_record.mp4
+mode: lockstep
+start: 780
+limit: 200
+stride: 2
+warmup_s: 8.0
+sync_timeout: 4.0
+discard_first: 5
+params:
+  perception: {show_window: false, record_video: false, enable_undistort: true}

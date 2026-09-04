@@ -1,0 +1,24 @@
+# ※ 옛 시나리오에서 옮겨 온 프리셋이다 — 판정(checks)·회귀 허용오차는
+#   더 이상 YAML 에 없다(잰 값을 사람이·클로드가 읽는다).
+#   프리셋이 담는 것은 ★재생 조건★ 뿐이다: 영상·구간·모드·파라미터.
+# BEV 마스크 덤프 전용 — 오프라인 파라미터 튜닝(bench/*.py)의 입력을 만든다.
+#   판정이 목적이 아니다 — 덤프를 만드는 것이 목적이다.
+#   덤프는 ★블러 전 uint8★ 이라 sigma_px 까지 오프라인에서 스윕할 수 있다.
+#
+#   python3 -m tb.run run --preset presets/vote_dump.yaml --tag dump
+#   python3 bench/profile_range.py --data <dump_dir>          # §11-2
+#   python3 bench/sweep.py --data <dump_dir> --param x_sample_max --range ...
+
+name: vote_dump_b
+contract: contracts/white_vote.yaml
+video: /home/mad2/video/night_b.mp4
+mode: lockstep
+start: 0
+limit: 0
+stride: 1
+warmup_s: 8.0
+sync_timeout: 4.0
+discard_first: 5
+params:
+  perception: {show_window: false, record_video: false, enable_undistort: true, dump_bev_dir: /home/anjabom/cam_testbed/runs/_bevdump_b}
+  camera_judgment: {}

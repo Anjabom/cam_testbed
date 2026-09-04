@@ -4,63 +4,91 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 이 저장소는 무엇인가
 
-ROS 2 카메라 인지 노드를 **밖에서** 시험하는 테스트 플랫폼이다. 대상 워크스페이스를 import 하지
-않고 `ros2 run` 서브프로세스로 띄워 DDS 로만 대화한다. 원본 영상을 이미지 토픽으로 밀어 넣고,
-나오는 토픽을 전부 기록해 **지표 · 불변식 · 회귀 비교**로 판정한다. Ground Truth 는 없다.
+**두 가지 도구가 한 저장소에 있다.** 둘 다 ROS 2 카메라 인지 노드를 **밖에서** 다룬다 —
+대상 워크스페이스를 import 하지 않고 `ros2 run` 서브프로세스로 띄워 DDS 로만 대화한다.
+
+| 무엇 | 어디로 쓰나 | 무엇을 내놓나 |
+|---|---|---|
+| **시뮬레이터** (`tb/*.py`) | 클로드 스킬(`skills/cam-test`) · CLI | 계측 리포트 · CSV · **디버그 영상** |
+| **보정 스튜디오** (`web/*`) | 웹앱 한 화면 | 맞춘 카메라 파라미터 |
 
 설계 목표는 하나다: **대상 워크스페이스 코드가 바뀌어도 `tb/*.py` 는 바뀌지 않는다.**
 
 `COLCON_IGNORE` 가 있어 colcon 빌드 대상이 아니다. 워크스페이스 밖(`~/cam_testbed/`)에 있고,
-대상과는 계약의 `workspace:` 한 줄로만 이어진다. 상세 설계·절차는 `README.md`(§ 번호로 참조).
+대상과는 계약의 `workspace:` 한 줄로만 이어진다. 상세 설계·절차는 `README.md`.
+
+## ★판정하지 않는다★ (2026-09-04 개편)
+
+예전에는 시나리오 YAML 의 `checks:` 가 임계값으로 합격/불합격을 찍고, `feedback.md` 가
+개선 요청문을 만들고, `baselines/` 가 회귀 기준을 들고 있었다. **전부 없앴다.**
+
+- 그 임계값들은 「첫 런의 실측」에서 나온 것이라 근거가 없었다. 「지난번과 같은가」를
+  「좋은가」로 부르고 있었던 셈이다.
+- 리포트 맨 위의 「13/13 통과」한 줄이 나머지를 안 읽게 만들었다. 행이 0 인 런도
+  「전부 통과」로 찍혔다 — 위반할 것이 없으면 위반도 없기 때문이다.
+
+지금 엔진이 내놓는 것은 전부 **관측값**이다. 좋은지 나쁜지는 그 결과를 읽는 사람(과
+클로드)이 말한다. **이 성질을 되돌리는 변경은 하지 않는다** — `analyze.py` 에 임계값
+비교를 다시 넣거나, 리포트에 합격/불합격 배지를 붙이지 않는다.
+
+「계약 정합(스키마 드리프트)」은 판정이 아니라 **잰 자리가 맞는가**이므로 그대로 있다.
 
 ## 절대 어기면 안 되는 경계
 
 1. **`tb/*.py` 와 `web/*` 에 대상 워크스페이스의 토픽명·필드 배치·노드명·파라미터명을 한 글자도
-   쓰지 않는다.** 전부 `contracts/*.yaml` 에만 있다. 워크스페이스 1개 = 계약 1개.
-   새 워크스페이스를 붙일 때도 **복사하지 않고 계약 파일만 하나 더 만든다**(§11).
+   쓰지 않는다.** 전부 `contracts/*.yaml`(과 `calib/*.yaml`)에만 있다. 워크스페이스 1개 = 계약 1개.
+   새 워크스페이스를 붙일 때도 **복사하지 않고 계약 파일만 하나 더 만든다**.
 2. **계약의 `path:` 는 후보 리스트**이고 앞에서부터 처음 맞는 것을 쓴다. 메시지 포맷이 바뀌면
    `tb/` 가 아니라 계약의 그 한 줄을 고친다. 어느 후보가 맞았는지는 리포트의 「계약 정합」이
-   `ok` / `🔁 fallback` / `❌ drift` / `· silent` 로 알려 준다.
-3. **판정은 엔진(`tb/analyze.py`)만 한다.** `web/app.js` 는 `summary.json` 의 `checks[].ok` 를
-   색칠할 뿐 임계값을 JS 에 다시 쓰지 않는다. 기하(워프·수직도)도 서버의 `tb.geometry` 가 계산한다.
-4. **화면 설정도 계약에서 나온다** — 프레임 탐색의 `frame_presets` · `frame_columns` · `events` 는
-   계약에 있다(`web/server.py` 의 `contract_ui`). `app.js` 에 신호 이름을 박으면 다른 계약에서
-   표가 통째로 빈다.
-5. **웹의 허용 명령과 입력 폼은 `web/server.py` 의 `COMMANDS` 하나에서 나온다.** CLI 에 인자를
-   늘렸으면 여기도 늘린다(안 늘리면 서버가 거부한다). `shell=False` 로 실행하고 셸 메타문자는 막는다.
-6. **체크를 통과시키려고 임계값을 느슨하게 하지 않는다.** 시나리오 `checks:` 의 기준이 이 차량·
-   영상에 안 맞는다고 판단되면 근거를 먼저 말하고 수정을 제안한다. 재는 쪽을 고쳐 숫자를 좋게
-   만드는 것도 금지다(`tb.run feedback` 이 생성 문서에 이 규칙을 박아 넣는다).
+   `ok` / `🔁 대체경로` / `❌ 불일치` / `· 미수신` 로 알려 준다.
+3. **기하는 서버가 계산한다.** `web/app.js` 는 값을 보내고 그림을 받아 걸 뿐이다 —
+   BEV·수직도·왜곡보정을 JS 에 한 벌 더 쓰면 화면이 보여 주는 BEV 와 노드가 만드는 BEV 가
+   갈라진다. 전부 `tb.geometry` 하나를 지난다.
+4. **화면의 편집 대상도 프로필에서 나온다** — 무엇을 맞출지(사각형·ROI·기준선·척도)는
+   `calibration.targets` 가 정한다. `app.js` 는 **종류**(`quad`/`rect`/`scale`/`bev_row`/
+   `bev_dist`)만 알고 이름은 모른다. 이름을 박으면 다른 카메라에서 화면이 통째로 빈다.
+5. **웹 서버가 띄우는 외부 프로세스는 둘뿐이다**(워크스페이스 파라미터 읽기 · BEV 대조).
+   인자는 서버가 만들고 화면은 이름으로만 부른다. 예전의 `COMMANDS` 표처럼 **임의 명령을
+   폼으로 감싸 실행하는 통로를 다시 만들지 않는다.**
+6. **재는 쪽을 고쳐 숫자를 좋게 만들지 않는다.** 계약의 `path:`·게이트 상수를 고치는 것은
+   「잰 자리가 틀렸을 때」뿐이고, 그때도 근거를 먼저 말한다.
 
-## 이 테스트베드는 웹앱으로 쓴다
+## 이 저장소를 쓰는 두 갈래
 
-**사람이 치는 명령은 실질적으로 하나다** — 웹앱을 띄우는 것.
+### ① 시뮬레이션 — 스킬이나 CLI 로
 
 ```bash
 source /opt/ros/humble/setup.bash
-cp local.yaml.example local.yaml          # 최초 1회: 이 머신의 영상·가중치 경로
+cp local.yaml.example local.yaml          # 최초 1회: 이 머신의 가중치 경로
 
-python3 -m tb.run app                     # 웹앱을 별도 창으로 (주소창·탭 없음)
-#   또는  python3 -m tb.run web           # 서버만 (브라우저로 http://127.0.0.1:8770)
+python3 -m tb.run doctor --contract contracts/x.yaml --video /abs/a.mp4
+python3 -m tb.run run --contract contracts/x.yaml --video /abs/a.mp4 \
+        --start 300 --limit 900 --note "무엇을 보려는가" --out ~/대상_워크스페이스
 ```
 
-실행·비교·기준 등록·재해석·피드백·캘리브레이션·프레임 탐색은 전부 웹앱 안에 있다.
-CLI 로 되던 모든 명령은 웹앱의 **「도구」 탭**에 그대로 있다(인자를 폼으로 골라 넣는다).
-어느 명령이 어느 탭인지는 웹앱의 «도움말»(`#/help`)이 안내한다.
+**시나리오 파일이 없다.** 입력은 계약 + 영상 경로 + 구간 셋뿐이다. 자주 쓰는 조합은
+`presets/*.yaml`(재생 조건만, 판정 어휘 없음)로 두고 `--preset` 으로 부른다 —
+명령줄 인자가 언제나 이긴다.
 
-### 웹앱이 CLI 를 감싼다 — CLI 는 지우면 안 된다
+서브커맨드: `doctor · run · replay · reanalyze · diff · export · params · build · list · web · app`
 
-웹 서버는 각 명령을 `subprocess` 로 띄운다(`web/server.py` 의 `start_job` → `COMMANDS[kind]["module"]`
-가 곧 명령줄이다). **즉 `tb.run` 서브커맨드는 웹앱의 실행 엔진이다** — 지우면 「도구」 탭의
-버튼이 전부 죽는다. CLI 에 인자를 늘렸으면 `COMMANDS` 도 같이 늘린다(경계 규칙 ⑤).
-
-### 웹앱 밖에서 직접 치는 예외 (셋뿐)
-
-웹앱이 못 하거나, 웹앱이 죽었을 때도 돌아야 하는 것들이다.
+### ② 카메라 보정 — 웹앱
 
 ```bash
-python3 -m tb.run app                     # ← 웹앱 자신을 띄운다
-python3 -m tb.selftest                    # 자체 검사 (ROS·영상 불필요) — 계약 문법을 건드리면 먼저 이것
+python3 -m tb.run app                     # 별도 창 (주소창·탭 없음)
+#   또는  python3 -m tb.run web           # 서버만 (http://127.0.0.1:8770)
+```
+
+영상이나 **사진 한 장**을 경로로 열어 IPM 사각형·ROI·px2m·BEV 기준선을 맞춘다.
+등록 절차가 없다. 프로필은 두 종류다:
+
+- `contracts/*.yaml` 의 `calibration:` 블록 — 워크스페이스에 붙은 것(내보내기까지 연결된다)
+- `calib/*.yaml` — 워크스페이스 없이 카메라만 실험할 때(화면에서 만들 수 있다)
+
+### 웹앱 밖에서 직접 치는 예외
+
+```bash
+python3 -m tb.selftest                    # 자체 검사 (ROS·영상 불필요) — 순수 함수를 건드리면 먼저 이것
 python3 -m flake8 tb web                  # 린트 (max-line-length 100, .flake8)
 ```
 
@@ -71,76 +99,77 @@ python3 -c "from tb import selftest as s; s.t_events(); print(s.FAILS or '통과
 ```
 
 새 자체 검사는 `tb/selftest.py` 에 `t_*` 이름의 함수로 추가하면 `main()` 이 자동으로 줍는다.
-"여기가 틀리면 모든 판정이 틀리는" 순수 함수만 대상이다(경로식·드리프트·hold·시퀀스·구간·전이·기하).
+"여기가 틀리면 모든 계측이 틀리는" 순수 함수만 대상이다(경로식·드리프트·hold·전이·기하·
+내보내기·프로필 경로).
 
 ## 실행 한 번의 흐름
 
 `tb/run.py` 가 오케스트레이터다. `_one_run()` 에서:
 
-1. 계약 해석 — 인자 `--contract` → 시나리오 `contract:` → `local.yaml` 의 `default_contract`
+1. 계약 해석 — 인자 `--contract` → 프리셋의 `contract:` → `local.yaml` 의 `default_contract`
    → `contracts/` 에 `.yaml` 이 하나면 그것. 여러 개인데 지정이 없으면 고르라고 멈춘다.
 2. 대상 워크스페이스의 `install/setup.bash` 를 source 한 프리픽스로 `ros2 run` × 계약의 `nodes`,
    `tb.probe`(계약의 `observe` 토픽을 타입 불문 기록), `tb.player`(영상 → `stimulus.image_topic`
-   + `aux` 퍼블리셔)를 각각 서브프로세스로 띄운다. `attach: true` 면 노드를 띄우지 않고 관찰만 한다.
+   + `aux` 퍼블리셔), `tb.viewer`(디버그 영상 녹화)를 각각 서브프로세스로 띄운다.
+   `attach: true` 면 노드를 띄우지 않고 관찰만 한다.
 3. 프레임↔출력 정렬은 테스트베드 내부 토픽 `/testbed/frame` 으로 한다(메시지에 스탬프가 없다).
    `lockstep` 은 한 프레임 밀고 `sync_topic` 을 기다린다 → 머신 속도와 무관하게 같은 결과.
 4. `tb.analyze` 가 `raw.jsonl` → `signals.csv`(경로식 평가 + `hold_signals` + `hold_initial`)
-   → 통계·게이트 통과율(`consumers`)·θ 품질·전이·노드 로그 → `report.md` / `summary.json`,
-   그리고 `baselines/<시나리오 name>.csv` 가 있으면 `compare.md`.
+   → 통계·게이트 통과율(`consumers`)·θ 품질·전이·노드 로그 → `report.md` / `summary.json`.
+5. `--out` 이 있으면 `tb.export` 가 결과 한 벌을 그 워크스페이스의 `testbed_results/` 로
+   복사하고 `README.md`(폴더 설명)·`run_env.json`(호스트·GPU·가중치·코드 해시)을 붙인다.
 
-**`raw.jsonl` 에 원본 메시지가 그대로 남는다** — 그래서 계약을 고쳐도 베이스라인을 버리지 않고
-`reanalyze` 로 과거 런을 새 계약으로 다시 읽을 수 있다. 이 성질을 깨는 변경은 하지 않는다.
+**`raw.jsonl` 에 원본 메시지가 그대로 남는다** — 그래서 계약을 고쳐도 과거 런을 버리지 않고
+`reanalyze` 로 새 계약으로 다시 읽을 수 있다. 이 성질을 깨는 변경은 하지 않는다.
 
 ## 설정 3층
 
 | 층 | 파일 | 무엇 |
 |---|---|---|
-| 결합 | `contracts/*.yaml` | 토픽·필드·노드·게이트 상수·캘리브 대상·화면 설정. 머신 독립 |
-| 시나리오 | `scenarios/*.yaml` | 영상(**논리 이름**)·구간·모드·변형·`checks`·`compare_tol`. 머신 독립 |
-| 머신 | `local.yaml` (git 제외) | `videos:` 논리 이름 → 실제 경로, 가중치 경로, `params` 덮어쓰기 |
+| 결합 | `contracts/*.yaml` · `calib/*.yaml` | 토픽·필드·노드·게이트 상수·보정 대상. 머신 독립 |
+| 재생 조건 | 명령줄 인자, 또는 `presets/*.yaml` | 영상 경로·구간·모드·파라미터. **판정 어휘 없음** |
+| 머신 | `local.yaml` (git 제외) | 가중치 경로, `params` 덮어쓰기, 최근 영상, 보정 스냅샷 |
 
-`local.yaml` 이 시나리오 위에 덮어써진다(`_deep_merge`). 시나리오에 절대경로를 박지 않는다.
-`tb/config.py` 는 이 파일들을 **주석을 보존하며** 고친다(웹앱의 등록·시나리오 본뜨기가 이걸 쓴다) —
-새 쓰기 기능을 넣을 때도 주석을 날리지 않는다. `config.resolve_scenario()` 가 실행 전에
-`block`(TODO 초안 계약, 빌드 안 됨, 영상 없음)과 `warn` 을 만든다.
+`local.yaml` 이 프리셋 위에 덮어써진다. `tb/config.py` 는 이 파일들을 **주석을 보존하며**
+고친다(스튜디오의 저장이 이걸 쓴다) — 새 쓰기 기능을 넣을 때도 주석을 날리지 않는다.
+읽기와 쓰기는 **같은 경로**를 지나야 한다(`config._local()`) — 갈라지면 쓴 것과 다른 것을 읽는다.
 
-## 판정 어휘 (`checks:`)
+## 리포트가 내놓는 것 (전부 관측이다)
 
-전부 `tb/analyze.py` 의 `_stat_value()` 에 있다. 신호 이름과 조건식은 계약·시나리오가 주므로
-**새 판정 종류를 넣을 때도 워크스페이스 이름이 코드로 들어오지 않는다.**
+- 행 수 · 유효율 · 드롭률 · 지연 p50/p95/max
+- 신호별 통계(mean/std/min/max/p95|Δ|)와 이산 신호의 분포·전이 횟수
+- **받는 쪽 게이트 통과율**(`consumers`) — 「차선을 봤나」가 아니라 「받는 쪽이 썼나」.
+  최대 병목 단계를 짚어 준다
+- θ 품질(편향·진동 대역) · 단계 전이 시각(`events`) · 노드 로그 이벤트(`log_events`)
+- 계약 정합(스키마 드리프트)
 
-- `{stat: <summary 키>}` — `drop_rate`, `latency_p95_ms`, `valid_rate` …
-- `{signal: x, stat: mean|std|min|max|p95|frac_nonzero|frac_zero|p95_abs_diff|max_abs_diff|increases|decreases}`
-  (`when_valid: true` 로 유효 프레임만, `where:` 로 조건에 맞는 행만)
-- `{where: "<식>", stat: count|frac|runs|run_max_frames|run_max_s}` — 조건이 참인 **구간**
-- `{event: "sig:0->1"|"sig:*->RED", stat: count|frame|t_s|at:<신호>, last: true}` — 값이 바뀐 **그 순간**
-- `{stat: "contribution:<consumer id>"|"theta:<키>"|"flag_rate:<이름>"|"log:<log_events 이름>"}`
-
-조건식은 `tb/expr.py`(AST 화이트리스트)로만 평가한다 — `eval` 을 쓰지 않는다.
-**초 단위 판정의 시간 기준은 벽시계가 아니라 `프레임 ÷ 영상fps × 배속`**(`analyze.scene_fps`)이다.
+조건식(`consumers` 의 게이트)은 `tb/expr.py`(AST 화이트리스트)로만 평가한다 — `eval` 을 쓰지 않는다.
+**초 단위 값의 시간 기준은 벽시계가 아니라 `프레임 ÷ 영상fps × 배속`**(`analyze.scene_fps`).
 
 ## 함정
 
-- **베이스라인은 머신을 넘지 못한다.** GPU·가중치·영상이 다르면 값이 달라진다. 새 머신에서는
-  기준을 다시 등록한다. `baselines/<이름>.json` 의 출처와 실행 조건이 다르면 `compare.md` 에 경고가 붙는다.
-- 기준 이름은 **시나리오의 `name:`** 을 따른다. `--tag` 는 런 구분용이라 비교 대상을 바꾸지 않는다.
-- 절대 경로가 박히는 곳은 셋뿐이다: 계약의 `workspace:`, `local.yaml`, 그리고 등록된 베이스라인.
+- **결과는 머신을 넘지 못한다.** GPU·가중치·영상이 다르면 값이 달라진다. `run_env.json` 이
+  그 판단의 근거이고, `diff` 는 조건이 다르면 표 위에 경고를 붙인다.
+- 절대 경로가 박히는 곳은 셋뿐이다: 계약의 `workspace:`, `local.yaml`, 프리셋의 `video:`.
+- **`--name` 은 폴더 이름이 되지 않는다.** 표시용이라 공백·한글을 받는다. 런 디렉터리
+  이름은 `--tag` 나 프리셋 이름에서만 나온다.
 - `lockstep` 은 벽시계가 실제로 흐른다. 대상이 `time.time()` 으로 hold·staleness 를 재면
-  30fps 실차와 다르게 동작한다 → 타이밍을 보려면 `realtime` 시나리오(§12).
+  30fps 실차와 다르게 동작한다 → 타이밍을 보려면 `--mode realtime`.
 - `cv2.VideoWriter` 기본 코덱 `mp4v` 는 브라우저가 재생하지 못한다(오류 없이 검은 화면).
   영상을 새로 굽는 코드는 반드시 `tb/encode.py` 를 거친다(ffmpeg/H.264 → webm → mp4v 폴백).
+- **디버그 영상은 사후에 만들 수 없다.** `raw.jsonl` 에는 숫자만 남는다. 옛 런의 그림이
+  필요하면 `replay` 로 같은 조건에서 한 번 더 돌리는 수밖에 없다.
 - 런마다 임의의 `ROS_DOMAIN_ID` 를 쓴다 — 다른 ROS 세션과 섞이지 않게 하려는 것이다.
-- `runs/`, `local.yaml`, `*.log` 는 git 제외. 사람이 붙인 정리 정보는 `runs/_index.json` 한 파일에
-  모이고 삭제는 `runs/_trash/` 로 **옮기는 것**이라 결과 파일이 지워지지 않는다.
+- `runs/`, `local.yaml`, `*.log` 는 git 제외.
 - 웹앱은 **외부 의존성 0**(표준 라이브러리 · CDN·웹폰트·JS 라이브러리 없음). 대회 현장에서
   네트워크 없이 돌아야 한다 — 의존성을 추가하지 않는다.
-- `docs/` 는 **생성물**이다(`tb.run publish`, §11.7). 손으로 고치지 말고 다시 굽는다.
-  라우트→파일 이름 규칙이 `tb/publish.py` 의 `api_path()` 와 `web/app.js` 의 `apiURL()`
-  **양쪽에** 있다 — 한쪽만 고치면 정적 사이트가 「HTTP 404」로만 열린다
-  (`selftest.t_publish_names` 가 대조한다). 공개되는 결과물이라 홈 경로는 `~` 로 스크럽된다.
+- **자동 미세조정처럼 지표를 목적함수로 쓰는 코드는 반드시 방어선을 갖는다.** 실측한 실패:
+  IPM 사각형을 화면 밖으로 밀면 BEV 에 검은 띠가 생기고 그 경계가 완벽히 수직이라
+  수직도가 0.00° 로 떨어진다 — 탐색은 그것을 「완벽한 답」으로 고른다. 그래서 화면 밖·
+  뒤집힌 사각형은 후보에서 빼고, 근거가 한 프레임뿐이면 아예 다듬지 않는다.
 
 ## 언어 관행
 
 코드 주석·문서·커밋 메시지는 **한국어**로 쓴다. 커밋 제목은 `영역: 무엇` 꼴이다
 (`웹앱: …`, `용어: …`). 주석은 "무엇을 하는가"보다 **왜 그 값인가 · 무엇에 데였는가**를 적는
-기존 밀도를 따른다(계약·시나리오 YAML 의 주석이 사실상 시험 근거 문서다).
+기존 밀도를 따른다(계약 YAML 의 주석이 사실상 시험 근거 문서다).

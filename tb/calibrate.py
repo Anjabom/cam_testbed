@@ -1,40 +1,30 @@
-"""캘리브레이션 — 영상을 보면서 카메라 기본 세팅(BEV ROI 등)을 맞춘다.
+"""캘리브레이션 엔진 — 보정 스튜디오(웹앱)가 쓰는 계산부.
 
-대상 노드가 하는 변환을 `tb.geometry` 로 그대로 재현하므로, 여기서 맞춘 BEV 가
-실제 노드가 만드는 BEV 와 같다(실측 확인: 에지 일치율 0.85 — 남는 차이는
-노드가 BEV 위에 그리는 오버레이뿐이다).
+대상 노드가 하는 변환을 `tb.geometry` 로 그대로 재현하므로, 스튜디오에서 맞춘
+BEV 가 실제 노드가 만드는 BEV 와 같다(실측 확인: 에지 일치율 0.85 — 남는 차이는
+노드가 BEV 위에 그리는 오버레이뿐이다. `verify()` 가 그 대조를 한다).
 
-맞추는 대상과 파라미터 이름은 전부 계약의 `calibration.targets` 에 있다.
-이 파일에는 대상 워크스페이스의 파라미터 이름이 없다.
+맞추는 대상과 파라미터 이름은 전부 ★프로필★ 의 `calibration.targets` 에 있다.
+이 파일에는 대상 워크스페이스의 파라미터 이름이 없다. 프로필은 두 종류다:
+계약 파일(`contracts/*.yaml` — 워크스페이스에 붙은 것)과 독립 프로필
+(`calib/*.yaml` — 워크스페이스 없이 카메라만 실험할 때).
 
-    python3 -m tb.calibrate --scenario scenarios/regression.yaml
-    python3 -m tb.calibrate --scenario ... --check out.png   # 창 없이 렌더만
-    python3 -m tb.calibrate --scenario ... --verify <런디렉토리>  # 실제 노드와 대조
+★화면은 여기 없다★ [2026-09-04] 예전에는 이 파일이 cv2 창을 띄우는 대화형
+도구이기도 했다. 웹 스튜디오와 같은 일을 두 벌로 갖고 있었던 셈이라, 한쪽만
+고쳐지는 일이 반복됐다. 지금 UI 는 `web/` 한 곳뿐이고 여기는 계산만 한다.
 
 ★핵심 요령★ IPM 사각형의 좌우 변을 차선 위에 올려라. 지면은 평면이므로
 그렇게 놓으면 BEV 에서 차선이 정확히 수직·평행으로 선다. 수직이 아니면
-사각형이 틀린 것이다 — 격자(`g`)가 그 자다.
+사각형이 틀린 것이다 — 격자가 그 자다.
 """
 from __future__ import annotations
 
-import argparse
-import sys
 from pathlib import Path
 
 import cv2
 import numpy as np
-import yaml
 
-from .contract import load as load_contract
-from .geometry import (draw_grid, draw_rows, put_text, quad_is_sane,
-                       undistorter, verticality, warp_bev)
-
-HELP = [
-    "1 IPM 사각형   2 차선 ROI   3 신호등 ROI   4 BEV 측정   5 BEV 가로선",
-    "드래그: 가장 가까운 점 이동   방향키: 1px  Shift+방향키: 10px",
-    "[ ] 프레임 +-30   , . 프레임 +-1   g 격자   u 보정 on/off",
-    "+ - 실측길이 조정   c 측정 지우기   r 되돌리기   s 저장   q 종료",
-]
+from .geometry import undistorter, warp_bev
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -196,114 +186,22 @@ class Calib:
                [k for k in self.bev_rows if k != self.bumper_key]
 
 
-# ══════════════════════════════════════════════════════════════════════
-def render(frame_raw, cal, mode, sel, use_und, grid, meas, real_m, msg,
-           disp_w=760):
-    """SRC 패널 + BEV 패널 + HUD 를 한 장으로 합성."""
-    W, H = cal.und_size
-    src = cal.und(frame_raw) if use_und else cv2.resize(frame_raw, (W, H))
-
-    bev = warp_bev(src, cal.quad, cal.bev_w, cal.bev_h)
-    vdev, vn = verticality(bev)
-    if grid:
-        bev = draw_grid(bev, cal.px2m)
-    #  ★거리 판정의 기준선과 문턱★ — BEV 위의 가로선이 곧 '차에서 얼마'다
-    if cal.bev_rows:
-        bev = draw_rows(bev, [(k, cal.row_y(k), cal.row_label(k))
-                              for k in cal.bev_keys()], mode)
-
-    left = cv2.resize(src, (disp_w, int(round(disp_w * H / W))))
-    k = disp_w / W
-
-    # ROI 사각형
-    for key, r in cal.rects.items():
-        on = (mode == key)
-        col = (60, 200, 255) if on else (110, 110, 110)
-        (x0, y0), (x1, y1) = (r * k).astype(int)
-        cv2.rectangle(left, (x0, y0), (x1, y1), col, 2 if on else 1)
-        cv2.putText(left, key, (x0 + 5, max(14, y0 + 16)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.44, col, 1, cv2.LINE_AA)
-
-    # IPM 사각형
-    q = (cal.quad * k).astype(int)
-    qcol = (70, 160, 255) if mode == "quad" else (150, 150, 150)
-    cv2.polylines(left, [q.reshape(-1, 1, 2)], True, qcol, 2, cv2.LINE_AA)
-    for i, (x, y) in enumerate(q):
-        hot = (mode == "quad" and i == sel)
-        cv2.circle(left, (x, y), 7 if hot else 5,
-                   (0, 255, 255) if hot else qcol, -1, cv2.LINE_AA)
-        lab = "TL TR BR BL".split()[i]
-        lx = x + 9 if x < left.shape[1] - 34 else x - 32
-        ly = max(12, y - 8) if y > 14 else y + 18
-        cv2.putText(left, lab, (lx, ly),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, qcol, 1, cv2.LINE_AA)
-
-    # 측정선
-    if meas:
-        for p in meas:
-            bx, by = int(p[0]), int(p[1])
-            cv2.circle(bev, (bx, by), 4, (0, 255, 255), -1, cv2.LINE_AA)
-        if len(meas) >= 2:
-            cv2.line(bev, tuple(map(int, meas[0])), tuple(map(int, meas[1])),
-                     (0, 255, 255), 2, cv2.LINE_AA)
-
-    ph = max(left.shape[0], bev.shape[0])
-    canvas = np.zeros((ph + 120, left.shape[1] + 8 + bev.shape[1], 3), np.uint8)
-    canvas[:] = (28, 28, 32)
-    canvas[0:left.shape[0], 0:left.shape[1]] = left
-    canvas[0:bev.shape[0], left.shape[1] + 8:] = bev
-
-    ok, why = quad_is_sane(cal.quad, W, H)
-    hud = [
-        f"[{mode}]  sel={sel}  frame={msg.get('frame', 0)}  "
-        f"undistort={'ON' if use_und else 'OFF'}  grid={'ON' if grid else 'OFF'}",
-        f"px2m={cal.px2m:.6f} m/px   BEV 폭={cal.bev_w * cal.px2m:.2f}m   "
-        f"lane_width={cal.length_m:.2f}m   실측기준={real_m:.2f}m",
-    ]
-    if vn:
-        verdict = ("사각형이 맞다" if vdev < 2.0 else
-                   "거의 맞다" if vdev < 5.0 else "좌우 변을 차선에 더 붙여라")
-        hud.append(f"수직도 {vdev:.1f}° (선 {vn}개) — {verdict}"
-                   "   ※ 직선 구간에서만 의미 있다")
-    else:
-        hud.append("수직도: 선을 못 찾았다 — 차선이 보이는 프레임으로 이동할 것")
-    if cal.bev_rows:
-        hud.append("BEV 가로선: " + "   ".join(cal.row_label(k)
-                                              for k in cal.bev_keys()))
-    if len(meas) >= 2:
-        d = float(np.linalg.norm(np.array(meas[0]) - np.array(meas[1])))
-        hud.append(f"측정 {d:.1f}px = {real_m:.2f}m  ->  px2m={real_m / max(d, 1e-6):.6f}"
-                   f"   (Enter 로 적용)")
-    elif msg.get("note"):
-        hud.append(msg["note"])
-    if not ok:
-        hud.append("! " + " / ".join(why))
-
-    y = ph + 22
-    for t in hud:
-        col = (90, 120, 255) if t.startswith("!") else (215, 215, 215)
-        put_text(canvas, t, (12, y), 15, col)
-        y += 23
-    return canvas, k
-
-
-# ══════════════════════════════════════════════════════════════════════
-def _load_scenario(path):
-    return yaml.safe_load(open(path)) if path else {}
-
-
-def verify(cal, contract, video, run_dir, start, n=7, out_png=""):
+def verify(cal, profile, video, dbg_path, start=0, n=7, out_png=""):
     """내가 그리는 BEV 와 ★노드가 실제로 만든 BEV★ 가 같은지 대조한다.
 
     노드는 BEV 위에 피팅 곡선·HUD 를 그리므로 픽셀이 같을 수는 없다.
-    그래서 에지가 겹치는 비율로 ★기하★만 본다. 0.8 이상이면 같은 변환이다.
+    그래서 에지가 겹치는 비율로 ★기하★만 본다. 0.75 이상이면 같은 변환이다.
+
+    `dbg_path` 는 대상 노드가 남긴 디버그 mp4 (`tb.run run` 이 만든다).
+    그 영상의 어느 부분이 BEV 판인지는 프로필의 `calibration.verify.bev_pane` 이
+    말한다 — 판 수가 계약마다 다르므로 여기 박지 않는다.
     """
-    cfg = (contract.raw.get("calibration") or {}).get("verify") or {}
-    dbg_path = Path(run_dir) / cfg.get("video", "lane_debug.mp4")
-    if not dbg_path.exists():
-        raise SystemExit(f"[verify] 디버그 영상이 없다: {dbg_path}\n"
-                         f"         `tb.run run --record-debug` 로 먼저 만들 것.")
+    cfg = (profile.raw.get("calibration") or {}).get("verify") or {}
+    dbg_path = Path(dbg_path)
+    if not dbg_path.is_file():
+        raise ValueError(f"디버그 영상이 없습니다: {dbg_path}")
     lo, hi = cfg.get("bev_pane", [0.5, 1.0])
+    log = []
 
     dbg = cv2.VideoCapture(str(dbg_path))
     cap = cv2.VideoCapture(str(video))
@@ -349,7 +247,7 @@ def verify(cal, contract, video, run_dir, start, n=7, out_png=""):
         sc = score(ref0, mine_at(start + probe_i + cand))
         if sc > off_sc:
             off, off_sc = cand, sc
-    print(f"프레임 정렬 오프셋 {off:+d} (일치율 {off_sc:.3f})")
+    log.append(f"프레임 정렬 오프셋 {off:+d} (일치율 {off_sc:.3f})")
 
     scores, best = [], None
     for i in np.linspace(ndbg * 0.15, ndbg * 0.85, n).astype(int):
@@ -364,222 +262,25 @@ def verify(cal, contract, video, run_dir, start, n=7, out_png=""):
     dbg.release()
     cap.release()
     if not scores:
-        raise SystemExit("[verify] 대조할 프레임을 못 읽었다")
+        raise ValueError("대조할 프레임을 하나도 못 읽었습니다")
 
     med = float(np.median(scores))
-    print(f"프레임 {len(scores)}장 대조 — 에지 일치율 중앙값 {med:.3f} "
-          f"(최소 {min(scores):.3f} / 최대 {max(scores):.3f})")
+    log.append(f"프레임 {len(scores)}장 대조 — 에지 일치율 중앙값 {med:.3f} "
+               f"(최소 {min(scores):.3f} / 최대 {max(scores):.3f})")
     if med >= 0.75:
-        print("✅ 같은 변환이다 — 여기서 맞춘 값이 노드에 그대로 적용된다.")
+        verdict = "✅ 같은 변환이다 — 여기서 맞춘 값이 노드에 그대로 적용된다."
     elif med >= 0.5:
-        print("⚠️  어긋난다. 계약의 calibration.undistort 가 노드의 하드코딩 값과 "
-              "같은지, 런의 ipm_src_pts 가 지금 값과 같은지 확인할 것.")
+        verdict = ("⚠️ 어긋난다. 프로필의 calibration.undistort 가 노드의 값과 같은지, "
+                   "그 런의 IPM 사각형이 지금 값과 같은지 확인할 것.")
     else:
-        print("❌ 전혀 다르다. undistort 계수나 프레임 정렬(start)이 틀렸을 가능성이 크다.")
+        verdict = "❌ 전혀 다르다. 왜곡보정 계수나 프레임 정렬(start)이 틀렸을 가능성이 크다."
+    log.append(verdict)
+    png = ""
     if out_png and best:
-        cv2.imwrite(out_png, np.hstack(
+        #  왼쪽=내가 재현한 BEV, 오른쪽=노드가 실제로 만든 BEV
+        cv2.imwrite(str(out_png), np.hstack(
             [best[3], np.full((best[2].shape[0], 6, 3), 255, np.uint8), best[2]]))
-        print(f"비교 이미지 → {out_png}  (왼쪽=재현, 오른쪽=노드 실제)")
-    return 0 if med >= 0.75 else 1
-
-
-def main(argv=None):
-    from .run import _deep_merge, _resolve_contract, local_overrides, resolve_video
-
-    ap = argparse.ArgumentParser(prog="tb.calibrate")
-    ap.add_argument("--scenario", default="")
-    ap.add_argument("--contract", default="")
-    ap.add_argument("--video", default="")
-    ap.add_argument("--frame", type=int, default=-1, help="-1=시나리오 start")
-    ap.add_argument("--out", default="", help="저장할 YAML 경로")
-    ap.add_argument("--check", default="", help="창 없이 이 PNG 로 렌더만")
-    ap.add_argument("--verify", default="",
-                    help="이 런 디렉터리의 디버그 영상과 대조 (--record-debug 필요)")
-    ap.add_argument("--verify-png", default="")
-    ap.add_argument("--disp-width", type=int, default=760)
-    args = ap.parse_args(argv)
-
-    sc = _load_scenario(args.scenario)
-    loc = local_overrides()
-    contract = load_contract(_resolve_contract(args.contract or sc.get("contract")))
-    params = _deep_merge(sc.get("params", {}), loc.get("params", {}))
-    from .run import load_ws_params
-    cal = Calib(contract, params, load_ws_params(contract))
-
-    video = args.video or resolve_video(sc, loc)
-    if not video or not Path(video).exists():
-        raise SystemExit(f"[calibrate] 영상이 없다: {video}")
-    cap = cv2.VideoCapture(video)
-    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    fno = args.frame if args.frame >= 0 else int(sc.get("start", 0))
-
-    def read(n):
-        n = max(0, min(total - 1, n))
-        cap.set(cv2.CAP_PROP_POS_FRAMES, n)
-        ok, f = cap.read()
-        return (n, f) if ok else (n, None)
-
-    fno, frame = read(fno)
-    if frame is None:
-        raise SystemExit("[calibrate] 프레임을 읽을 수 없다")
-
-    use_und = bool(params.get(contract.nodes[0]["id"] if contract.nodes else "",
-                              {}).get(cal.und_param, True)) if cal.und_param else True
-    mode, sel, grid, meas = "quad", 0, True, []
-    real_m = cal.length_m
-    note = cal.targets.get(cal.quad_key, {}).get("hint", "")
-
-    if args.verify:
-        return verify(cal, contract, video, args.verify,
-                      int(sc.get("start", 0)), out_png=args.verify_png)
-
-    # ── 창 없이 렌더만 ──────────────────────────────────────────────
-    if args.check:
-        canvas, _ = render(frame, cal, mode, sel, use_und, grid, meas, real_m,
-                           {"frame": fno, "note": note}, args.disp_width)
-        cv2.imwrite(args.check, canvas)
-        print(f"렌더 → {args.check}  (frame {fno})")
-        print(yaml.safe_dump({"params": cal.to_params()}, allow_unicode=True,
-                             sort_keys=False, default_flow_style=None))
-        return 0
-
-    # ── 대화형 ──────────────────────────────────────────────────────
-    win = "tb.calibrate"
-    cv2.namedWindow(win, cv2.WINDOW_NORMAL)
-    state = {"drag": False, "k": 1.0, "split": 0}
-
-    def on_mouse(ev, x, y, flags, _p):
-        split = state["split"]
-        k = state["k"]
-        nonlocal sel, meas
-        if x > split:                      # BEV 패널
-            if mode in cal.bev_rows:       # — 가로선 끌기
-                if ev == cv2.EVENT_LBUTTONDOWN:
-                    state["drag"] = True
-                if state["drag"] and ev in (cv2.EVENT_LBUTTONDOWN,
-                                            cv2.EVENT_MOUSEMOVE):
-                    cal.set_row_y(mode, y)
-                elif ev == cv2.EVENT_LBUTTONUP:
-                    state["drag"] = False
-                return
-            if ev == cv2.EVENT_LBUTTONDOWN and y < cal.bev_h:   # — 측정
-                if len(meas) >= 2:
-                    meas = []
-                meas.append((x - split, y))
-            return
-        sx, sy = x / k, y / k              # SRC 패널 — 점 이동
-        hs = cal.handles(mode)
-        if not hs:
-            return
-        if ev == cv2.EVENT_LBUTTONDOWN:
-            d = [np.hypot(arr[i][0] - sx, arr[i][1] - sy) for _, arr, i in hs]
-            j = int(np.argmin(d))
-            if d[j] < 90 / k:
-                sel = j
-                state["drag"] = True
-        elif ev == cv2.EVENT_MOUSEMOVE and state["drag"]:
-            _, arr, i = hs[sel]
-            arr[i] = (sx, sy)
-        elif ev == cv2.EVENT_LBUTTONUP:
-            state["drag"] = False
-
-    cv2.setMouseCallback(win, on_mouse)
-    print("\n".join(HELP))
-
-    while True:
-        canvas, k = render(frame, cal, mode, sel, use_und, grid, meas, real_m,
-                           {"frame": fno, "note": note}, args.disp_width)
-        state["k"] = k
-        state["split"] = int(cal.und_size[0] * k) + 8
-        cv2.imshow(win, canvas)
-        key = cv2.waitKeyEx(20)
-        if key == -1:
-            continue
-        ch = key & 0xFF
-
-        if ch == ord("q"):
-            break
-        elif ch == ord("1"):
-            mode, sel = "quad", 0
-            note = cal.targets.get(cal.quad_key, {}).get("hint", "")
-        elif ch in (ord("2"), ord("3")):
-            keys = list(cal.rects)
-            j = ch - ord("2")
-            if j < len(keys):
-                mode, sel = keys[j], 0
-                note = cal.targets.get(mode, {}).get("hint", "")
-        elif ch == ord("4"):
-            mode = "measure"
-            note = cal.targets.get(cal.px2m_key, {}).get("hint", "")
-        elif ch == ord("5"):
-            keys = cal.bev_keys()
-            if keys:
-                mode = keys[(keys.index(mode) + 1) % len(keys)] \
-                    if mode in keys else keys[0]
-                note = cal.targets.get(mode, {}).get("hint", "")
-        elif ch == ord("g"):
-            grid = not grid
-        elif ch == ord("u"):
-            use_und = not use_und
-        elif ch == ord("c"):
-            meas = []
-        elif ch in (ord("+"), ord("=")):
-            real_m = round(real_m + 0.05, 2)
-        elif ch == ord("-"):
-            real_m = round(max(0.05, real_m - 0.05), 2)
-        elif ch in (13, 10):               # Enter — 측정값 적용
-            if len(meas) >= 2:
-                d = float(np.linalg.norm(np.array(meas[0]) - np.array(meas[1])))
-                if d > 1:
-                    cal.px2m = real_m / d
-                    cal.length_m = real_m
-                    note = f"적용: px2m={cal.px2m:.6f}, lane_width={real_m:.2f}m"
-                    meas = []
-        elif ch == ord("["):
-            fno, f2 = read(fno - 30)
-            frame = f2 if f2 is not None else frame
-        elif ch == ord("]"):
-            fno, f2 = read(fno + 30)
-            frame = f2 if f2 is not None else frame
-        elif ch == ord(","):
-            fno, f2 = read(fno - 1)
-            frame = f2 if f2 is not None else frame
-        elif ch == ord("."):
-            fno, f2 = read(fno + 1)
-            frame = f2 if f2 is not None else frame
-        elif ch == ord("r"):
-            cal = Calib(contract, params)
-            note = "되돌렸다"
-        elif ch == ord("s"):
-            out = args.out or "calibration_out.yaml"
-            body = yaml.safe_dump({"params": cal.to_params()}, allow_unicode=True,
-                                  sort_keys=False, default_flow_style=None)
-            Path(out).write_text(
-                "# tb.calibrate 결과 — 시나리오의 params: 에 붙이거나\n"
-                "# local.yaml 의 params: 로 쓴다.\n"
-                f"# 영상 {video}  frame {fno}\n" + body)
-            note = f"저장 → {out}"
-            print(note)
-            print(body)
-        else:
-            step = 10 if (key & 0x10000) else 1   # Shift
-            arrows = {0xFF51: (-1, 0), 0xFF52: (0, -1),
-                      0xFF53: (1, 0), 0xFF54: (0, 1),
-                      81: (-1, 0), 82: (0, -1), 83: (1, 0), 84: (0, 1)}
-            d = arrows.get(key) or arrows.get(ch)
-            if d and mode in cal.bev_rows:
-                # 위 = 멀어짐. bev_row 는 행이 줄고, bev_dist 는 거리가 는다.
-                cal.set_row_y(mode, cal.row_y(mode) + d[1] * step)
-                continue
-            hs = cal.handles(mode)
-            if d and hs and sel < len(hs):
-                _, arr, i = hs[sel]
-                arr[i] = (arr[i][0] + d[0] * step, arr[i][1] + d[1] * step)
-
-    cap.release()
-    cv2.destroyAllWindows()
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+        png = str(out_png)
+    return {"median": med, "min": min(scores), "max": max(scores),
+            "n": len(scores), "offset": off, "ok": med >= 0.75,
+            "verdict": verdict, "log": log, "png": png}

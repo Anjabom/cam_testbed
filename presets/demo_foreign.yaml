@@ -1,0 +1,6 @@
+# ※ 옛 시나리오에서 옮겨 온 프리셋이다 — 판정(checks)·회귀 허용오차는
+#   더 이상 YAML 에 없다(잰 값을 사람이·클로드가 읽는다).
+#   프리셋이 담는 것은 ★재생 조건★ 뿐이다: 영상·구간·모드·파라미터.
+# 돌고 있는 외부 시스템을 15초 기록해서 지표만 낸다.
+
+{name: demo_foreign, contract: contracts/demo_foreign.yaml, video: '', discard_first: 0, record_seconds: 15}
