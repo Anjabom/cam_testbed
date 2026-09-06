@@ -65,6 +65,30 @@ cp local.yaml.example local.yaml
 > 카메라 인지 테스트베드 스킬 있어?
 ```
 
+### 1-4. ★업데이트 — 저장소를 고쳤다고 스킬이 따라오지 않는다★
+
+플러그인은 **설치 시점의 사본**이다. `~/.claude/plugins/cache/<마켓>/<플러그인>/<판번호>/`
+에 통째로 복사되고, 원본 저장소를 가리키는 링크가 아니다. 그래서 `git pull` 을 해도
+**Claude 가 읽는 절차서는 그대로 옛날 것**이다.
+
+```
+/plugin                       # 메뉴에서 marketplace 새로 고침 → cam-test 업데이트
+```
+
+원본이 로컬 폴더 마켓(`/plugin marketplace add ~/cam_testbed`)이면 **먼저 그 폴더를
+`git pull` 한 다음** 마켓을 새로 고친다. GitHub URL 로 추가했으면 마켓 새로 고침이
+곧 최신을 받아 온다.
+
+**낡은 채로 쓰면 어떻게 되나** — 조용히 틀리지는 않는다. 없어진 서브커맨드를 부르면
+argparse 가 「invalid choice: 'feedback' (choose from …)」 로 크게 실패하므로 Claude 가
+바로 알아챈다. 그래도 한 세션을 헤매게 되므로, 새 절차서(0.2.0)는 **0단계에서 판번호를
+스스로 대조하고 낡았으면 먼저 말해 준다.**
+
+| 확인 | 명령 |
+|---|---|
+| 설치본 판번호 | `grep version ~/.claude/plugins/cache/*/cam-test/*/.claude-plugin/plugin.json` |
+| 원본 판번호 | `grep version ~/cam_testbed/.claude-plugin/plugin.json` |
+
 ---
 
 ## 2. 첫 실행

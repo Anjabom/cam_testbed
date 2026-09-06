@@ -41,6 +41,25 @@ WS="$(pwd)"                                        # 시험 대상 = 지금 있�
 **`$TB` 를 못 찾으면 여기서 멈추고 사용자에게 위치를 묻는다.** 스킬은 ROS 2·GPU·가중치·
 테스트베드 자체를 설치해 주지 못한다 — 없으면 없다고 말하는 것이 맞다.
 
+### 이 절차서가 낡지 않았는가
+
+**플러그인은 설치 시점의 ★사본★ 이다**(원본을 가리키는 링크가 아니다). 그래서 원본
+저장소가 바뀌어도 이 파일은 그대로 남는다 — 낡은 절차서로 새 엔진을 몰면 명령이
+줄줄이 실패한다. 원본을 찾았으면 판번호를 대조한다:
+
+```bash
+if [ -n "$CLAUDE_PLUGIN_ROOT" ] && [ -n "$TB" ] && [ "$CLAUDE_PLUGIN_ROOT" != "$TB" ]; then
+  A=$(sed -n 's/.*"version"[^"]*"\([^"]*\)".*/\1/p' "$CLAUDE_PLUGIN_ROOT/.claude-plugin/plugin.json" 2>/dev/null)
+  B=$(sed -n 's/.*"version"[^"]*"\([^"]*\)".*/\1/p' "$TB/.claude-plugin/plugin.json" 2>/dev/null)
+  [ "$A" = "$B" ] && echo "스킬 판번호 $A — 원본과 같다" \
+    || echo "⚠️ 스킬 사본이 낡았다: 설치본 $A / 원본 $B"
+fi
+```
+
+**낡았으면 사용자에게 먼저 알린다** — 「`/plugin` 으로 marketplace 를 새로 고치고
+cam-test 를 다시 설치하면 절차서가 최신이 됩니다」. 그래도 계속하겠다고 하면,
+`python3 -m tb.run --help` 로 ★지금 있는 서브커맨드★ 를 먼저 확인하고 그것만 쓴다.
+
 모든 `tb.run` 명령은 `cd "$TB"` 하고 친다 (`python3 -m` 이 그 디렉터리를 sys.path 로 쓴다).
 ROS 언더레이도 먼저 source 한다:
 
