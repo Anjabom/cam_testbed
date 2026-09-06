@@ -1,0 +1,91 @@
+<!-- 셰이더 대조 — ★GPU 가 집어 오는 자리가 geom.js 와 같은가★
+
+     왜 필요한가: 기하는 두 벌로 돌아간다.
+       · geom.js  (CPU) — 클릭 좌표와 ★내보내는 숫자★
+       · render.js(GPU) — 화면에 보이는 ★그림★
+     이 둘이 갈라지면 값은 맞는데 화면만 다른 자리를 보여 준다. 사람은 그림을
+     보고 사각형을 맞추므로, 결국 틀린 값을 「눈으로 확인하고」 내보내게 된다.
+     제일 알아채기 어려운 고장이라 기계로 잡는다.
+
+     재는 법: 원본 그림에 ★좌표를 색으로 칠한다★ (R = x, G = y, 256×256 이라
+     1레벨 = 1px 로 딱 떨어진다). BEV 로 워프한 뒤 색을 도로 읽으면 「이 자리는
+     원본의 어디를 집어 왔나」가 나온다. 그걸 geom.js 의 답과 맞춰 본다.
+
+     여는 법:  브라우저로 이 파일을 그냥 연다. 또는
+       google-chrome --headless=new --enable-unsafe-swiftshader --dump-dom \
+           tools/shader_check.html | grep 결과 -->
+<meta charset="utf-8">
+<title>셰이더 대조</title>
+<body style="background:#14161a;color:#e6e9ef;font:14px system-ui;padding:20px">
+<pre id="out">재는 중…</pre>
+<script src="../docs/geom.js"></script>
+<script src="../docs/render.js"></script>
+<script>
+(function () {
+  'use strict';
+  var G = window.Geom;
+  var W = 256, H = 256;                       // ★1레벨 = 1px★ 이 되는 크기
+  var CAM = {
+    size: [W, H],
+    K: [130.0, 132.0, 128.0, 128.0],
+    D: [-0.25, 0.05, 0.001, -0.002, 0.0],
+    alpha: 0.0,
+    quad: [70.0, 96.0, 186.0, 96.0, 246.0, 250.0, 10.0, 250.0],
+    bev: [128, 160]
+  };
+
+  function out(s) { document.getElementById('out').textContent = s; document.title = s; }
+
+  //  좌표를 색으로 칠한 원본. 1차 램프라 이중선형 보간이 정확하다.
+  function rampCanvas() {
+    var c = document.createElement('canvas');
+    c.width = W; c.height = H;
+    var ctx = c.getContext('2d');
+    var im = ctx.createImageData(W, H);
+    for (var y = 0; y < H; y++) {
+      for (var x = 0; x < W; x++) {
+        var i = (y * W + x) * 4;
+        im.data[i] = x; im.data[i + 1] = y; im.data[i + 2] = 128; im.data[i + 3] = 255;
+      }
+    }
+    ctx.putImageData(im, 0, 0);
+    return c;
+  }
+
+  try {
+    var r = window.Render.create();
+    if (!r) { out('결과: WebGL 을 쓸 수 없어 재지 못했다'); return; }
+    var cal = G.makeCal(CAM);
+    r.setSource(rampCanvas());
+    var bw = CAM.bev[0], bh = CAM.bev[1];
+    var glc = r.render(bw, bh, cal.Minv, cal);      // 1:1 — 표시 축소 없이
+
+    var c2 = document.createElement('canvas');
+    c2.width = bw; c2.height = bh;
+    var g2 = c2.getContext('2d');
+    g2.drawImage(glc, 0, 0);
+    var px = g2.getImageData(0, 0, bw, bh).data;
+
+    var worst = 0, bad = 0, n = 0, worstAt = '';
+    for (var by = 2; by < bh - 2; by += 3) {
+      for (var bx = 2; bx < bw - 2; bx += 3) {
+        var i = (by * bw + bx) * 4;
+        //  화면 밖에서 온 자리(셰이더가 회색으로 칠한다)는 뺀다
+        if (px[i + 2] < 100 || px[i + 2] > 160) continue;
+        var e = G.bevToSource(bx, by, cal);
+        if (e[0] < 1 || e[1] < 1 || e[0] > W - 2 || e[1] > H - 2) continue;
+        var d = Math.hypot(px[i] - e[0], px[i + 1] - e[1]);
+        n++;
+        if (d > 1.0) bad++;
+        if (d > worst) { worst = d; worstAt = bx + ',' + by; }
+      }
+    }
+    out('결과: 표본 ' + n + '개 · 최대 어긋남 ' + worst.toFixed(2) + 'px'
+        + (worstAt ? ' (BEV ' + worstAt + ')' : '')
+        + ' · 1px 초과 ' + bad + '개 → '
+        + (n > 100 && worst <= 1.5 ? '통과' : '★어긋남★'));
+  } catch (err) {
+    out('결과: 예외 ' + err.message);
+  }
+})();
+</script>

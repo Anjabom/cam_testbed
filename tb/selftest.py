@@ -606,30 +606,6 @@ def t_same_code():
            _same_code(rd, {"code_fingerprint": {"sha": "no-src"}}, ws), None)
 
 
-def t_web_auth():
-    """인증 게이트 — 터널로 노출하면 이게 유일한 방어선이라 반드시 맞아야 한다."""
-    import sys as _sys
-    _sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "web"))
-    from server import check_basic_auth as chk           # noqa: PLC0415
-    import base64 as _b64
-
-    def hdr(user, pw):
-        return "Basic " + _b64.b64encode(f"{user}:{pw}".encode()).decode()
-
-    eq("토큰 없으면 통과(로컬)", chk(hdr("x", "y"), ""), True)
-    eq("토큰 없으면 헤더 없어도 통과", chk(None, ""), True)
-    eq("맞는 토큰 통과", chk(hdr("아무나", "s3cret"), "s3cret"), True)
-    eq("틀린 토큰 거부", chk(hdr("x", "nope"), "s3cret"), False)
-    eq("헤더 없으면 거부", chk(None, "s3cret"), False)
-    eq("Basic 아니면 거부", chk("Bearer s3cret", "s3cret"), False)
-    eq("깨진 base64 거부", chk("Basic @@@", "s3cret"), False)
-    eq("콜론 없는 값 거부", chk("Basic " + _b64.b64encode(b"nocolon").decode(),
-                              "s3cret"), False)
-
-
-# ══════════════════════════════════════════════════════════════════════
-#  결과 내보내기 — 시험의 산출물이 워크스페이스로 온전히 건너가는가
-# ══════════════════════════════════════════════════════════════════════
 def t_export():
     import shutil
     import tempfile
@@ -708,133 +684,6 @@ def t_export():
 # ══════════════════════════════════════════════════════════════════════
 #  보정 스튜디오 — 프로필 경로와 자동 미세조정의 방어선
 # ══════════════════════════════════════════════════════════════════════
-def _studio():
-    import sys as _s
-    _s.path.insert(0, str(Path(__file__).resolve().parent.parent / "web"))
-    import server                                           # noqa: PLC0415
-    return server
-
-
-def t_profile_path():
-    """프로필 id 는 화면에서 온다 — ★디렉터리 탈출을 막아야 한다★."""
-    S = _studio()
-    for bad in ("../local.yaml", "/etc/passwd", "runs/x.yaml",
-                "contracts/../local.yaml", "contracts/nope.yaml", "contracts/x.txt"):
-        try:
-            S.profile_path(bad)
-            FAILS.append(f"프로필 경로를 막지 못했다: {bad}")
-        except ValueError:
-            pass
-    ok = sorted((S.ROOT / "contracts").glob("*.yaml"))
-    if ok:
-        pid = S.profile_id(ok[0])
-        eq("정상 프로필은 열린다", S.profile_path(pid).name, ok[0].name)
-        eq("id 는 저장소 기준 상대경로", pid.startswith("contracts/"), True)
-
-
-def t_upload_name():
-    """올라온 파일 이름 — ★이걸 그대로 믿으면 아무 데나 쓰기★ 가 된다.
-
-    이름은 남의 기기가 준 문자열이다. 경로를 담고 있으면 UPLOAD_DIR 밖으로
-    나간다. 한글은 남겨야 한다 — 영상 이름이 한글인 일이 흔하고, 그걸
-    `_____.mp4` 로 만들면 목록에서 무엇인지 알 수 없다.
-    """
-    S = _studio()
-    f = S.safe_upload_name
-    eq("경로는 마지막 조각만", f("../../.ssh/authorized_keys"), "authorized_keys")
-    eq("윈도 경로도 납작하게", f(r"C:\Users\me\a.mp4"), "a.mp4")
-    eq("한글은 남는다", f("야간 주행.mp4"), "야간 주행.mp4")
-    eq("퍼센트 인코딩을 푼다", f("%EC%95%BC%EA%B0%84.mp4"), "야간.mp4")
-    eq("점만 있으면 빈 이름", f(".."), "")
-    eq("숨김 파일이 되지 않는다", f(".bashrc"), "bashrc")
-    eq("제어문자·따옴표는 지운다", f('a\n"b;rm -rf.mp4'), "a_b_rm -rf.mp4")
-    eq("빈 입력", f(None), "")
-    long = f("가" * 300 + ".mp4")
-    eq("긴 이름은 잘리되 확장자는 남는다",
-       (len(long) <= 120, long.endswith(".mp4")), (True, True))
-    #  ★확장자 게이트는 이름이 아니라 media_kind 가 본다★ — 둘을 붙여 둔다
-    eq("실행 파일은 영상이 아니다", S.media_kind(f("x.sh")), "")
-    eq("올린 mp4 는 영상", S.media_kind(f("x.MP4")), "video")
-
-    #  겹치는 이름을 ★덮지 않는다★ — 남이 올린 것을 지우면 안 된다
-    taken = {str(S.UPLOAD_DIR / "a.mp4"), str(S.UPLOAD_DIR / "a-2.mp4")}
-    got = S.upload_dest("a.mp4", exists=lambda p: str(p) in taken)
-    eq("겹치면 -3 으로 비켜난다", got.name, "a-3.mp4")
-    eq("올린 것은 UPLOAD_DIR 안에만 놓인다", got.parent, S.UPLOAD_DIR)
-
-
-def t_browse_roots():
-    """훑기·열기의 뿌리 — ★심볼릭 링크와 `..` 은 문자열로 안 잡힌다★.
-
-    화면이 원격이 되면서 폴더 목록 자체가 밖으로 나가는 정보가 됐다.
-    여기가 틀리면 뿌리는 화면의 장식일 뿐이다.
-    """
-    import tempfile
-    S = _studio()
-    with tempfile.TemporaryDirectory() as td:
-        root = Path(td).resolve() / "media"
-        (root / "sub").mkdir(parents=True)
-        outside = Path(td).resolve() / "secret"
-        outside.mkdir()
-        (outside / "k.txt").write_text("x")
-        roots = [root]
-
-        eq("뿌리 자신은 안", S.in_roots(root, roots), True)
-        eq("뿌리 아래는 안", S.in_roots(root / "sub", roots), True)
-        eq("형제 폴더는 밖", S.in_roots(outside, roots), False)
-        eq("★.. 로 못 나간다★", S.in_roots(root / "sub" / ".." / ".." / "secret",
-                                          roots), False)
-        eq("문자열 접두사만 같은 것도 밖",
-           S.in_roots(Path(str(root) + "_other"), roots), False)
-
-        #  ★심볼릭 링크★ 뿌리 안에 밖을 가리키는 링크를 놓아도 뚫리면 안 된다
-        link = root / "link"
-        link.symlink_to(outside)
-        eq("★링크로도 못 나간다★", S.in_roots(link / "k.txt", roots), False)
-
-        #  browse() 는 뿌리 밖을 가리키면 조용히 첫 뿌리로 되돌린다
-        import tb.config as cfg                             # noqa: PLC0415
-        real = cfg.browse_roots
-        cfg.browse_roots = lambda: roots                    # noqa: E731
-        try:
-            eq("밖을 달라고 해도 뿌리를 준다", S.browse(str(outside))["dir"], str(root))
-            eq("뿌리에서 상위는 제자리", S.browse(str(root))["up"], str(root))
-            eq("아래에서는 위로 갈 수 있다",
-               S.browse(str(root / "sub"))["up"], str(root))
-            try:
-                S.check_source_allowed(outside / "k.txt")
-                FAILS.append("뿌리 밖 파일을 열도록 허용했다")
-            except ValueError:
-                pass
-            S.check_source_allowed(root / "sub" / "a.mp4")   # 없어도 자리는 맞다
-            S.check_source_allowed(S.UPLOAD_DIR / "a.mp4")   # 올린 것은 언제나 안
-        finally:
-            cfg.browse_roots = real
-
-
-def t_quad_guard():
-    """자동 미세조정이 ★밟으면 안 되는 자리★.
-
-    ★실측한 실패★ 사각형을 화면 밖으로 밀면 BEV 에 원본이 없는 검은 띠가 생기고
-    그 경계는 완벽히 수직이라, 수직도가 0.00° 로 떨어진다. 탐색은 그것을
-    「완벽한 답」으로 고른다 — 그림은 아무것도 안 남는데. 그래서 화면 밖과
-    뒤집힌 사각형은 후보에서 뺀다.
-    """
-    import numpy as np
-    S = _studio()
-    w, h = 1920, 1080
-    good = np.float32([[600, 650], [1300, 650], [1900, 1070], [20, 1070]])
-    eq("정상 사각형은 통과", S._quad_ok(good, w, h), True)
-    out = good.copy()
-    out[2][0] = 1960                       # 오른쪽 밖으로
-    eq("★화면 밖은 거절★", S._quad_ok(out, w, h), False)
-    neg = good.copy()
-    neg[0][1] = -5
-    eq("음수 좌표도 거절", S._quad_ok(neg, w, h), False)
-    twist = np.float32([[600, 650], [1300, 650], [20, 1070], [1900, 1070]])
-    eq("꼬인 사각형은 거절", S._quad_ok(twist, w, h), False)
-
-
 def t_portable():
     """★코드에 이 기계의 경로가 없어야 한다★ — 다른 컴퓨터에서 그대로 돌아야 한다.
 
@@ -846,7 +695,8 @@ def t_portable():
     #  찾는 문자열을 조각으로 만든다 — 통째로 적으면 ★이 파일 자신이 걸린다★
     needles = ("/" + "home" + "/", "/" + "Users" + "/")
     bad = []
-    for d, pats in (("tb", ("*.py",)), ("web", ("*.py", "*.js", "*.css", "*.html"))):
+    for d, pats in (("tb", ("*.py",)), ("tools", ("*.py", "*.js")),
+                    ("docs", ("*.js", "*.css", "*.html"))):
         for pat in pats:
             for f in sorted((root / d).glob(pat)):
                 for i, ln in enumerate(f.read_text().splitlines(), 1):
@@ -868,6 +718,68 @@ def t_portable():
     finally:
         R.ROOT = real
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def t_geom_js():
+    """★화면의 기하(docs/geom.js)가 cv2 와 같은 값을 내는가★
+
+    스튜디오가 정적 페이지가 되면서 기하가 브라우저에 한 벌 더 생겼다. 예전에는
+    「한 벌만 둔다」가 방어선이었지만 서버가 없어져 그 방어선이 없다 — 대신
+    ★두 벌이 같음을 여기서 증명한다★. 여기가 무너지면 화면에서 맞춘 값이
+    실차에서 틀리는데, 화면은 멀쩡해 보인다.
+
+    허용치 0.1px 은 대조 방법의 잡음 바닥(0.03px — cv2 가 좌표를 1/32 픽셀
+    고정소수점으로 반올림한다)보다 넉넉하게 잡은 것이다. 순서나 반픽셀 규약이
+    틀리면 0.5px 이상으로 벌어지므로 그건 이 그물에 걸린다.
+    """
+    import json as _json
+    import shutil as _shutil
+    import subprocess as _sp
+
+    root = Path(__file__).resolve().parent.parent
+    ref_js = root / "docs" / "reference.js"
+    if not ref_js.exists():
+        FAILS.append("t_geom_js: docs/reference.js 가 없다 — "
+                     "python3 tools/bake_reference.py 로 구울 것")
+        return
+    ref = _json.loads(ref_js.read_text().split("=", 1)[1].rsplit(";", 1)[0])
+
+    #  ① 정답표가 낡지 않았는가 — tb/geometry.py 를 고치고 다시 굽지 않으면
+    #     JS 는 낡은 표와 사이좋게 맞으면서 정작 노드와는 갈라진다.
+    import cv2                                          # noqa: PLC0415
+    from .geometry import Undistorter                   # noqa: PLC0415
+    for c in ref["cases"]:
+        u = Undistorter(c["size"], c["K"], c["D"], c["alpha"])
+        now = [float(u.new_K[0, 0]), float(u.new_K[1, 1]),
+               float(u.new_K[0, 2]), float(u.new_K[1, 2])]
+        gap = max(abs(a - b) for a, b in zip(now, c["newK"]))
+        eq(f"정답표가 현재 tb.geometry 와 맞는다({c['name']})", gap < 1e-6, True)
+        eq(f"정답표의 ROI 도({c['name']})", [int(v) for v in u.roi], c["roi"])
+    del cv2
+
+    #  ② JS 를 실제로 돌려 대조한다. node 가 없는 기계도 있다 — 그때는 건너뛴다
+    #     (검사를 못 한 것이지 통과한 것이 아니므로 화면에 남긴다).
+    node = _shutil.which("node")
+    if not node:
+        print("  · t_geom_js: node 가 없어 JS 대조를 건너뛴다")
+        return
+    p = _sp.run([node, str(root / "tools" / "geom_check.js"), "--json"],
+                capture_output=True, text=True, timeout=60)
+    if p.returncode != 0:
+        FAILS.append(f"t_geom_js: geom_check.js 실패 — {p.stderr.strip()[:300]}")
+        return
+    got = _json.loads(p.stdout)
+    for c in got["cases"]:
+        eq(f"유효영역 ROI 가 정확히 같다({c['name']})", c["roi"], 0)
+        eq(f"새 카메라 행렬({c['name']}) {c['newK']:.2e}", c["newK"] < 1e-3, True)
+        eq(f"보정 맵({c['name']}) {c['map']:.2e}px", c["map"] < 0.01, True)
+        eq(f"호모그래피({c['name']}) {c['H']:.2e}", c["H"] < 1e-6, True)
+        eq(f"끝에서 끝까지({c['name']}) {c['bevToSrc']:.3f}px",
+           c["bevToSrc"] < 0.1, True)
+    #  ★사각형 건전성도 같은 답이어야 한다★ 한쪽만 거절하면 스튜디오가 통과시킨
+    #  값을 노드가 검은 띠로 받는다(실측: JS 에만 「화면 밖 거절」이 있어서
+    #  제대로 맞춘 사각형을 틀렸다고 말할 뻔했다).
+    eq("사각형 건전성이 파이썬과 같다", got.get("quadMismatch"), [])
 
 
 def main():

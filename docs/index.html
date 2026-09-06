@@ -1,0 +1,62 @@
+<!-- 카메라 보정 스튜디오 — 정적 페이지 하나로 돈다.
+     서버가 없다: 영상은 ★이 브라우저 안에서만★ 열리고 아무 데도 올라가지 않는다.
+     계약도 프로필도 없다: 맞출 것은 tuning.js 한 곳이 정한다. -->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>카메라 보정 스튜디오</title>
+<link rel="stylesheet" href="style.css">
+
+<header>
+  <h1>카메라 보정 스튜디오</h1>
+  <div class="io">
+    <label class="btn primary">영상·사진 열기
+      <input type="file" id="file" accept="video/*,image/*" hidden>
+    </label>
+    <label class="btn">불러오기
+      <input type="file" id="loadf" accept=".json,application/json" hidden>
+    </label>
+    <button class="btn" id="save">내보내기</button>
+    <button class="btn" id="reset">기본값으로</button>
+  </div>
+</header>
+
+<div id="banner" hidden></div>
+
+<main>
+  <section id="panes">
+    <div class="pane">
+      <h2>원본 <small>왜곡보정 후 · 사각형과 ROI 를 여기서 끈다</small></h2>
+      <canvas id="srcC" width="640" height="360"></canvas>
+    </div>
+    <div class="pane">
+      <h2>BEV <small>노드가 만드는 것과 같은 변환</small></h2>
+      <canvas id="bevC" width="320" height="500"></canvas>
+    </div>
+  </section>
+
+  <aside id="side">
+    <div id="targets"></div>
+    <p id="hint" class="hint"></p>
+    <div id="extra"></div>
+    <div id="values"></div>
+  </aside>
+</main>
+
+<div id="timeline" hidden>
+  <button class="btn sm" id="back">◀</button>
+  <input type="range" id="seek" min="0" max="1000" value="0">
+  <button class="btn sm" id="fwd">▶</button>
+  <span id="tpos" class="mono"></span>
+</div>
+
+<footer>
+  <span id="foot"></span>
+  <span class="sp"></span>
+  <span id="check" class="mono"></span>
+</footer>
+
+<script src="geom.js"></script>
+<script src="reference.js"></script>
+<script src="render.js"></script>
+<script src="tuning.js"></script>
+<script src="app.js"></script>

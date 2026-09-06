@@ -47,6 +47,18 @@ class Calib:
         self.und_param = u.get("param", "")
         self.bev_w = int(cal["bev"]["w"])
         self.bev_h = int(cal["bev"]["h"])
+        #  ★노드가 실제로 쓴 BEV 크기가 있으면 그것을 따른다★
+        #  계약에 적어 둔 640×480 과 런이 쓴 640×1000 이 다르면 대조가 통째로
+        #  깨진다(실측: 두 그림을 나란히 붙이다 배열 크기가 안 맞아 죽었다).
+        #  ★이름은 계약이 준다★ — 여기에는 워크스페이스 고유명이 없다.
+        for key, attr in (("w", "bev_w"), ("h", "bev_h")):
+            name = (cal["bev"].get("params") or {}).get(key)
+            if not name:
+                continue
+            for kv in list(params.values()) + list((ws_params or {}).values()):
+                if isinstance(kv, dict) and name in kv:
+                    setattr(self, attr, int(kv[name]))
+                    break
         self.targets = cal["targets"]
 
         w, h = self.und_size
@@ -249,13 +261,25 @@ def verify(cal, profile, video, dbg_path, start=0, n=7, out_png=""):
             off, off_sc = cand, sc
     log.append(f"프레임 정렬 오프셋 {off:+d} (일치율 {off_sc:.3f})")
 
-    scores, best = [], None
+    #  ★정렬은 프레임마다 흔들린다★ 디버그 녹화가 프레임을 흘리거나(BEST_EFFORT
+    #  QoS) 빈 자리를 채우면 전역 오프셋 하나로는 못 맞춘다. 실측(0903 realtime 런):
+    #  중앙값 0.39 인데 최대가 0.92 였다 — ★기하는 맞고 정렬만 어긋난 것★ 이었는데
+    #  숫자는 "전혀 다르다" 라고 말하고 있었다. 그래서 표본마다 오프셋 둘레를
+    #  다시 훑어 ★기하만★ 남긴다. 얼마나 흔들렸는지는 아래에 같이 적는다.
+    scores, best, drift = [], None, []
     for i in np.linspace(ndbg * 0.15, ndbg * 0.85, n).astype(int):
         ref = pane(int(i))
-        mine = mine_at(start + int(i) + off)
-        if ref is None or mine is None:
+        if ref is None:
             continue
-        sc = score(ref, mine)
+        sc, mine, at = -1.0, None, off
+        for cand in range(off - 30, off + 31):
+            m = mine_at(start + int(i) + cand)
+            s2 = score(ref, m)
+            if s2 > sc:
+                sc, mine, at = s2, m, cand
+        if mine is None:
+            continue
+        drift.append(at - off)
         scores.append(sc)
         if best is None or sc > best[0]:
             best = (sc, int(i), ref, mine)
@@ -267,13 +291,17 @@ def verify(cal, profile, video, dbg_path, start=0, n=7, out_png=""):
     med = float(np.median(scores))
     log.append(f"프레임 {len(scores)}장 대조 — 에지 일치율 중앙값 {med:.3f} "
                f"(최소 {min(scores):.3f} / 최대 {max(scores):.3f})")
+    if drift:
+        log.append(f"프레임 정렬 흔들림 {min(drift):+d}~{max(drift):+d} 프레임 "
+                   f"(0 이 아니면 디버그 녹화가 프레임을 흘렸거나 채운 것이다)")
     if med >= 0.75:
         verdict = "✅ 같은 변환이다 — 여기서 맞춘 값이 노드에 그대로 적용된다."
     elif med >= 0.5:
         verdict = ("⚠️ 어긋난다. 프로필의 calibration.undistort 가 노드의 값과 같은지, "
                    "그 런의 IPM 사각형이 지금 값과 같은지 확인할 것.")
     else:
-        verdict = "❌ 전혀 다르다. 왜곡보정 계수나 프레임 정렬(start)이 틀렸을 가능성이 크다."
+        verdict = ("❌ 전혀 다르다. 왜곡보정 계수(K·D)나 그 런의 IPM 사각형이 "
+                   "지금 값과 다를 가능성이 크다.")
     log.append(verdict)
     png = ""
     if out_png and best:

@@ -211,22 +211,21 @@ python3 -m tb.run diff runs/<이전런> runs/<이번런>
 
 ---
 
-## 6. 카메라 보정은 웹앱에서
+## 6. 카메라 보정은 스튜디오에서 (정적 페이지)
 
 IPM 사각형·ROI·픽셀↔미터·BEV 기준선은 **보면서 맞춰야** 하는 값이다.
 
-```bash
-cd ~/cam_testbed && bash deploy/install.sh    # 최초 1회 — 그 뒤로는 상주한다
-#   다른 기기 브라우저에서 http://<호스트>.local:8770
+```
+https://anjabom.github.io/cam_testbed/     # 설치도 로그인도 없다
+~/cam_testbed/docs/index.html              # 파일로 열어도 같다 (네트워크 불필요)
 ```
 
-- 영상이든 **사진 한 장**이든 경로만 고르면 열린다(등록 절차 없음)
-- 화면의 BEV 는 대상 노드가 만드는 것과 **같은 변환**으로 그려진다
-- 체스보드 사진으로 **K/D 를 실측**할 수 있다
-- 맞춘 값은 `local.yaml` 에 저장되고, 워크스페이스로 **내보내기**가 따로 있다
-- 「노드와 대조」가 내가 그리는 BEV 와 노드의 실제 BEV 를 맞춰 본다
-
-자세한 것은 웹앱의 «사용 안내» 탭에 있다.
+- 영상이든 **사진 한 장**이든 그 기기의 파일을 직접 연다 — 어디에도 올라가지 않는다
+- 화면의 BEV 는 대상 노드가 만드는 것과 **같은 변환**이다
+  (`python3 -m tb.selftest` 의 `t_geom_js` 가 cv2 와 0.03px 안에서 같음을 증명한다)
+- 이 기계의 현재 값을 옮기려면 `python3 tools/tuning_from_local.py` → «불러오기»
+- 맞춘 값은 «내보내기» 의 `params.yaml` 로 받아 `local.yaml` 의 `params:` 에 붙인다
+- 노드가 실제로 만든 BEV 와 맞춰 보려면 `python3 -m tb.run verify --run <런>`
 
 ---
 
@@ -270,9 +269,9 @@ cd ~/cam_testbed && bash deploy/install.sh    # 최초 1회 — 그 뒤로는 �
 ## 9. 스킬 밖에서 직접 치는 것
 
 ```bash
-bash deploy/install.sh                    # 보정 스튜디오 (다른 기기에서 접속)
 python3 -m tb.selftest                    # 자체 검사 (ROS·영상 불필요)
-python3 -m flake8 tb web                  # 린트
+python3 -m flake8 tb tools                # 린트
+python3 tools/tuning_from_local.py        # 이 기계의 캘리브 → 스튜디오가 여는 JSON
 ```
 
 ---

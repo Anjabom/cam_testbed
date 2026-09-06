@@ -1316,18 +1316,62 @@ def cmd_build(args):
     return 0
 
 
-def cmd_web(args):
-    """보정 스튜디오를 띄운다 (표준 라이브러리만 — 외부 의존성 없음).
+def cmd_verify(args):
+    """스튜디오가 그리는 BEV 와 ★노드가 실제로 만든 BEV★ 가 같은지 대조한다.
 
-    ★이 기계에서 보는 화면이 아니다★ 스튜디오는 다른 기기(태블릿·다른 노트북)의
-    브라우저로 들어와 쓴다 — 이 기계는 영상과 GPU 가 있는 쪽이라 화면 앞에
-    사람이 앉아 있지 않다. 그래서 `--host 0.0.0.0` 과 `TB_WEB_TOKEN` 이 짝이고,
-    평소에는 사람이 이 명령을 치지 않는다(`deploy/install.sh` 가 systemd 에 맡긴다).
+    ★스튜디오가 정적 페이지로 옮겨 간 뒤로 이 대조는 여기에만 있다★ [2026-09-06]
+    브라우저는 노드를 볼 수 없다. 화면의 기하가 cv2 와 같은지는 자체 검사
+    (t_geom_js)가 증명하지만, 「그 cv2 파이프라인이 ★이 노드★ 와 같은가」는
+    노드가 실제로 뱉은 그림과 맞춰 봐야만 안다 — 그것이 이 명령이다.
+
+        python3 -m tb.run verify --run runs/0902_190358_lane_night_a_base
+
+    쓰는 값은 런이 남긴 `params_actual.yaml` 이다 — 노드가 그때 정말로 쓴 값이라
+    「내가 준 값」이 아니라 「노드가 쓴 값」으로 잰다.
     """
-    import sys as _sys
-    _sys.path.insert(0, str(ROOT / "web"))
-    import server as web_server          # noqa: E402
-    return web_server.serve(args.host, args.port)
+    from .calibrate import Calib, verify        # noqa: PLC0415
+
+    run = Path(args.run).expanduser()
+    if not run.is_dir():
+        run = runs_dir() / args.run
+    if not run.is_dir():
+        print(f"⛔ 런 폴더가 없다: {args.run}")
+        return 2
+
+    contract = load_contract(_resolve_contract(args.contract))
+    pa = run / "params_actual.yaml"
+    params = (load_yaml(pa).get("params") or {}) if pa.is_file() else local_overrides()
+    if not pa.is_file():
+        print("알림: params_actual.yaml 이 없어 local.yaml 값으로 잰다 "
+              "(노드가 쓴 값과 다를 수 있다)")
+    cal = Calib(contract, params)
+
+    cfg = (contract.raw.get("calibration") or {}).get("verify") or {}
+    dbg = run / cfg.get("video", "lane_debug.mp4")
+    video = args.video
+    pj = run / "player.json"
+    if not video and pj.is_file():
+        video = (json.loads(pj.read_text()) or {}).get("video", "")
+    if not video:
+        print("⛔ 원본 영상을 모른다 — --video 로 준다")
+        return 2
+
+    out_png = run / "calib_verify.png"
+    try:
+        r = verify(cal, contract, video, dbg, args.start, out_png=str(out_png))
+    except ValueError as e:
+        print(f"⛔ {e}")
+        return 2
+    for ln in r["log"]:
+        print("  " + ln)
+    print(f"\n에지 일치율 중앙값 {r['median']:.3f} "
+          f"(프레임 {r['n']}장 · 오프셋 {r['offset']})")
+    print(f"  대조 그림: {out_png}")
+    #  ★판정하지 않는다★ 0.75 는 「같은 변환이면 대개 이 위」라는 실측 관찰이지
+    #  합격선이 아니다 — 숫자를 주고 읽는 것은 사람이 한다.
+    print("  참고: 같은 변환이면 대개 0.75 이상이 나온다 "
+          "(노드가 BEV 위에 그리는 곡선·HUD 때문에 1.0 은 안 된다)")
+    return 0
 
 
 def cmd_list(_args):
@@ -1433,13 +1477,12 @@ def main(argv=None):
     bd.add_argument("--all", action="store_true", help="워크스페이스 전체를 빌드")
     bd.set_defaults(fn=cmd_build)
 
-    w = sub.add_parser("web", help="카메라 보정 스튜디오 (다른 기기의 브라우저로)")
-    #  기본이 127.0.0.1 인 이유 — 손으로 칠 때 실수로 열지 않게. 열려면 명시한다.
-    w.add_argument("--host", default="127.0.0.1",
-                   help="0.0.0.0 이면 같은 공유기의 다른 기기에서 들어온다 "
-                        "(TB_WEB_TOKEN 이 있어야 한다)")
-    w.add_argument("--port", type=int, default=8770)
-    w.set_defaults(fn=cmd_web)
+    vf = sub.add_parser("verify", help="런의 디버그 영상과 BEV 기하를 대조한다")
+    vf.add_argument("--run", required=True, help="런 폴더 (runs/ 안의 이름도 된다)")
+    vf.add_argument("--contract")
+    vf.add_argument("--video", default="", help="원본 영상 (없으면 런의 player.json)")
+    vf.add_argument("--start", type=int, default=0)
+    vf.set_defaults(fn=cmd_verify)
 
     ls = sub.add_parser("list", help="프리셋과 최근 런")
     ls.set_defaults(fn=cmd_list)

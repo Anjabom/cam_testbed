@@ -1,0 +1,88 @@
+/* 화면 — 어두운 바탕. 대회 현장의 밝은 노트북 화면에서 BEV 의 어두운 노면이
+   묻히지 않게 하려는 것이다. 웹폰트·CDN 을 쓰지 않는다(네트워크 없이 돌아야 한다). */
+:root {
+  --bg: #14161a;
+  --panel: #1c1f26;
+  --line: #2c313c;
+  --fg: #e6e9ef;
+  --dim: #97a0b0;
+  --accent: #4aa3ff;
+  --warn: #ffb454;
+  --bad: #ff6b6b;
+  --ok: #6bd07f;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font: 14px/1.5 system-ui, "Noto Sans KR", sans-serif;
+}
+header {
+  display: flex; align-items: center; gap: 16px;
+  padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line);
+  position: sticky; top: 0; z-index: 5;
+}
+h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .02em; }
+h2 { font-size: 12px; margin: 0 0 6px; color: var(--dim); font-weight: 600; }
+h2 small { font-weight: 400; opacity: .75; margin-left: 6px; }
+.io { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+
+.btn {
+  display: inline-block; padding: 6px 12px; border-radius: 6px; cursor: pointer;
+  background: #262b34; border: 1px solid var(--line); color: var(--fg);
+  font: inherit; line-height: 1.2;
+}
+.btn:hover { background: #2f3540; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #06101c; font-weight: 600; }
+.btn.sm { padding: 3px 9px; }
+.btn.on { background: var(--accent); border-color: var(--accent); color: #06101c; font-weight: 600; }
+
+#banner { padding: 8px 16px; background: #3a1d1d; color: #ffd7d7; border-bottom: 1px solid #5a2a2a; }
+
+main { display: flex; align-items: flex-start; gap: 16px; padding: 16px; flex-wrap: wrap; }
+#panes { display: flex; gap: 16px; flex: 1 1 640px; flex-wrap: wrap; }
+.pane { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
+canvas { display: block; border-radius: 4px; background: #0b0d10; touch-action: none; max-width: 100%; }
+
+#side { flex: 0 0 320px; display: flex; flex-direction: column; gap: 10px; }
+#targets { display: flex; flex-wrap: wrap; gap: 6px; }
+.hint {
+  margin: 0; padding: 9px 11px; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 6px; color: var(--dim); min-height: 3.2em;
+}
+#values { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+.row {
+  display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+  border-top: 1px solid var(--line);
+}
+.row:first-child { border-top: 0; }
+.row .k { flex: 0 0 108px; color: var(--dim); }
+.row .v { flex: 1; font-family: ui-monospace, "DejaVu Sans Mono", monospace; font-size: 12px; }
+.row input {
+  width: 100%; background: #10131a; color: var(--fg); border: 1px solid var(--line);
+  border-radius: 4px; padding: 3px 6px; font: inherit;
+}
+#extra { display: flex; flex-direction: column; gap: 6px; }
+#extra .box {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 9px 11px;
+}
+#extra label { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+#extra input[type=number], #extra input[type=text] {
+  flex: 1; background: #10131a; color: var(--fg); border: 1px solid var(--line);
+  border-radius: 4px; padding: 3px 6px; font: inherit;
+}
+
+/*  ★[hidden] 보다 #id 가 세다★ display 를 여기서 정하는 순간
+    hidden 속성이 무시된다 — 그래서 짝을 같이 둔다. */
+#timeline[hidden] { display: none; }
+#timeline { display: flex; align-items: center; gap: 10px; padding: 0 16px 12px; }
+#seek { flex: 1; }
+
+footer {
+  display: flex; gap: 12px; padding: 8px 16px; border-top: 1px solid var(--line);
+  color: var(--dim); background: var(--panel);
+}
+.sp { flex: 1; }
+.mono { font-family: ui-monospace, "DejaVu Sans Mono", monospace; font-size: 12px; }
+.bad { color: var(--bad); }
+.ok { color: var(--ok); }
+.warn { color: var(--warn); }
