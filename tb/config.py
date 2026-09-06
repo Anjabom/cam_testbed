@@ -169,6 +169,28 @@ def _local():
         return {}
 
 
+def browse_roots():
+    """보정 스튜디오가 훑어도 되는 뿌리 폴더들 (`local.yaml` 의 `browse_roots:`).
+
+    안 적으면 홈 하나 — 지금까지와 같다. 넣을 수 있게 열어 둔 이유는
+    ★화면이 원격이 되었기 때문★ 이다. 외장 디스크나 다른 사용자의 폴더에
+    영상이 있으면 여기 한 줄을 더한다. 없는 폴더는 조용히 버린다 —
+    USB 를 뽑아 두면 목록에서 사라질 뿐 스튜디오가 안 뜨면 곤란하다.
+    """
+    raw = _local().get("browse_roots")
+    if not isinstance(raw, list):
+        raw = [raw] if raw else []
+    roots = []
+    for r in raw:
+        try:
+            q = Path(str(r)).expanduser().resolve()
+        except OSError:
+            continue
+        if q.is_dir() and q not in roots:
+            roots.append(q)
+    return roots or [Path.home().resolve()]
+
+
 def recent_videos():
     """최근 연 영상·이미지 — 각각 해상도·프레임 수까지 붙여서."""
     loc = _local()

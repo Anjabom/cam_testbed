@@ -13,8 +13,17 @@ BEV 를 만들어 돌려준다. 사람이 화면에서 사각형을 끌면 그 �
 실행하는 통로도 같이 없앴다 — 지금 서버가 띄우는 외부 프로세스는 ★둘뿐★ 이고
 (워크스페이스 파라미터 읽기·BEV 대조) 인자를 사용자가 정하지 못한다.
 
-    python3 -m tb.run web            # http://127.0.0.1:8770
-    python3 -m tb.run app            # 같은 화면을 별도 창으로
+★쓰는 자리는 이 기계가 아니다★ [2026-09-06]
+이 기계는 영상·GPU·워크스페이스가 있는 쪽이고, 사람은 그 앞에 앉아 있지 않다.
+그래서 스튜디오는 ★같은 공유기의 다른 기기★ 브라우저로 들어와 쓴다. 화면이 원격이라
+달라지는 것은 없다 — 기하는 전부 여기서 계산해 PNG 로 보내기 때문이다(경계 3).
+달라지는 것은 둘뿐이고 그 둘이 아래에 있다: ★인증★(`TB_WEB_TOKEN`)과
+★파일을 넣는 길★(`/api/upload` — 다른 기기에 있는 영상은 경로로 부를 수 없다).
+
+    TB_WEB_TOKEN=… python3 -m tb.run web --host 0.0.0.0     # 다른 기기에서 접속
+    python3 -m tb.run web                                   # 127.0.0.1 (손으로 확인할 때만)
+
+평소에는 사람이 이 명령을 치지 않는다 — `deploy/install.sh` 가 systemd 에 맡긴다.
 """
 from __future__ import annotations
 
@@ -24,6 +33,8 @@ import json
 import mimetypes
 import os
 import re
+import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -180,8 +191,13 @@ def new_profile(name, width, height):
 #  소스 고르기 — ★등록하지 않는다★
 # ══════════════════════════════════════════════════════════════════════
 #  예전에는 영상을 쓰려면 local.yaml 에 논리 이름으로 등록하고 그 이름을
-#  시나리오에 적어야 했다. 지금은 파일을 직접 고른다. 업로드가 아니라
-#  ★서버가 보는 파일 시스템을 훑어 주는 것★ 이라 큰 영상이 복사되지 않는다.
+#  시나리오에 적어야 했다. 지금은 파일을 직접 고른다.
+#
+#  ★길이 둘인 이유★ [2026-09-06]
+#  · 훑기(browse) — 이 기계에 이미 있는 영상. 복사되지 않고 경로만 쓴다.
+#    실차에서 방금 딴 영상은 대부분 여기 있으므로 이쪽이 기본이다.
+#  · 올리기(upload) — 다른 기기에 있는 영상. 화면이 원격이 되면서 생긴 길이다.
+#    경로로는 부를 수 없으니 바이트를 받아 이 기계에 놓는 수밖에 없다.
 VIDEO_EXT = {".mp4", ".webm", ".mkv", ".avi", ".mov", ".m4v"}
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff"}
 
@@ -191,12 +207,104 @@ def media_kind(path):
     return "video" if s in VIDEO_EXT else ("image" if s in IMAGE_EXT else "")
 
 
+def _roots():
+    """훑어도 되는 뿌리들. 못 읽으면 홈 하나 — 지금까지와 같다."""
+    try:
+        import tb.config as cfg                            # noqa: PLC0415
+        return cfg.browse_roots()
+    except Exception:                                      # noqa: BLE001
+        return [Path.home().resolve()]
+
+
+def in_roots(path, roots):
+    """이 경로가 뿌리들 ★안★ 인가.
+
+    ★왜 이게 생겼나★ [2026-09-06]
+    예전에는 홈 아래를 자유롭게 훑었다. 그때는 이 화면을 보는 사람이 그 기계
+    앞에 앉아 있었으므로 목록에 새로 보이는 것이 없었다. 지금은 다른 기기에서
+    들어온다 — ★폴더 목록 자체가 밖으로 나가는 정보★ 다.
+
+    `resolve()` 한 뒤에 본다. 심볼릭 링크와 `..` 은 문자열로는 안 잡힌다.
+    """
+    try:
+        p = Path(path).expanduser().resolve()
+    except OSError:
+        return False
+    return any(p == r or r in p.parents for r in roots)
+
+
+#  ★올린 파일이 가는 곳은 한 군데뿐이다★
+#  경로를 요청이 정하게 하면 그것이 곧 「아무 데나 쓰기」다. 이름만 받고
+#  자리는 서버가 정한다 — 그래서 여기 상수 하나가 업로드의 전체 권한이다.
+UPLOAD_DIR = Path(os.environ.get("TB_UPLOAD_DIR")
+                  or Path.home() / "cam_testbed_uploads").expanduser()
+#  기본 8GiB. 블랙박스 영상 한 편이 몇 GB 인 일이 흔해 넉넉히 잡는다.
+UPLOAD_MAX = int(os.environ.get("TB_UPLOAD_MAX") or 8 * 1024 ** 3)
+#  다 받고 나서도 이만큼은 남아 있어야 한다. ★실차가 곧 이 기계★ 라
+#  디스크를 꽉 채우면 다음 주행의 녹화가 죽는다.
+UPLOAD_KEEP_FREE = 2 * 1024 ** 3
+_UP_CHUNK = 1 << 16
+
+#  이름에서 남길 글자 — 한글을 남긴다(영상 이름이 한글인 일이 흔하다).
+_UP_KEEP = re.compile(r"[^0-9A-Za-z._가-힣ㄱ-ㅎㅏ-ㅣ()\[\] +-]+")
+
+
+def safe_upload_name(raw):
+    """올라온 이름에서 ★파일명 하나★만 남긴다.
+
+    이름은 남의 기기가 준 문자열이다. 경로 구분자(`/` 와 윈도의 `\\`)를 먼저
+    자르고 마지막 조각만 쓴다 — 그래야 `../../.ssh/authorized_keys` 가
+    `authorized_keys` 로 납작해진다. 앞의 점도 지운다(`..` 과 숨김 파일).
+    확장자 검사는 여기서 하지 않는다 — 부르는 쪽이 `media_kind` 로 본다.
+    """
+    name = unquote(str(raw or "")).replace("\\", "/").rpartition("/")[2]
+    name = _UP_KEEP.sub("_", name).strip().lstrip(".")
+    if len(name) > 120:                       # 앞을 자르고 ★확장자는 지킨다★
+        stem, dot, ext = name.rpartition(".")
+        name = (stem[:110] + dot + ext[:9]) if dot else name[:120]
+    return name
+
+
+def upload_dest(name, exists=None):
+    """겹치면 덮지 않고 `-2`, `-3` 을 붙인다 — 남이 올린 것을 지우지 않는다."""
+    exists = exists or (lambda p: Path(p).exists())
+    stem, dot, ext = name.rpartition(".")
+    if not dot:
+        stem, ext = name, ""
+    for i in range(1, 1000):
+        cand = UPLOAD_DIR / (name if i == 1 else f"{stem}-{i}{dot}{ext}")
+        if not exists(cand):
+            return cand
+    raise ValueError(f"같은 이름이 너무 많습니다: {name}")
+
+
+def check_source_allowed(path):
+    """이 파일을 열어도 되는가 — ★뿌리 안이거나 올린 것★.
+
+    훑기만 막고 열기를 안 막으면 뿌리는 화면의 장식일 뿐이다(경로만 알면
+    `/api/calib/view` 로 바로 열린다). 그래서 고르는 길과 여는 길이 같은
+    규칙 하나를 지난다.
+    """
+    if in_roots(path, _roots() + [UPLOAD_DIR]):
+        return
+    raise ValueError(
+        f"열 수 있는 폴더 밖입니다: {path}\n"
+        "  local.yaml 의 browse_roots: 에 그 폴더를 넣으면 열립니다.")
+
+
 def browse(d=""):
-    """폴더 하나를 훑는다 — 하위 폴더와 ★열 수 있는 파일★ 만."""
-    base = Path(d).expanduser() if d else Path.home()
-    if not base.is_dir():
-        base = Path.home()
+    """폴더 하나를 훑는다 — 하위 폴더와 ★열 수 있는 파일★ 만.
+
+    뿌리 밖을 가리키면 조용히 첫 뿌리로 되돌린다. 「없는 폴더」와 「막힌 폴더」를
+    구분해 알려 주면 그 자체가 밖에 무엇이 있는지 흘리는 답이 된다.
+    """
+    roots = _roots()
+    base = Path(d).expanduser() if d else roots[0]
+    if not base.is_dir() or not in_roots(base, roots):
+        base = roots[0]
     base = base.resolve()
+    #  뿌리에서 더 위로는 못 올라간다 — 「상위 폴더」가 탈출구가 되지 않게.
+    up = str(base.parent) if in_roots(base.parent, roots) else str(base)
     dirs, files = [], []
     try:
         for e in sorted(base.iterdir(), key=lambda x: x.name.lower()):
@@ -212,9 +320,10 @@ def browse(d=""):
             except OSError:
                 continue
     except PermissionError:
-        return {"dir": str(base), "up": str(base.parent), "error": "열 수 없는 폴더입니다",
+        return {"dir": str(base), "up": up, "error": "열 수 없는 폴더입니다",
                 "dirs": [], "files": []}
-    return {"dir": str(base), "up": str(base.parent), "dirs": dirs, "files": files}
+    return {"dir": str(base), "up": up, "roots": [str(r) for r in roots],
+            "dirs": dirs, "files": files}
 
 
 def source_info(path):
@@ -223,6 +332,7 @@ def source_info(path):
     p = Path(str(path)).expanduser()
     if not p.is_file():
         raise ValueError(f"그런 파일이 없습니다: {p}")
+    check_source_allowed(p)
     kind = media_kind(p)
     if not kind:
         raise ValueError(f"영상도 이미지도 아닙니다: {p.name}")
@@ -459,6 +569,7 @@ def calib_state(pid=""):
         pid = _suggest_profile(profs)
     if not pid:
         return {"profiles": profs, "id": "", "recent": cfg.recent_videos(),
+                "upload": _upload_state(),
                 "error": "보정 프로필이 하나도 없습니다"}
     env = _calib_env(pid)
     cal, p = env["cal"], env["profile"]
@@ -477,6 +588,7 @@ def calib_state(pid=""):
            "ws_params": env.get("ws_params") or {},
            "ws_stamp": _ws_params_stamp(p),
            "verify": bool((p.raw.get("calibration") or {}).get("verify")),
+           "upload": _upload_state(),
            "workspace": str(p.workspace or "")}
     out.update(_cal_dump(cal))
     #  같은 프로필을 ★워크스페이스 값만★ 으로 읽은 것 — «불러오기» 가 이 값으로 되돌린다
@@ -486,6 +598,21 @@ def calib_state(pid=""):
     except Exception:                                       # noqa: BLE001
         out["ws_values"] = None
     return out
+
+
+def _upload_state():
+    """화면이 ★보내기 전에★ 알아야 하는 것 — 한도와 남은 자리.
+
+    8GB 를 다 올리고 나서 「너무 큽니다」를 듣는 것은 도구가 아니다.
+    자리 정보는 실패했을 때 사람이 무엇을 지워야 하는지도 알려 준다.
+    """
+    try:
+        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        free = shutil.disk_usage(UPLOAD_DIR).free
+    except OSError:
+        free = 0
+    return {"dir": str(UPLOAD_DIR), "max": UPLOAD_MAX,
+            "free": free, "keep_free": UPLOAD_KEEP_FREE}
 
 
 def _suggest_profile(profs):
@@ -1218,18 +1345,37 @@ class Handler(BaseHTTPRequestHandler):
             return self._file(f, "image/png")
         return self._err(404, "없는 주소입니다")
 
+    # ── 다른 출처의 페이지가 대신 쏘는 것을 막는다 ──────────────────
+    #  브라우저는 Basic 인증을 한 번 통과하면 그 뒤로 ★자동으로★ 붙여 준다.
+    #  그래서 다른 사이트의 스크립트가 이 주소로 POST 를 쏘면 인증은 통과한다.
+    #  지금은 JSON·커스텀 헤더라 프리플라이트에 막히지만, 그건 요청 모양이
+    #  우연히 그런 것이라 근거로 삼지 않는다. Origin 이 있으면 Host 와 맞는지 본다
+    #  (curl 처럼 Origin 이 없는 것은 브라우저가 아니므로 이 함정에 안 걸린다).
+    def _same_origin(self):
+        origin = self.headers.get("Origin")
+        if not origin:
+            return True
+        return urlparse(origin).netloc == (self.headers.get("Host") or "")
+
     def do_POST(self):
         if not self._authed():
             return self._need_auth()
+        if not self._same_origin():
+            return self._err(403, "다른 출처에서 온 요청입니다")
         u = urlparse(self.path)
         if not u.path.startswith("/api/"):
             return self._err(404, "없는 주소입니다")
         try:
-            n = int(self.headers.get("Content-Length") or 0)
-            body = json.loads(self.rfile.read(n) or b"{}") if n else {}
-        except (ValueError, json.JSONDecodeError):
-            return self._err(400, "요청 본문이 잘못됐습니다")
-        try:
+            #  ★업로드도 같은 그물 안에 둔다★ 밖에 두었더니 중간에 끊긴 업로드가
+            #  응답 없이 연결만 닫혔다 — 화면에는 「연결이 끊겼습니다」만 뜨고
+            #  얼마나 받다 끊겼는지는 서버 로그에도 안 남았다.
+            if u.path == "/api/upload":
+                return self._upload()
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+                body = json.loads(self.rfile.read(n) or b"{}") if n else {}
+            except (ValueError, json.JSONDecodeError):
+                return self._err(400, "요청 본문이 잘못됐습니다")
             return _post(self, u.path[5:], body)
         except ValueError as e:
             return self._err(400, str(e))
@@ -1239,6 +1385,73 @@ class Handler(BaseHTTPRequestHandler):
             return None
         except Exception as e:                     # noqa: BLE001
             return self._err(500, f"{type(e).__name__}: {e}")
+
+    # ── 파일 받기 ───────────────────────────────────────────────────
+    def _upload(self):
+        """다른 기기에 있는 영상을 이 기계에 놓는다.
+
+        ★multipart 를 파싱하지 않는다★
+        폼 인코딩은 경계 문자열을 스캔해야 해서 코드가 길고, 그 파서가
+        곧 공격면이다. 여기 필요한 것은 「이름 하나 + 바이트 덩어리」뿐이라
+        이름은 헤더로 받고 본문은 날바이트로 둔다.
+
+        ★통째로 메모리에 읽지 않는다★
+        영상은 GB 단위다. `rfile.read(n)` 한 방이면 그 크기만큼 램을 먹고
+        이 기계는 추론도 같이 도는 기계다. 64KB 씩 파일로 흘린다.
+
+        ★끝나기 전에는 `.part` 다★
+        중간에 끊긴 파일이 목록에 「영상」으로 보이면 다음 사람이 그걸 열어
+        보고 나서야 안다. 다 받고 나서 제자리로 옮긴다.
+        """
+        name = safe_upload_name(self.headers.get("X-Filename"))
+        if not media_kind(name):
+            return self._err(400, "영상이나 이미지만 올릴 수 있습니다 "
+                                  f"(받은 이름: {name or '없음'})")
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        if n <= 0:
+            return self._err(400, "빈 파일입니다")
+        if n > UPLOAD_MAX:
+            return self._err(413, f"너무 큽니다 ({_mb(n)} > 한도 {_mb(UPLOAD_MAX)})")
+        try:
+            UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+            free = shutil.disk_usage(UPLOAD_DIR).free
+        except OSError as e:
+            return self._err(500, f"올릴 폴더를 못 씁니다: {e}")
+        if n + UPLOAD_KEEP_FREE > free:
+            return self._err(507, f"디스크가 모자랍니다 (남은 자리 {_mb(free)}, "
+                                  f"이 파일 {_mb(n)} — 여유분 {_mb(UPLOAD_KEEP_FREE)}는 남긴다)")
+
+        dest = upload_dest(name)
+        tmp = dest.with_name(dest.name + ".part")
+        got = 0
+        try:
+            with tmp.open("wb") as f:
+                while got < n:
+                    chunk = self.rfile.read(min(_UP_CHUNK, n - got))
+                    if not chunk:
+                        raise ValueError("업로드가 중간에 끊겼습니다 "
+                                         f"({_mb(got)} / {_mb(n)})")
+                    f.write(chunk)
+                    got += len(chunk)
+            tmp.replace(dest)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
+        #  받은 직후 ★열리는지까지★ 확인해 돌려준다 — 화면은 이 뒤로
+        #  경로로 고른 파일과 완전히 같은 길을 간다.
+        return self._json({"uploaded": True, **source_info(str(dest))})
+
+
+def _mb(n):
+    """사람이 읽는 크기 — 오류 문구에만 쓴다."""
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.0f}{unit}" if unit == "B" else f"{n:.1f}{unit}"
+        n /= 1024.0
+    return f"{n:.1f}GB"
 
 
 def _source(body, need=True):
@@ -1251,6 +1464,7 @@ def _source(body, need=True):
     p = Path(v).expanduser()
     if not p.is_file():
         raise ValueError(f"그런 파일이 없습니다: {v}")
+    check_source_allowed(p)
     return str(p)
 
 
@@ -1325,22 +1539,51 @@ def _post(hnd, route, body):
     return hnd._err(404, f"없는 주소입니다: {route}")
 
 
-def serve(host="127.0.0.1", port=8770, open_browser=False):
+def lan_urls(port):
+    """다른 기기가 칠 주소들 — mDNS 이름을 앞에 둔다.
+
+    IP 는 공유기가 다시 나눠 주면 바뀌지만 `<호스트>.local` 은 그대로다.
+    avahi 가 죽어 있는 망도 있으므로 IP 도 같이 찍는다(둘 다 못 쓰면 주소가 없다).
+    """
+    out = []
+    host = socket.gethostname().split(".")[0]
+    if host:
+        out.append(f"http://{host}.local:{port}")
+    try:
+        #  ★밖으로 나가는 인터페이스의 주소★ 를 고른다. gethostbyname 은 /etc/hosts
+        #  때문에 127.0.1.1 을 주는 일이 흔하다 — 그 주소로는 아무도 못 들어온다.
+        #  UDP 라 실제로 패킷이 나가지는 않는다(연결 없는 소켓).
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sk:
+            sk.settimeout(0.2)
+            sk.connect(("192.0.2.1", 9))        # TEST-NET-1 — 실재하지 않는 주소
+            ip = sk.getsockname()[0]
+        if ip and not ip.startswith("127."):
+            out.append(f"http://{ip}:{port}")
+    except OSError:
+        pass
+    return out
+
+
+def serve(host="127.0.0.1", port=8770):
     #  로컬이 아닌 host 에 토큰 없이 바인딩하는 것을 막는다(무방비 노출).
     if host not in ("127.0.0.1", "localhost", "::1") and not WEB_TOKEN:
         print("거부: 로컬이 아닌 host 인데 TB_WEB_TOKEN 이 없습니다 — "
               "무방비 노출을 막습니다. 토큰을 주고 다시 띄우세요.")
         return 2
     srv = ThreadingHTTPServer((host, port), Handler)
-    url = f"http://{host}:{port}"
     profs = list_profiles()
-    print(f"카메라 보정 스튜디오 → {url}")
+    print("카메라 보정 스튜디오")
+    if host in ("127.0.0.1", "localhost", "::1"):
+        print(f"  이 기계에서만 → http://{host}:{port}")
+        print("  다른 기기에서 열려면: TB_WEB_TOKEN=… --host 0.0.0.0")
+    else:
+        for u in lan_urls(port):
+            print(f"  다른 기기에서 → {u}")
     print(f"  프로필 {len(profs)}개: " + ", ".join(p["id"] for p in profs[:6]))
+    print(f"  올린 파일이 가는 곳: {UPLOAD_DIR}")
     if WEB_TOKEN:
-        print("  인증: TB_WEB_TOKEN 설정됨 — 모든 요청에 비밀번호로 필요")
+        print("  인증: TB_WEB_TOKEN 설정됨 — 아이디는 아무거나, 비밀번호가 토큰")
     print("  Ctrl-C 로 종료")
-    if open_browser:
-        threading.Timer(0.6, lambda: os.system(f"xdg-open {url} >/dev/null 2>&1 &")).start()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

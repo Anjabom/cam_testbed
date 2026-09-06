@@ -1317,19 +1317,17 @@ def cmd_build(args):
 
 
 def cmd_web(args):
-    """로컬 웹 뷰어를 띄운다 (표준 라이브러리만 — 외부 의존성 없음)."""
+    """보정 스튜디오를 띄운다 (표준 라이브러리만 — 외부 의존성 없음).
+
+    ★이 기계에서 보는 화면이 아니다★ 스튜디오는 다른 기기(태블릿·다른 노트북)의
+    브라우저로 들어와 쓴다 — 이 기계는 영상과 GPU 가 있는 쪽이라 화면 앞에
+    사람이 앉아 있지 않다. 그래서 `--host 0.0.0.0` 과 `TB_WEB_TOKEN` 이 짝이고,
+    평소에는 사람이 이 명령을 치지 않는다(`deploy/install.sh` 가 systemd 에 맡긴다).
+    """
     import sys as _sys
     _sys.path.insert(0, str(ROOT / "web"))
     import server as web_server          # noqa: E402
-    return web_server.serve(args.host, args.port, args.open)
-
-
-def cmd_app(args):
-    """같은 화면을 ★별도의 창★으로 띄운다 (주소창·탭 없음)."""
-    import sys as _sys
-    _sys.path.insert(0, str(ROOT / "web"))
-    import shell as web_shell            # noqa: E402
-    return web_shell.launch(args.host, args.port, args.page, args.size)
+    return web_server.serve(args.host, args.port)
 
 
 def cmd_list(_args):
@@ -1435,18 +1433,13 @@ def main(argv=None):
     bd.add_argument("--all", action="store_true", help="워크스페이스 전체를 빌드")
     bd.set_defaults(fn=cmd_build)
 
-    w = sub.add_parser("web", help="카메라 보정 스튜디오 (브라우저)")
-    w.add_argument("--host", default="127.0.0.1")
+    w = sub.add_parser("web", help="카메라 보정 스튜디오 (다른 기기의 브라우저로)")
+    #  기본이 127.0.0.1 인 이유 — 손으로 칠 때 실수로 열지 않게. 열려면 명시한다.
+    w.add_argument("--host", default="127.0.0.1",
+                   help="0.0.0.0 이면 같은 공유기의 다른 기기에서 들어온다 "
+                        "(TB_WEB_TOKEN 이 있어야 한다)")
     w.add_argument("--port", type=int, default=8770)
-    w.add_argument("--open", action="store_true", help="브라우저를 자동으로 연다")
     w.set_defaults(fn=cmd_web)
-
-    ap_ = sub.add_parser("app", help="같은 화면을 별도의 창으로 (주소창·탭 없음)")
-    ap_.add_argument("--host", default="127.0.0.1")
-    ap_.add_argument("--port", type=int, default=8770)
-    ap_.add_argument("--page", default="")
-    ap_.add_argument("--size", default="1500x950")
-    ap_.set_defaults(fn=cmd_app)
 
     ls = sub.add_parser("list", help="프리셋과 최근 런")
     ls.set_defaults(fn=cmd_list)

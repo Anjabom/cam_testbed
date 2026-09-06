@@ -70,20 +70,36 @@ python3 -m tb.run run --contract contracts/x.yaml --video /abs/a.mp4 \
 `presets/*.yaml`(재생 조건만, 판정 어휘 없음)로 두고 `--preset` 으로 부른다 —
 명령줄 인자가 언제나 이긴다.
 
-서브커맨드: `doctor · run · replay · reanalyze · diff · export · params · build · list · web · app`
+서브커맨드: `doctor · run · replay · reanalyze · diff · export · params · build · list · web`
 
-### ② 카메라 보정 — 웹앱
+### ② 카메라 보정 — 웹앱 (★이 기계에서 보지 않는다★)
 
 ```bash
-python3 -m tb.run app                     # 별도 창 (주소창·탭 없음)
-#   또는  python3 -m tb.run web           # 서버만 (http://127.0.0.1:8770)
+bash deploy/install.sh                    # 최초 1회 — systemd 가 상주시킨다
+#   → 다른 기기 브라우저에서 http://<호스트>.local:8770
+#   손으로 확인할 때만: python3 -m tb.run web   (127.0.0.1, 이 기계에서만)
 ```
 
-영상이나 **사진 한 장**을 경로로 열어 IPM 사각형·ROI·px2m·BEV 기준선을 맞춘다.
+이 기계는 영상·GPU 가 있는 쪽이고 사람은 그 앞에 앉아 있지 않다. 스튜디오는
+**같은 공유기의 다른 기기**로 들어와 쓴다 — 기하가 전부 서버에 있어(경계 3)
+원격이어도 화면이 달라지지 않는다. 원격이 되면서 생긴 것은 셋뿐이다:
+
+- **인증** — `TB_WEB_TOKEN`. 비로컬 host 인데 토큰이 없으면 서버가 뜨기를 거부한다.
+- **올리기** — `POST /api/upload`. 다른 기기의 파일은 경로로 부를 수 없다.
+  multipart 를 파싱하지 않는다(이름은 헤더, 본문은 날바이트를 64KB 씩 파일로 흘린다).
+  가는 곳은 `UPLOAD_DIR` 한 군데다 — **요청이 경로를 정하지 못한다.**
+- **뿌리** — `local.yaml` 의 `browse_roots:`(안 적으면 홈 하나). 폴더 목록 자체가
+  밖으로 나가는 정보라서 좁힌다. **고르는 길과 여는 길이 같은 규칙 하나를 지난다**
+  (`check_source_allowed`) — 훑기만 막으면 경로만 알면 그대로 열린다.
+
+영상이나 **사진 한 장**을 열어 IPM 사각형·ROI·px2m·BEV 기준선을 맞춘다.
 등록 절차가 없다. 프로필은 두 종류다:
 
 - `contracts/*.yaml` 의 `calibration:` 블록 — 워크스페이스에 붙은 것(내보내기까지 연결된다)
 - `calib/*.yaml` — 워크스페이스 없이 카메라만 실험할 때(화면에서 만들 수 있다)
+
+상주시키는 것(`deploy/`)은 저장소 밖의 파일 셋(유닛·토큰 파일·linger)을 건드린다.
+**절대 경로는 설치할 때 박히고 저장소에는 남지 않는다** — 유닛은 `@…@` 템플릿이다.
 
 ### 웹앱 밖에서 직접 치는 예외
 

@@ -23,8 +23,9 @@ python3 -m tb.run doctor --contract contracts/black_vote.yaml --video /abs/night
 python3 -m tb.run run    --contract contracts/black_vote.yaml --video /abs/night.mp4 \
         --start 300 --limit 900 --note "정지선에서 제때 서는지" --out ~/black_ws
 
-# ── 카메라 보정 ──
-python3 -m tb.run app                  # 별도 창 (또는 web — 브라우저)
+# ── 카메라 보정 (다른 기기의 브라우저에서 쓴다) ──
+bash deploy/install.sh                 # 최초 1회 — 부팅하면 상주한다
+#   → http://<이 기계>.local:8770  로 태블릿·다른 노트북에서 접속
 ```
 
 결과는 `~/black_ws/testbed_results/<런>/` 에 리포트·CSV·**디버그 영상**·실행 조건으로 남는다.
@@ -166,7 +167,7 @@ python3 -m tb.run run --contract contracts/x.yaml --video /abs/a.mp4 \
 | `params` | 노드를 한 번 띄워 **노드가 스스로 선언한 값**을 받아 적는다 |
 | `build` | 대상 워크스페이스를 colcon build |
 | `list` | 프리셋과 최근 런 |
-| `web` / `app` | 보정 스튜디오 |
+| `web` | 보정 스튜디오 (보통은 `deploy/install.sh` 가 대신 띄운다) |
 
 ### 3.4 한 번의 흐름 (`tb/run.py` 의 `_one_run`)
 
@@ -199,12 +200,51 @@ python3 -m tb.run run --contract contracts/x.yaml --video /abs/a.mp4 \
 
 ## 4. 보정 스튜디오
 
+### 4.0 이 화면은 ★이 기계에서 보지 않는다★
+
+이 기계는 영상·GPU·워크스페이스가 있는 쪽이고, 사람은 그 앞에 앉아 있지 않다.
+스튜디오는 **같은 공유기의 다른 기기**(태블릿·다른 노트북) 브라우저로 들어와 쓴다.
+화면이 원격이라 달라지는 것은 없다 — 기하는 전부 서버가 계산해 PNG 로 보내기 때문이다.
+
 ```bash
-python3 -m tb.run app        # 별도 창 (주소창·탭 없음) — 크롬 앱 모드
-python3 -m tb.run web        # 서버만 (http://127.0.0.1:8770)
+bash deploy/install.sh              # 최초 1회. 포트를 바꾸려면 install.sh 9000
 ```
 
-**영상이든 사진 한 장이든 경로만 고르면 열린다.** 등록 절차가 없다.
+설치가 끝나면 **주소와 비밀번호**를 찍어 준다. 그 뒤로는 명령을 치지 않는다 —
+부팅하면 systemd 가 띄우고, 다른 기기는 그 주소만 안다.
+
+| | |
+|---|---|
+| 주소 | `http://<호스트>.local:8770` (안 잡히면 IP) |
+| 로그인 | 아이디 아무거나 · 비밀번호가 토큰 (`~/.config/cam-testbed/env`, 0600) |
+| 상태·로그 | `systemctl --user status cam-studio` · `journalctl --user -u cam-studio -f` |
+| 지우기 | `bash deploy/uninstall.sh` (토큰과 올린 파일은 남는다) |
+
+손으로 확인할 때만 직접 띄운다:
+
+```bash
+python3 -m tb.run web                                    # 127.0.0.1:8770 (이 기계에서만)
+TB_WEB_TOKEN=… python3 -m tb.run web --host 0.0.0.0      # 토큰 없이는 거부한다
+```
+
+★비로컬 host 인데 토큰이 없으면 서버가 스스로 뜨기를 거부한다★ — 무방비 노출을 막는다.
+
+### 4.1 영상을 넣는 길은 둘
+
+| | 무엇 | 언제 |
+|---|---|---|
+| **고르기** | 이 기계에 이미 있는 파일. **복사되지 않고 경로만 쓴다** | 실차에서 방금 딴 영상 (대부분 이쪽) |
+| **올리기** | 다른 기기의 파일을 이 기계로 보낸다 | 손에 든 기기에만 있는 영상 |
+
+올리기는 «파일 올리기» 단추이거나 **창 아무 데나 끌어다 놓으면** 된다. 진행률이 보이고,
+받는 도중에는 `.part` 라 목록에 「영상」으로 뜨지 않는다. 가는 곳은 언제나 한 폴더
+(`~/cam_testbed_uploads`)다 — 요청이 경로를 정하지 못한다.
+
+훑을 수 있는 범위는 `local.yaml` 의 `browse_roots:` 가 정한다(안 적으면 홈 하나).
+**화면이 원격이 되면서 폴더 목록 자체가 밖으로 나가는 정보가 됐기 때문이다.**
+고르는 길과 여는 길이 같은 규칙 하나를 지난다 — 훑기만 막으면 뿌리는 장식일 뿐이다.
+
+**영상이든 사진 한 장이든 고르기만 하면 열린다.** 등록 절차가 없다.
 
 ### 무엇을 맞추나
 
@@ -292,10 +332,13 @@ tb/                     시뮬레이터 (엔진)
   selftest.py           자체 검사 (ROS·영상 불필요)
 
 web/                    보정 스튜디오 (외부 의존성 0)
-  server.py             프로필 · 파일 브라우저 · BEV 렌더 · 오래 걸리는 일
+  server.py             프로필 · 파일 브라우저 · 올리기 · BEV 렌더 · 오래 걸리는 일
   app.js                화면 — ★기하 계산을 하지 않는다★
   index.html · style.css
-  shell.py              별도 창으로 띄우기 (크롬 앱 모드)
+
+deploy/                 다른 기기에서 쓰게 상주시키기
+  cam-studio.service    systemd 유저 유닛 (템플릿 — 절대 경로는 설치할 때 박힌다)
+  install.sh · uninstall.sh
 
 contracts/*.yaml        워크스페이스 결합 (1 워크스페이스 = 1 파일)
 calib/*.yaml            워크스페이스 없는 보정 프로필

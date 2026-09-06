@@ -179,7 +179,8 @@ cd "$TB" && python3 -m tb.run run \
 IPM 사각형·ROI·픽셀↔미터·BEV 기준선을 맞추는 일은 손으로 보면서 해야 한다.
 
 ```bash
-cd "$TB" && python3 -m tb.run app      # 별도 창 (또는 web — 브라우저)
+# 보정 스튜디오는 상주한다 — http://<호스트>.local:8770 (다른 기기에서)
+cd "$TB" && bash deploy/install.sh     # 아직 안 깔았으면 최초 1회
 ```
 
 **사용자가 "카메라 값이 안 맞는 것 같다"고 하면 이 화면을 띄우라고 안내한다.**

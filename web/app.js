@@ -51,6 +51,57 @@
         }, function () { throw new Error('HTTP ' + r.status); });
       });
   }
+
+  // ── 파일 올리기 ─────────────────────────────────────────────────
+  //  ★fetch 를 쓰지 않는다★ fetch 는 업로드 진행률을 주지 않는다. 몇 GB 짜리
+  //  영상을 아무 표시 없이 기다리게 하면 사람은 멈춘 줄 알고 새로고침한다.
+  //  폼(multipart)으로 감싸지도 않는다 — 서버가 이름만 헤더로 받고 본문은
+  //  날바이트로 파일에 흘린다(경계 문자열 파서를 양쪽에 두지 않는다).
+  function upload(file, onProg) {
+    return new Promise(function (res, rej) {
+      var x = new XMLHttpRequest();
+      x.open('POST', '/api/upload');
+      x.setRequestHeader('Content-Type', 'application/octet-stream');
+      //  헤더는 ASCII 만 담는다 → 한글 파일명은 퍼센트 인코딩해서 보낸다.
+      x.setRequestHeader('X-Filename', encodeURIComponent(file.name));
+      x.upload.onprogress = function (e) {
+        if (e.lengthComputable && onProg) onProg(e.loaded, e.total);
+      };
+      x.onload = function () {
+        var j = {};
+        try { j = JSON.parse(x.responseText); } catch (err) { j = {}; }
+        if (x.status >= 200 && x.status < 300) res(j);
+        else rej(new Error(j.error || ('HTTP ' + x.status)));
+      };
+      x.onerror = function () { rej(new Error('연결이 끊겼습니다')); };
+      x.onabort = function () { rej(new Error('취소했습니다')); };
+      x.send(file);
+    });
+  }
+
+  //  ★페이지 어디에 떨어뜨려도 받는다★ 작은 사각형을 조준하게 만들면
+  //  드래그&드롭이 파일 선택 창보다 불편해진다.
+  //  화면을 다시 그릴 때마다 리스너를 새로 달면 한 번 떨어뜨린 파일이 여러 번
+  //  올라간다 → 리스너는 여기서 ★한 번만★ 달고, 받는 사람만 갈아 끼운다.
+  var DROP = { on: null };
+  (function () {
+    var depth = 0;                      // 자식 위를 지날 때마다 leave 가 뜬다
+    function stop(e) { e.preventDefault(); e.stopPropagation(); }
+    function off() { depth = 0; document.body.classList.remove('dropping'); }
+    document.addEventListener('dragenter', function (e) {
+      stop(e); depth++; document.body.classList.add('dropping');
+    });
+    document.addEventListener('dragover', stop);
+    document.addEventListener('dragleave', function (e) {
+      stop(e); if (--depth <= 0) off();
+    });
+    document.addEventListener('drop', function (e) {
+      stop(e); off();
+      var f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+      if (f && DROP.on) DROP.on(f);
+    });
+  }());
+
   var hintTimer = null;
   function say(msg, bad) {
     hintEl.textContent = (bad ? '오류: ' : '') + msg;
@@ -110,6 +161,7 @@
     var pathIn = h('input', { class: 'wherebox', style: 'flex:1',
                               placeholder: '/경로/를/직접/입력해도 됩니다' });
     var list = h('div', { class: 'browse' });
+    var rootLbl = h('p', { class: 'sub' });
     var here = '';
 
     function close() { document.body.removeChild(back); }
@@ -118,6 +170,10 @@
       get('/api/browse?dir=' + encodeURIComponent(d || '')).then(function (r) {
         here = r.dir;
         pathIn.value = r.dir;
+        rootLbl.textContent = (r.roots || []).length
+          ? '훑을 수 있는 곳: ' + r.roots.join('  ·  ')
+            + '   (넓히려면 local.yaml 의 browse_roots:)'
+          : '';
         clear(list);
         if (r.error) list.appendChild(h('p', { class: 'no', text: r.error }));
         list.appendChild(h('div', { class: 'brow up', onclick: function () { load(r.up); } },
@@ -139,9 +195,11 @@
     }
     var box = h('div', { class: 'modal' }, [
       h('h2', { text: '영상 · 이미지 고르기' }),
-      h('p', { class: 'help', text:
-        '이 서버가 도는 컴퓨터의 파일입니다 — 복사되지 않고 경로만 씁니다. '
-        + '사진 한 장으로도 보정할 수 있습니다.' }),
+      h('p', { class: 'help', html:
+        '<b>이 스튜디오가 도는 컴퓨터</b>의 파일입니다 — 복사되지 않고 경로만 씁니다. '
+        + '사진 한 장으로도 보정할 수 있습니다.<br>'
+        + '지금 보고 있는 <b>이 기기</b>에 있는 파일이라면 여기가 아니라 '
+        + '«파일 올리기» 이거나, 창 아무 데나 끌어다 놓으면 됩니다.' }),
       bar([pathIn,
            h('button', { text: '열기', onclick: function () { load(pathIn.value.trim()); } }),
            h('button', { text: '이 경로 쓰기', class: 'primary', onclick: function () {
@@ -149,6 +207,7 @@
              if (v) { close(); onPick(v); }
            } })]),
       list,
+      rootLbl,
       bar([h('span', { class: 'spacer' }),
            h('button', { text: '닫기', onclick: close })]),
     ]);
@@ -256,6 +315,50 @@
     recentSel.addEventListener('change', function () {
       if (recentSel.value) setSource(recentSel.value);
     });
+
+    //  ★보내고 나서 거절당하지 않게★ 한도와 남은 자리를 먼저 본다.
+    //  8GB 를 다 올린 뒤에 「너무 큽니다」를 듣는 것은 도구가 아니다.
+    var upIn = h('input', { type: 'file', style: 'display:none',
+                            accept: 'video/*,image/*' });
+    var upBtn = h('button', { text: '파일 올리기',
+      title: '이 기기에 있는 영상·사진을 스튜디오가 도는 컴퓨터로 보냅니다',
+      onclick: function () { upIn.click(); } });
+    var upLbl = h('span', { class: 'sub' });
+    upIn.addEventListener('change', function () {
+      if (upIn.files && upIn.files[0]) takeFile(upIn.files[0]);
+      upIn.value = '';                 // 같은 파일을 다시 골라도 change 가 나게
+    });
+
+    function takeFile(f) {
+      var lim = st.upload || {};
+      if (lim.max && f.size > lim.max) {
+        say(f.name + ' 은 한도보다 큽니다 — ' + fmtSize(f.size)
+            + ' > ' + fmtSize(lim.max), true);
+        return;
+      }
+      if (lim.free != null && f.size + (lim.keep_free || 0) > lim.free) {
+        say('그 컴퓨터에 자리가 모자랍니다 — 남은 자리 ' + fmtSize(lim.free)
+            + ', 이 파일 ' + fmtSize(f.size), true);
+        return;
+      }
+      upBtn.disabled = true;
+      upLbl.textContent = f.name + '  0%';
+      upload(f, function (a, b) {
+        upLbl.textContent = f.name + '  ' + Math.round(a / b * 100) + '%  ('
+          + fmtSize(a) + ' / ' + fmtSize(b) + ')';
+      }).then(function (info) {
+        upBtn.disabled = false;
+        upLbl.textContent = '';
+        say(info.name + ' → ' + (lim.dir || '') + ' 에 놓았습니다');
+        setSource(info.path);
+        return info;
+      }).catch(function (e) {
+        upBtn.disabled = false;
+        upLbl.textContent = '';
+        say(e.message, true);
+      });
+    }
+    DROP.on = takeFile;                // 창 아무 데나 끌어다 놓아도 같은 길
 
     function setSource(path) {
       stopPlay();
@@ -865,7 +968,7 @@
       h('button', { class: 'primary', text: '영상·이미지 고르기', onclick: function () {
         pickSource(S.video ? S.video.replace(/\/[^/]*$/, '') : '', setSource);
       } }),
-      recentSel, srcLbl,
+      upBtn, upIn, recentSel, srcLbl, upLbl,
       h('span', { class: 'spacer' }), undBtn, gridBtn,
     ]));
     view.appendChild(playRow);

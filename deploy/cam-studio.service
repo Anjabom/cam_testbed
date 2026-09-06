@@ -1,0 +1,41 @@
+#  카메라 보정 스튜디오 — systemd 유저 유닛 ★템플릿★
+#
+#  이 파일을 직접 설치하지 않는다. `deploy/install.sh` 가 @…@ 자리를 이 기계의
+#  값으로 바꿔 ~/.config/systemd/user/ 에 놓는다 — 저장소에 절대 경로를 박지
+#  않으려는 것이다(계약의 workspace: · local.yaml · 프리셋의 video: 뿐이다).
+#
+#  ★이 유닛의 목적은 사람이 명령을 치지 않게 하는 것★
+#  스튜디오를 쓰는 사람은 다른 기기 앞에 있고, 이 기계는 영상과 GPU 가 있는
+#  쪽이라 켜져 있을 뿐이다. 터미널을 열어야 화면이 뜬다면 그건 원격이 아니다.
+
+[Unit]
+Description=카메라 보정 스튜디오 (cam_testbed)
+Documentation=file://@TESTBED@/README.md
+#  네트워크가 올라온 뒤라야 0.0.0.0 바인딩이 실패하지 않는다
+After=network-online.target
+Wants=network-online.target
+#  ★죽으면 다시 뜨되, 계속 죽으면 포기한다★ 5분에 5번 넘게 죽는 것은
+#  일시적인 사고가 아니라 고장이다 — 로그를 보라고 멈춘다.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=exec
+WorkingDirectory=@TESTBED@
+#  ★토큰은 유닛 파일에 쓰지 않는다★ 유닛은 누구나 읽을 수 있고 실수로
+#  저장소에 복사될 수도 있다. 비밀은 0600 짜리 파일 하나에만 둔다.
+EnvironmentFile=@ENVFILE@
+#  ★버퍼를 끈다★ 안 끄면 기동 배너(주소·프로필 수)가 파이프에 갇혀
+#  journalctl 에 한참 뒤에야, 또는 아예 안 나온다 — 실측해서 붙였다.
+Environment=PYTHONUNBUFFERED=1
+#  ROS 를 source 하는 이유는 화면이 아니라 «워크스페이스 값 불러오기» 다 —
+#  그 버튼 하나만 ros2 를 부른다. ROS 가 없으면 그 버튼만 안 되고 나머지는 돈다.
+ExecStart=/bin/bash -c 'if [ -f "@ROS@" ]; then . "@ROS@"; fi; exec python3 -m tb.run web --host 0.0.0.0 --port "$TB_WEB_PORT"'
+Restart=on-failure
+RestartSec=3
+#  ★샌드박스(ProtectHome 등)를 걸지 않는다★ 이 서비스는 하는 일이 곧
+#  파일 쓰기다: local.yaml · 올린 영상 · 대상 워크스페이스의 params yaml.
+#  홈을 막으면 저장 버튼이 통째로 죽는다. 방어선은 토큰과 뿌리(browse_roots)다.
+
+[Install]
+WantedBy=default.target

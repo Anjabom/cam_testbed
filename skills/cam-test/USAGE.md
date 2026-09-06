@@ -216,7 +216,8 @@ python3 -m tb.run diff runs/<이전런> runs/<이번런>
 IPM 사각형·ROI·픽셀↔미터·BEV 기준선은 **보면서 맞춰야** 하는 값이다.
 
 ```bash
-cd ~/cam_testbed && python3 -m tb.run app     # 별도 창 (또는 web — 브라우저)
+cd ~/cam_testbed && bash deploy/install.sh    # 최초 1회 — 그 뒤로는 상주한다
+#   다른 기기 브라우저에서 http://<호스트>.local:8770
 ```
 
 - 영상이든 **사진 한 장**이든 경로만 고르면 열린다(등록 절차 없음)
@@ -269,7 +270,7 @@ cd ~/cam_testbed && python3 -m tb.run app     # 별도 창 (또는 web — 브�
 ## 9. 스킬 밖에서 직접 치는 것
 
 ```bash
-python3 -m tb.run app                     # 보정 스튜디오 (별도 창)
+bash deploy/install.sh                    # 보정 스튜디오 (다른 기기에서 접속)
 python3 -m tb.selftest                    # 자체 검사 (ROS·영상 불필요)
 python3 -m flake8 tb web                  # 린트
 ```

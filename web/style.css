@@ -145,7 +145,7 @@ button:disabled{opacity:.45;cursor:not-allowed}
   margin:0 0 12px}
 .tasklog:empty{display:none}
 
-/*  파일 고르기 — 업로드가 아니라 서버가 보는 파일 시스템이다 */
+/*  파일 고르기 — 이 스튜디오가 도는 컴퓨터의 파일 시스템을 훑는다 */
 .modalback{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:50;
   display:flex;align-items:center;justify-content:center;padding:24px}
 .modal{background:var(--ground);border:1px solid var(--line);border-radius:9px;
@@ -160,3 +160,14 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .brow b{font-weight:550;color:var(--ink)}
 .brow.file b{color:var(--accent)}
 .brow.up{color:var(--muted)}
+
+/*  파일 올리기 — 다른 기기에 있는 영상을 이 컴퓨터로 보내는 길.
+    떨어뜨릴 자리를 작은 사각형으로 두지 않고 ★창 전체★로 받는다:
+    조준해야 하는 드롭존은 파일 선택 창보다 불편하다. 그래서 표시도
+    테두리 하나뿐이다 — 화면을 가리면 어디에 놓는지가 안 보인다. */
+body.dropping::after{content:"여기에 놓으면 올라갑니다";
+  position:fixed;inset:8px;z-index:80;pointer-events:none;
+  border:2px dashed var(--accent);border-radius:10px;
+  display:flex;align-items:flex-end;justify-content:center;padding-bottom:18px;
+  font-family:var(--mono);font-size:12.5px;color:var(--accent);
+  background:rgba(169,98,10,.06)}

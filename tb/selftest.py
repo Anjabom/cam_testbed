@@ -732,6 +732,86 @@ def t_profile_path():
         eq("id 는 저장소 기준 상대경로", pid.startswith("contracts/"), True)
 
 
+def t_upload_name():
+    """올라온 파일 이름 — ★이걸 그대로 믿으면 아무 데나 쓰기★ 가 된다.
+
+    이름은 남의 기기가 준 문자열이다. 경로를 담고 있으면 UPLOAD_DIR 밖으로
+    나간다. 한글은 남겨야 한다 — 영상 이름이 한글인 일이 흔하고, 그걸
+    `_____.mp4` 로 만들면 목록에서 무엇인지 알 수 없다.
+    """
+    S = _studio()
+    f = S.safe_upload_name
+    eq("경로는 마지막 조각만", f("../../.ssh/authorized_keys"), "authorized_keys")
+    eq("윈도 경로도 납작하게", f(r"C:\Users\me\a.mp4"), "a.mp4")
+    eq("한글은 남는다", f("야간 주행.mp4"), "야간 주행.mp4")
+    eq("퍼센트 인코딩을 푼다", f("%EC%95%BC%EA%B0%84.mp4"), "야간.mp4")
+    eq("점만 있으면 빈 이름", f(".."), "")
+    eq("숨김 파일이 되지 않는다", f(".bashrc"), "bashrc")
+    eq("제어문자·따옴표는 지운다", f('a\n"b;rm -rf.mp4'), "a_b_rm -rf.mp4")
+    eq("빈 입력", f(None), "")
+    long = f("가" * 300 + ".mp4")
+    eq("긴 이름은 잘리되 확장자는 남는다",
+       (len(long) <= 120, long.endswith(".mp4")), (True, True))
+    #  ★확장자 게이트는 이름이 아니라 media_kind 가 본다★ — 둘을 붙여 둔다
+    eq("실행 파일은 영상이 아니다", S.media_kind(f("x.sh")), "")
+    eq("올린 mp4 는 영상", S.media_kind(f("x.MP4")), "video")
+
+    #  겹치는 이름을 ★덮지 않는다★ — 남이 올린 것을 지우면 안 된다
+    taken = {str(S.UPLOAD_DIR / "a.mp4"), str(S.UPLOAD_DIR / "a-2.mp4")}
+    got = S.upload_dest("a.mp4", exists=lambda p: str(p) in taken)
+    eq("겹치면 -3 으로 비켜난다", got.name, "a-3.mp4")
+    eq("올린 것은 UPLOAD_DIR 안에만 놓인다", got.parent, S.UPLOAD_DIR)
+
+
+def t_browse_roots():
+    """훑기·열기의 뿌리 — ★심볼릭 링크와 `..` 은 문자열로 안 잡힌다★.
+
+    화면이 원격이 되면서 폴더 목록 자체가 밖으로 나가는 정보가 됐다.
+    여기가 틀리면 뿌리는 화면의 장식일 뿐이다.
+    """
+    import tempfile
+    S = _studio()
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td).resolve() / "media"
+        (root / "sub").mkdir(parents=True)
+        outside = Path(td).resolve() / "secret"
+        outside.mkdir()
+        (outside / "k.txt").write_text("x")
+        roots = [root]
+
+        eq("뿌리 자신은 안", S.in_roots(root, roots), True)
+        eq("뿌리 아래는 안", S.in_roots(root / "sub", roots), True)
+        eq("형제 폴더는 밖", S.in_roots(outside, roots), False)
+        eq("★.. 로 못 나간다★", S.in_roots(root / "sub" / ".." / ".." / "secret",
+                                          roots), False)
+        eq("문자열 접두사만 같은 것도 밖",
+           S.in_roots(Path(str(root) + "_other"), roots), False)
+
+        #  ★심볼릭 링크★ 뿌리 안에 밖을 가리키는 링크를 놓아도 뚫리면 안 된다
+        link = root / "link"
+        link.symlink_to(outside)
+        eq("★링크로도 못 나간다★", S.in_roots(link / "k.txt", roots), False)
+
+        #  browse() 는 뿌리 밖을 가리키면 조용히 첫 뿌리로 되돌린다
+        import tb.config as cfg                             # noqa: PLC0415
+        real = cfg.browse_roots
+        cfg.browse_roots = lambda: roots                    # noqa: E731
+        try:
+            eq("밖을 달라고 해도 뿌리를 준다", S.browse(str(outside))["dir"], str(root))
+            eq("뿌리에서 상위는 제자리", S.browse(str(root))["up"], str(root))
+            eq("아래에서는 위로 갈 수 있다",
+               S.browse(str(root / "sub"))["up"], str(root))
+            try:
+                S.check_source_allowed(outside / "k.txt")
+                FAILS.append("뿌리 밖 파일을 열도록 허용했다")
+            except ValueError:
+                pass
+            S.check_source_allowed(root / "sub" / "a.mp4")   # 없어도 자리는 맞다
+            S.check_source_allowed(S.UPLOAD_DIR / "a.mp4")   # 올린 것은 언제나 안
+        finally:
+            cfg.browse_roots = real
+
+
 def t_quad_guard():
     """자동 미세조정이 ★밟으면 안 되는 자리★.
 
