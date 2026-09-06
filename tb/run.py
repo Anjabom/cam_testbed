@@ -43,6 +43,18 @@ from .contract import load as load_contract
 
 ROOT = Path(__file__).resolve().parent.parent      # testbed/ (테스트베드 자신)
 
+
+def runs_dir(sub=""):
+    """`runs/` 는 ★git 에 없다★ — 새로 클론한 기계에는 이 폴더가 아예 없다.
+
+    실측한 실패: 갓 클론한 저장소에서 `tb.run list` 가 FileNotFoundError 로 죽었다.
+    쓰는 쪽마다 mkdir 을 흩어 놓으면 하나씩 빠지므로 여기 한 곳을 지나게 한다.
+    """
+    d = ROOT / "runs" / sub if sub else ROOT / "runs"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 #  ★프리셋이 물려주는 키★ — 전부 「어느 영상의 어느 구간을 어떻게 재생하는가」다.
 #  판정 어휘는 하나도 없다(그래서 프리셋은 시나리오가 아니다). 명령줄 인자가 이긴다.
 SPEC_KEYS = ("mode", "rate", "start", "limit", "stride", "warmup_s", "sync_timeout",
@@ -289,6 +301,13 @@ def cmd_doctor(args):
     cap = encode.capability()
     chk("영상 코덱", not cap.startswith("cv2/mp4v"),
         f"{cap} — mp4v 뿐이면 브라우저에서 재생 불가. `sudo apt install ffmpeg`")
+    #  ★없어도 죽지 않는다 — 그래서 더 위험하다★ 한글 폰트가 없으면 디버그 영상과
+    #  BEV 의 라벨이 조용히 ???? 가 된다(cv2 폴백). 영상을 열어 봐야 알게 된다.
+    from .geometry import find_font                        # noqa: PLC0415
+    font = find_font()
+    print(f"  {'✅' if font else '⚠️ '} 한글 폰트  "
+          + (font if font else "못 찾았다 — 디버그 영상의 라벨이 ???? 로 나온다. "
+                               "`sudo apt install fonts-nanum` (또는 TB_FONT 로 지정)"))
 
     print("── 계약 ──")
     chk("계약 파일", contract_path is not None and Path(contract_path).exists(),
@@ -758,7 +777,7 @@ def cmd_run(args):
     stamp = datetime.now().strftime("%m%d_%H%M%S")
     tag = _slug(args.tag or spec.get("name") or "run")
 
-    rd = ROOT / "runs" / f"{stamp}_{tag}"
+    rd = runs_dir() / f"{stamp}_{tag}"
     print(f"\n▶ 실행 {rd.name}  (ROS_DOMAIN_ID={domain})")
     summary, rd = _one_run(spec, contract_path, rd, domain, args)
 
@@ -844,7 +863,7 @@ def cmd_replay(args):
     args.name = getattr(args, "name", "") or f"{rd0.name} 재현"
     args.note = f"{rd0.name} 의 디버그 영상을 다시 잡으려고 돌린 재현 런"
     stamp = datetime.now().strftime("%m%d_%H%M%S")
-    rd = ROOT / "runs" / f"{stamp}_replay_{_slug(spec['name'])}"
+    rd = runs_dir() / f"{stamp}_replay_{_slug(spec['name'])}"
     summary, rd = _one_run(spec, contract_path, rd,
                            args.domain or random.randint(30, 99), args)
     (rd / "replay_of.txt").write_text(rd0.name + "\n")
@@ -987,7 +1006,7 @@ def cmd_export(args):
 #     기본값' 이 아니다. 가중치·device 처럼 ★기계에 묶인 것만★ local.yaml 에서 준다
 #     (안 주면 .engine 을 찾다 실패해 기동이 느려진다).
 def params_cache_path(contract):
-    return ROOT / "runs" / "_params" / f"{contract.name}.yaml"
+    return ROOT / "runs" / "_params" / f"{contract.name}.yaml"    # 쓰기 전에 runs_dir()
 
 
 def load_ws_params(contract):
@@ -1019,8 +1038,7 @@ def dump_node_params(contract_path, timeout=90.0, local_only=True):
         env[str(k)] = str(v)
     pref = ws_prefix(contract)
     out, procs = {}, []
-    tmp = ROOT / "runs" / "_params"
-    tmp.mkdir(parents=True, exist_ok=True)
+    tmp = runs_dir("_params")
     try:
         for n in contract.nodes:
             merged = _deep_merge(n.get("params") or {}, lp.get(n["id"], {}))
@@ -1319,7 +1337,7 @@ def cmd_list(_args):
     for p in sorted((ROOT / "presets").glob("*.yaml")):
         print(f"  {p.name}")
     print("── 최근 런 ──")
-    dirs = [d for d in (ROOT / "runs").iterdir()
+    dirs = [d for d in runs_dir().iterdir()
             if d.is_dir() and not d.name.startswith("_")]
     for d in sorted(dirs, key=lambda x: x.name, reverse=True)[:20]:
         sj = d / "summary.json"

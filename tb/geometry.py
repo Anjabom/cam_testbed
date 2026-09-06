@@ -10,9 +10,11 @@
 
 ★주의★ 어안 보정 계수는 대상 노드가 파라미터가 아니라 소스에 박아 둔 값이다.
 계약의 calibration.undistort 에 같은 값을 적어야 하고, 노드 쪽이 바뀌면 여기도
-같이 바꿔야 한다. `tb.calibrate --verify` 가 실제 노드 출력과 대조해 확인해 준다.
+같이 바꿔야 한다. 보정 스튜디오의 «노드와 대조» 가 실제 노드 출력과 맞춰 확인해 준다.
 """
 from __future__ import annotations
+
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -224,13 +226,58 @@ def draw_rows(bev, rows, active=""):
 #  한글 텍스트 — cv2.putText 는 한글을 그리지 못한다(전부 ? 로 나온다).
 #  PIL 로 그리고, 한글 폰트를 못 찾으면 조용히 cv2 로 떨어진다.
 # ══════════════════════════════════════════════════════════════════════
-_FONT_CANDIDATES = [
-    "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
-    "/usr/share/fonts/truetype/nanum/NanumBarunGothic.ttf",
-    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-    "/usr/share/fonts/truetype/unfonts-core/UnDotum.ttf",
+#  ★기계마다 폰트가 다른 자리에 있다★ 예전에는 데비안/우분투의 정확한 경로 네
+#  개만 봤다. 다른 배포판·맥에서는 하나도 안 맞아 라벨이 통째로 ???? 가 되는데,
+#  ★오류가 안 난다★(cv2 폴백으로 조용히 떨어진다) — 디버그 영상을 열어 봐야 안다.
+#  그래서 ① 환경변수 → ② fc-match(리눅스 표준) → ③ 흔한 폴더 훑기 순으로 찾는다.
+_FONT_ENV = "TB_FONT"                      # 사람이 직접 지정하는 탈출구
+_FONT_DIRS = [
+    "/usr/share/fonts", "/usr/local/share/fonts",          # 리눅스
+    "/Library/Fonts", "/System/Library/Fonts",             # macOS
+    "C:/Windows/Fonts",                                    # 윈도우
 ]
+#  한글 글리프를 가진 흔한 얼굴들. 이름 조각으로 찾는다(파일명이 배포판마다 다르다).
+_FONT_NAMES = ("nanumgothic", "nanumbarungothic", "notosanscjk", "notosanskr",
+               "malgun", "applegothic", "applesdgothicneo", "undotum", "batang")
 _font_cache = {}
+_font_path = []                            # 한 번 찾으면 다시 찾지 않는다
+
+
+def find_font():
+    """한글이 그려지는 TTF/OTF 하나. 못 찾으면 빈 문자열."""
+    import os                                              # noqa: PLC0415
+    if _font_path:
+        return _font_path[0]
+    got = os.environ.get(_FONT_ENV, "")
+    if got and Path(got).is_file():
+        _font_path.append(got)
+        return got
+    #  fc-match 가 있으면 그게 제일 정확하다(시스템이 아는 답을 그대로 쓴다)
+    try:
+        import subprocess                                  # noqa: PLC0415
+        r = subprocess.run(["fc-match", "-f", "%{file}", ":lang=ko"],
+                           capture_output=True, text=True, timeout=5)
+        if r.returncode == 0 and Path(r.stdout.strip()).is_file():
+            _font_path.append(r.stdout.strip())
+            return _font_path[0]
+    except Exception:                                      # noqa: BLE001
+        pass
+    for d in _FONT_DIRS:
+        base = Path(d)
+        if not base.is_dir():
+            continue
+        try:
+            for f in base.rglob("*"):
+                if f.suffix.lower() not in (".ttf", ".otf", ".ttc"):
+                    continue
+                if any(n in f.name.lower().replace("-", "").replace("_", "")
+                       for n in _FONT_NAMES):
+                    _font_path.append(str(f))
+                    return _font_path[0]
+        except OSError:
+            continue
+    _font_path.append("")
+    return ""
 
 
 def _font(size):
@@ -238,12 +285,10 @@ def _font(size):
         return _font_cache[size]
     f = None
     try:
-        from PIL import ImageFont
-        import os
-        for p in _FONT_CANDIDATES:
-            if os.path.exists(p):
-                f = ImageFont.truetype(p, size)
-                break
+        from PIL import ImageFont                          # noqa: PLC0415
+        p = find_font()
+        if p:
+            f = ImageFont.truetype(p, size)
     except Exception:   # noqa: BLE001
         f = None
     _font_cache[size] = f

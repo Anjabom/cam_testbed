@@ -755,6 +755,41 @@ def t_quad_guard():
     eq("꼬인 사각형은 거절", S._quad_ok(twist, w, h), False)
 
 
+def t_portable():
+    """★코드에 이 기계의 경로가 없어야 한다★ — 다른 컴퓨터에서 그대로 돌아야 한다.
+
+    절대 경로가 박혀도 되는 곳은 셋뿐이다: 계약의 `workspace:`, `local.yaml`(git 제외),
+    프리셋의 `video:`. 그 밖에 사용자 홈 경로가 소스로 새어 들어가면 남의 기계에서
+    ★조용히★ 엉뚱한 곳을 보거나 아무것도 못 찾는다.
+    """
+    root = Path(__file__).resolve().parent.parent
+    #  찾는 문자열을 조각으로 만든다 — 통째로 적으면 ★이 파일 자신이 걸린다★
+    needles = ("/" + "home" + "/", "/" + "Users" + "/")
+    bad = []
+    for d, pats in (("tb", ("*.py",)), ("web", ("*.py", "*.js", "*.css", "*.html"))):
+        for pat in pats:
+            for f in sorted((root / d).glob(pat)):
+                for i, ln in enumerate(f.read_text().splitlines(), 1):
+                    if any(n in ln for n in needles):
+                        bad.append(f"{d}/{f.name}:{i}")
+    eq("소스에 사용자 홈 경로가 없다", bad, [])
+
+    #  ★runs/ 는 git 에 없다★ 갓 클론한 기계에는 폴더가 아예 없는데, 예전에는
+    #  `tb.run list` 가 그 자리에서 FileNotFoundError 로 죽었다.
+    import shutil
+    import tempfile
+    from . import run as R
+    real = R.ROOT
+    tmp = Path(tempfile.mkdtemp(prefix="tbruns_"))
+    try:
+        R.ROOT = tmp
+        eq("runs/ 가 없어도 만들어 준다", R.runs_dir().is_dir(), True)
+        eq("하위 폴더도", R.runs_dir("_params").is_dir(), True)
+    finally:
+        R.ROOT = real
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("t_")]
     for t in tests:

@@ -1104,7 +1104,10 @@ def task_verify(pid, body, video, dbg_path):
     env = _calib_env(pid)
     cal = _cal_work(env, body)
     start = int(body.get("start", 0) or 0)
-    out_png = ROOT / "runs" / "_calib_verify.png"
+    #  runs/ 는 git 에 없다 — 갓 클론한 기계에는 폴더가 아예 없고,
+    #  cv2.imwrite 는 그럴 때 ★예외 없이 False 만 돌려준다★(그림이 조용히 사라진다).
+    from tb.run import runs_dir                            # noqa: PLC0415
+    out_png = runs_dir() / "_calib_verify.png"
 
     def fn(log):
         r = verify(cal, env["profile"], video, dbg_path, start, out_png=str(out_png))
