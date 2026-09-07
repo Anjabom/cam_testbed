@@ -92,6 +92,12 @@ docs/index.html                            # 클론했으면 그냥 파일로 �
 전부 사라졌다(그 짐은 「사람이 다른 기기 앞에 있다」는 사정 하나를 감당하려던 것이었다).
 
 영상이나 **사진 한 장**을 열어 IPM 사각형·ROI·px2m·BEV 기준선·정지 문턱을 맞춘다.
+
+⚠️ **브라우저는 `mp4v`(cv2 기본 코덱)를 못 연다** — mp4 안에서 받아 주는 것은 H.264·AV1
+뿐이다. ★용량과 무관하다★(3.5MB 짜리도 안 열린다). 스튜디오가 열기 전에 코덱을 미리
+보고 사유와 고칠 명령을 띄운다. 고치는 길은 둘이다:
+`python3 -m tb.encode <파일|폴더>`(NVENC → 실시간의 14배) 또는 애초에 녹화가
+`__web.mp4` 를 같이 남기게 하는 것(`cam_record` 의 `web_copy`, 기본 켬).
 계약도 프로필도 고르지 않는다 — 맞출 것은 `docs/tuning.js` 한 벌뿐이다(경계 4).
 
 값은 **파일로 오간다**: «내보내기» 가 `params.yaml`(노드 파라미터)과 설정 JSON 을 주고,
@@ -116,6 +122,7 @@ docs/index.html                            # 클론했으면 그냥 파일로 �
 python3 -m tb.selftest                    # 자체 검사 (ROS·영상 불필요) — 순수 함수를 건드리면 먼저 이것
 python3 -m flake8 tb tools                # 린트 (max-line-length 100, .flake8)
 python3 tools/bake_reference.py           # 기하를 고쳤으면 정답표를 다시 굽는다
+python3 -m tb.encode ~/cam_record_video   # mp4v 영상을 스튜디오가 여는 H.264 로
 ```
 
 자체 검사 하나만 돌릴 때 — `eq()` 는 예외를 던지지 않고 `FAILS` 에 쌓으므로 **반드시 같이 찍는다**:

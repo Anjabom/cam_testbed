@@ -538,33 +538,127 @@
   // ══════════════════════════════════════════════════════════════════
   //  영상·사진 열기 — ★이 브라우저 안에서만★ 열린다
   // ══════════════════════════════════════════════════════════════════
+  //  ★코덱을 미리 알아본다★ [2026-09-06]
+  //  실패한 실측: 이 기계에서 녹화한 mp4 가 전부 `mp4v`(MPEG-4 Part 2)였다.
+  //  cv2.VideoWriter 의 기본 코덱인데, 브라우저가 mp4 안에서 받아 주는 것은
+  //  H.264(avc1)·AV1 뿐이라 ★한 장도 안 열린다★(용량과는 무관하다 —
+  //  3.5MB 짜리도 못 연다). 그때 「열지 못합니다」만 띄우면 사람은 파일이
+  //  깨졌다고 생각하고 다른 영상을 찾는다. 그래서 ★무엇이 문제인지와 고칠
+  //  명령까지★ 말해 준다.
+  //
+  //  박스 파서를 쓰지 않는다 — 필요한 것은 stsd 안의 네 글자 이름 하나뿐이라
+  //  앞뒤 조각에서 그 문자열을 찾는다(moov 는 파일 끝에 있는 경우가 흔해서
+  //  뒤쪽도 본다). 어디까지나 ★안내용★ 이고, 열어 보는 것은 그대로 해 본다.
+  var CODEC_TAGS = [
+    ['avc1', true, 'H.264'], ['h264', true, 'H.264'], ['av01', true, 'AV1'],
+    ['vp09', true, 'VP9'], ['vp08', true, 'VP8'],
+    ['mp4v', false, 'MPEG-4 Part 2 (cv2 의 mp4v)'],
+    ['hvc1', false, 'HEVC/H.265'], ['hev1', false, 'HEVC/H.265'],
+    ['mjpa', false, 'Motion JPEG'], ['MJPG', false, 'Motion JPEG']
+  ];
+
+  function sniffCodec(file) {
+    var CHUNK = 1024 * 512;
+    function read(blob) {
+      return new Promise(function (res) {
+        var r = new FileReader();
+        r.onload = function () { res(new Uint8Array(r.result)); };
+        r.onerror = function () { res(new Uint8Array(0)); };
+        r.readAsArrayBuffer(blob);
+      });
+    }
+    var head = file.slice(0, Math.min(CHUNK, file.size));
+    var tail = file.slice(Math.max(0, file.size - CHUNK));
+    return Promise.all([read(head), read(tail)]).then(function (parts) {
+      for (var i = 0; i < CODEC_TAGS.length; i++) {
+        var tag = CODEC_TAGS[i];
+        for (var k = 0; k < parts.length; k++) {
+          if (findAscii(parts[k], tag[0])) {
+            return { tag: tag[0], playable: tag[1], label: tag[2] };
+          }
+        }
+      }
+      return null;                      // 모르겠으면 아무 말도 하지 않는다
+    });
+  }
+
+  function findAscii(buf, s) {
+    var n = s.length, i, j;
+    for (i = 0; i + n <= buf.length; i++) {
+      for (j = 0; j < n; j++) {
+        if (buf[i + j] !== s.charCodeAt(j)) break;
+      }
+      if (j === n) return true;
+    }
+    return false;
+  }
+
+  function badCodecMessage(info, name) {
+    return (info ? '이 영상은 ' + info.label + ' 이라 브라우저가 열지 못합니다'
+                 : '이 영상을 브라우저가 열지 못합니다')
+      + ' — ★용량 때문이 아닙니다.★ H.264 로 한 번 바꾸면 열립니다'
+      + (info && info.tag === 'mp4v'
+         ? ' (녹화가 cv2 의 mp4v 로 굽고 있습니다).' : '.');
+  }
+
+  function convertCommand(name) {
+    return 'python3 -m tb.encode ' + (name || '<영상>')
+         + '      # 또는: ffmpeg -i ' + (name || '<영상>')
+         + ' -an -c:v h264_nvenc -preset p4 -cq 26 -pix_fmt yuv420p'
+         + ' -movflags +faststart ' + (name || '<영상>').replace(/\.[^.]+$/, '') + '__web.mp4';
+  }
+
   function openFile(f) {
     var url = URL.createObjectURL(f);
-    if (/^video/.test(f.type) || /\.(mp4|webm|mov|mkv)$/i.test(f.name)) {
-      var v = document.createElement('video');
-      v.src = url; v.muted = true; v.playsInline = true; v.preload = 'auto';
-      v.addEventListener('loadeddata', function () {
-        media = { el: v, kind: 'video', w: v.videoWidth, h: v.videoHeight,
-                  dur: v.duration, name: f.name };
-        $('timeline').hidden = false;
-        $('seek').value = 0;
-        upload(); draw(); renderPanel();
-      });
-      v.addEventListener('seeked', function () { upload(); draw(); });
-      v.addEventListener('error', function () {
-        banner('이 영상을 브라우저가 열지 못합니다 — H.264 mp4 나 webm 으로 바꿔서 열어 주세요.');
-      });
+    if (/^video/.test(f.type) || /\.(mp4|webm|mov|mkv|avi|m4v)$/i.test(f.name)) {
+      openVideo(f, url);
     } else {
       var im = new Image();
       im.onload = function () {
         media = { el: im, kind: 'image', w: im.naturalWidth, h: im.naturalHeight,
                   dur: 0, name: f.name };
         $('timeline').hidden = true;
+        clearBanner();
         upload(); draw(); renderPanel();
       };
       im.onerror = function () { banner('이 사진을 열지 못했습니다.'); };
       im.src = url;
     }
+  }
+
+  function openVideo(f, url) {
+    var info = null;
+    sniffCodec(f).then(function (i) {
+      info = i;
+      //  못 여는 코덱이면 ★열어 보기 전에★ 말해 준다. 그래도 시도는 한다 —
+      //  이 스니핑은 안내용이라 틀릴 수 있고, 틀렸으면 그냥 열리면 된다.
+      if (info && info.playable === false) {
+        banner(badCodecMessage(info, f.name), convertCommand(f.name));
+      }
+    });
+
+    var v = document.createElement('video');
+    v.src = url; v.muted = true; v.playsInline = true; v.preload = 'auto';
+
+    //  ★loadeddata 가 아니라 loadedmetadata 에서 연다★ 2GB 짜리 주행영상은
+    //  첫 프레임까지 디코드되기를 기다리면 한참 걸린다(헤드리스에서는 아예
+    //  안 온 적도 있다). 크기·길이는 메타데이터만으로 다 알 수 있으므로 화면을
+    //  먼저 열고, 그림은 아래 seek 로 첫 프레임을 받아 채운다.
+    v.addEventListener('loadedmetadata', function () {
+      media = { el: v, kind: 'video', w: v.videoWidth, h: v.videoHeight,
+                dur: isFinite(v.duration) ? v.duration : 0, name: f.name };
+      $('timeline').hidden = false;
+      $('seek').value = 0;
+      clearBanner();
+      draw(); renderPanel();
+      //  첫 프레임 요청 — 0 으로 두면 seeked 가 안 오는 브라우저가 있다
+      try { v.currentTime = Math.min(0.04, (media.dur || 1) / 2); } catch (e) { /* 무시 */ }
+    });
+    v.addEventListener('seeked', function () { upload(); draw(); });
+    v.addEventListener('loadeddata', function () { upload(); draw(); });
+    v.addEventListener('error', function () {
+      banner(badCodecMessage(info, f.name), convertCommand(f.name));
+    });
   }
 
   function upload() {
@@ -712,10 +806,35 @@
     return worst;
   }
 
-  function banner(msg) {
+  //  띠 — 사유만 적고 끝내지 않는다. ★고칠 명령을 같이 준다★
+  //  (여기서 막히는 사람은 대개 터미널 앞에 있다).
+  function banner(msg, cmd) {
     var b = $('banner');
     b.hidden = false;
-    b.textContent = msg;
+    b.innerHTML = '';
+    b.appendChild(document.createTextNode(msg));
+    if (!cmd) return;
+    var pre = document.createElement('pre');
+    pre.className = 'mono';
+    pre.style.cssText = 'margin:6px 0 0;white-space:pre-wrap;user-select:all';
+    pre.textContent = cmd;
+    b.appendChild(pre);
+    var cp = document.createElement('button');
+    cp.className = 'btn sm';
+    cp.textContent = '명령 복사';
+    cp.onclick = function () {
+      if (navigator.clipboard) {
+        navigator.clipboard.writeText(cmd);
+        cp.textContent = '복사됨';
+      }
+    };
+    b.appendChild(cp);
+  }
+
+  function clearBanner() {
+    var b = $('banner');
+    b.hidden = true;
+    b.innerHTML = '';
   }
 
   // ══════════════════════════════════════════════════════════════════
