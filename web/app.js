@@ -36,6 +36,7 @@
   var server = null;
   var frameURL = null;
   var lastDir = '';   // 마지막에 훑은 폴더 — 다시 열 때 거기서 시작한다
+  var liveInputs = [];  // 드래그하면 따라 움직이는 숫자칸들
 
   // ══════════════════════════════════════════════════════════════════
   //  값 다루기 — 종류로만 찾는다(이름을 모른다)
@@ -146,6 +147,7 @@
 
     renderValues();
     renderFoot();
+    syncInputs();
   }
 
   function drawSrcOverlay(ctx, s) {
@@ -402,11 +404,47 @@
   function renderExtra(t) {
     var ex = $('extra');
     ex.innerHTML = '';
+    liveInputs = [];
+
+    //  ★끌기만으로는 1px 을 못 맞춘다★ 문턱·사각형은 1px 이 뜻을 갖는 자리가
+    //  있어서, 옛 웹앱처럼 좌표를 직접 치는 길을 같이 둔다. 두 길은 같은 값을
+    //  보고 있으므로 끌면 숫자가 따라 움직이고, 숫자를 치면 그림이 따라 움직인다.
+    if (t && t.kind === 'quad') {
+      var qb = div('box');
+      ['TL', 'TR', 'BR', 'BL'].forEach(function (tag, i) {
+        qb.appendChild(xyRow(tag, [
+          { lab: 'x', input: numInput('q' + (i * 2), t.value[i * 2], 1,
+              function (v) { t.value[i * 2] = v; save(); draw(); },
+              function () { return t.value[i * 2]; }) },
+          { lab: 'y', input: numInput('q' + (i * 2 + 1), t.value[i * 2 + 1], 1,
+              function (v) { t.value[i * 2 + 1] = v; save(); draw(); },
+              function () { return t.value[i * 2 + 1]; }) }
+        ]));
+      });
+      ex.appendChild(qb);
+    }
+    if (t && t.kind === 'rect') {
+      var rb = div('box');
+      [['좌상', 0, 1], ['우하', 2, 3]].forEach(function (r) {
+        rb.appendChild(xyRow(r[0], [
+          { lab: 'x', input: numInput('r' + r[1], t.value[r[1]], 1,
+              function (v) { t.value[r[1]] = Math.round(v); save(); draw(); },
+              function () { return t.value[r[1]]; }) },
+          { lab: 'y', input: numInput('r' + r[2], t.value[r[2]], 1,
+              function (v) { t.value[r[2]] = Math.round(v); save(); draw(); },
+              function () { return t.value[r[2]]; }) }
+        ]));
+      });
+      ex.appendChild(rb);
+    }
     if (t && t.kind === 'scale') {
       var box = div('box');
       box.appendChild(label('실측 길이 [m]', numInput('realm', 3.0, 0.01, function () {
         applyScale(); draw();
       })));
+      box.appendChild(label('픽셀↔미터 (직접)', numInput('px2mv', +t.value, 0.000001,
+        function (v) { t.value = v; save(); draw(); },
+        function () { return +t.value; })));
       var p = document.createElement('p');
       p.className = 'mono';
       p.textContent = meas.length === 2
@@ -420,17 +458,17 @@
       var b2 = div('box');
       b2.appendChild(label(t.label, numInput('nval', +t.value, t.step || 1, function (v) {
         t.value = v; save(); draw();
-      })));
+      }, function () { return +t.value; })));
       ex.appendChild(b2);
     }
     if (t && t.kind === 'size') {
       var b3 = div('box');
       b3.appendChild(label('가로', numInput('bw', t.value[0], 1, function (v) {
         t.value[0] = Math.max(16, v | 0); save(); draw();
-      })));
+      }, function () { return t.value[0]; })));
       b3.appendChild(label('세로', numInput('bh', t.value[1], 1, function (v) {
         t.value[1] = Math.max(16, v | 0); save(); draw();
-      })));
+      }, function () { return t.value[1]; })));
       ex.appendChild(b3);
     }
     ex.appendChild(cameraBox());
@@ -478,14 +516,47 @@
     l.appendChild(input);
     return l;
   }
-  function numInput(id, v, step, on) {
+  //  get 을 주면 ★드래그하는 동안에도 칸의 숫자가 따라 움직인다★.
+  //  단, 사람이 그 칸에 커서를 두고 타이핑 중이면 건드리지 않는다 —
+  //  안 그러면 "79" 까지 친 것을 화면이 791 로 되돌려 못 고치게 된다.
+  function numInput(id, v, step, on, get) {
     var i = document.createElement('input');
     i.type = 'number'; i.id = id; i.value = v; i.step = step;
     i.oninput = function () {
       var x = parseFloat(i.value);
       if (!isNaN(x)) on(x);
     };
+    if (get) liveInputs.push({ el: i, get: get });
     return i;
+  }
+
+  function syncInputs() {
+    liveInputs.forEach(function (n) {
+      if (document.activeElement !== n.el) {
+        var v = n.get();
+        if (String(v) !== n.el.value) n.el.value = v;
+      }
+    });
+  }
+
+  //  x/y 처럼 짝으로 붙는 칸 — 라벨을 앞에 달아 한 줄로 만든다
+  function xyRow(tag, fields) {
+    var row = div('');
+    row.style.cssText = 'display:flex;align-items:center;gap:5px;margin:3px 0';
+    var t = document.createElement('span');
+    t.className = 'mono';
+    t.style.cssText = 'flex:0 0 30px;color:var(--dim)';
+    t.textContent = tag;
+    row.appendChild(t);
+    fields.forEach(function (f) {
+      var lab = document.createElement('span');
+      lab.className = 'mono';
+      lab.style.cssText = 'flex:0 0 10px;color:var(--dim)';
+      lab.textContent = f.lab;
+      row.appendChild(lab);
+      row.appendChild(f.input);
+    });
+    return row;
   }
   function txtInput(id, v, on) {
     var i = document.createElement('input');
