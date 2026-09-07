@@ -37,6 +37,10 @@
   var frameURL = null;
   var lastDir = '';   // 마지막에 훑은 폴더 — 다시 열 때 거기서 시작한다
   var liveInputs = [];  // 드래그하면 따라 움직이는 숫자칸들
+  var showGrid = true;   // g — BEV 격자
+  var useUndist = true;  // u — 왜곡보정 (★보기 전용 토글이다★ 값은 안 바뀐다)
+  var playing = null;    // 스페이스 — 프레임 자동 넘기기
+  var undoStack = [];    // r — 되돌리기
 
   // ══════════════════════════════════════════════════════════════════
   //  값 다루기 — 종류로만 찾는다(이름을 모른다)
@@ -86,9 +90,31 @@
     } catch (e) { return null; }
   }
 
+  //  ★되돌리기★ 값 전체를 통째로 찍어 둔다. 대상이 아홉 개뿐이라 이 정도면
+  //  충분하고, 「어느 항목의 몇 번째 편집」을 추적하는 것보다 훨씬 짧다.
+  //  찍는 자리는 ★편집이 시작되는 순간★ 이다 — 드래그를 잡을 때, 키로 밀기 전,
+  //  숫자칸에 커서를 둘 때. 그래야 한 번의 되돌리기가 한 번의 편집을 되돌린다.
+  function snapshot() {
+    undoStack.push(JSON.stringify(T.targets.map(function (t) { return t.value; })));
+    if (undoStack.length > 40) undoStack.shift();
+  }
+
+  function undo() {
+    var s = undoStack.pop();
+    if (!s) return false;
+    JSON.parse(s).forEach(function (v, i) {
+      if (T.targets[i]) T.targets[i].value = v;
+    });
+    save(); renderPanel(); draw();
+    return true;
+  }
+
   function cal() {
     var c = T.camera;
-    lastCal = G.makeCal({ size: c.size, K: c.K, D: c.D, alpha: c.alpha,
+    //  u 로 끄면 ★그림만★ 왜곡보정 없는 상태로 본다(원본이 실제로 휘어 있는지,
+    //  K·D 가 일을 하고 있는지 눈으로 확인하는 용도다). 내보내는 값은 그대로다.
+    lastCal = G.makeCal({ size: c.size, K: c.K,
+                          D: useUndist ? c.D : [0, 0, 0, 0, 0], alpha: c.alpha,
                           quad: quadT().value, bev: bevSize() });
     return lastCal;
   }
@@ -186,6 +212,13 @@
                                                  ctx.canvas.height - 4));
     });
 
+    if (!useUndist) {
+      //  ★좌표는 보정된 화면 기준이다★ 지금 밑그림은 보정 전이라 사각형이
+      //  살짝 어긋나 보이는 것이 정상이다 — 그걸 모르면 멀쩡한 값을 고치게 된다.
+      ctx.fillStyle = '#ffb454';
+      ctx.font = 'bold 12px system-ui';
+      ctx.fillText('왜곡보정 OFF — 보기 전용 (좌표는 보정 화면 기준)', 10, 16);
+    }
     var ok = G.quadIsSane(q, T.camera.size[0], T.camera.size[1]);
     if (!ok[0]) {
       ctx.fillStyle = '#ff6b6b'; ctx.font = 'bold 13px system-ui';
@@ -199,7 +232,7 @@
     //  ★격자는 기준선(범퍼)에서 잰다★ 노드의 디버그 그림은 BEV 밑변에서 재지만,
     //  사람이 알고 싶은 것은 「차 앞에서 몇 m」다. 이 격자는 눈금일 뿐이고
     //  내보내는 값에는 들어가지 않는다.
-    if (m > 0) {
+    if (m > 0 && showGrid) {
       ctx.font = '11px ui-monospace, monospace';
       for (var i = 1; i <= 40; i++) {
         var y = (by - i * 0.5 / m) * s;
@@ -312,6 +345,7 @@
     el.addEventListener('pointerdown', function (ev) {
       var p = srcXY(ev), h = handlesAt(p[0], p[1], p[2]);
       if (!h) return;
+      snapshot();
       drag = h;
       if (mode !== h.t.id) { mode = h.t.id; renderPanel(); }
       el.setPointerCapture(ev.pointerId);
@@ -343,12 +377,14 @@
     el.addEventListener('pointerdown', function (ev) {
       var t = find(mode), p = xy(ev);
       if (t && (t.kind === 'bev_row' || t.kind === 'bev_dist')) {
+        snapshot();
         setRowY(t, Math.round(p[1]));
         moving = true;
         el.setPointerCapture(ev.pointerId);
         draw();
       } else if (t && t.kind === 'scale') {
         if (meas.length >= 2) meas = [];
+        if (!meas.length) snapshot();
         meas.push([Math.round(p[0]), Math.round(p[1])]);
         if (meas.length === 2) applyScale();
         draw(); renderPanel();
@@ -527,6 +563,9 @@
       if (!isNaN(x)) on(x);
     };
     if (get) liveInputs.push({ el: i, get: get });
+    //  ★칸마다 한 번만 찍는다★ oninput 은 글자마다 오므로 거기서 찍으면
+    //  되돌리기가 「한 글자 지우기」가 된다.
+    i.addEventListener('focus', snapshot);
     return i;
   }
 
@@ -613,6 +652,9 @@
     }
     var c = lastCal;
     if (c) f.push('유효영역 ' + c.roi.join(','));
+    if (playing) f.push('▶ 재생중');
+    if (!showGrid) f.push('격자 OFF');
+    if (!useUndist) f.push('왜곡보정 OFF');
     $('foot').textContent = f.join('  ·  ');
   }
 
@@ -872,23 +914,45 @@
       }
       renderFoot();
     });
-    //  ★프레임 단위로 움직인다★ 보정은 「이 프레임에서 사각형이 맞나」를 보는
-    //  일이라, 0.1초씩 뛰면 맞출 수가 없다. 서버 모드에서는 정확히 한 프레임이고
-    //  (탐색 없이 1ms), 파일 모드에서는 30fps 를 가정한 근사다.
-    function step(d) {
-      if (!media) return;
-      if (media.kind === 'server') {
-        loadFrame(media.i + d);
-        seek.value = Math.round(1000 * media.i / Math.max(1, media.frames - 1));
-      } else if (media.kind === 'video') {
-        var t = Math.max(0, Math.min(media.dur, media.el.currentTime + d / 30));
-        media.el.currentTime = t;
-        seek.value = Math.round(1000 * t / (media.dur || 1));
-      }
-      renderFoot();
+    $('back').onclick = function () { stepFrame(-1); };
+    $('fwd').onclick = function () { stepFrame(1); };
+  }
+
+  //  ★프레임 단위로 움직인다★ 보정은 「이 프레임에서 사각형이 맞나」를 보는
+  //  일이라, 0.1초씩 뛰면 맞출 수가 없다. 서버 모드에서는 정확히 한 프레임이고
+  //  (탐색 없이 1ms), 파일 모드에서는 30fps 를 가정한 근사다.
+  function stepFrame(d) {
+    if (!media) return;
+    var seek = $('seek');
+    if (media.kind === 'server') {
+      loadFrame(media.i + d);
+      seek.value = Math.round(1000 * media.i / Math.max(1, media.frames - 1));
+    } else if (media.kind === 'video') {
+      var t = Math.max(0, Math.min(media.dur, media.el.currentTime + d / 30));
+      media.el.currentTime = t;
+      seek.value = Math.round(1000 * t / (media.dur || 1));
     }
-    $('back').onclick = function () { step(-1); };
-    $('fwd').onclick = function () { step(1); };
+    renderFoot();
+  }
+
+  //  ★재생은 타이머로 한다★ <video> 의 play() 를 쓰면 서버 모드(그림 한 장씩
+  //  받는 쪽)와 길이 갈라진다. 10fps 면 「어느 프레임에서 맞출까」를 고르기에
+  //  충분하고, 서버 모드에서도 프레임 한 장이 1ms 라 따라온다.
+  function togglePlay() {
+    if (playing) {
+      clearInterval(playing);
+      playing = null;
+    } else if (media && media.kind !== 'image') {
+      playing = setInterval(function () {
+        //  끝에 닿으면 스스로 멈춘다 — 안 그러면 마지막 프레임을 계속 다시 받는다
+        if (media.kind === 'server' && media.i >= media.frames - 1) { togglePlay(); return; }
+        if (media.kind === 'video' && media.el.currentTime >= media.dur - 0.05) {
+          togglePlay(); return;
+        }
+        stepFrame(1);
+      }, 100);
+    }
+    renderFoot();
   }
 
   // ══════════════════════════════════════════════════════════════════
@@ -1103,13 +1167,59 @@
       save(); renderPanel(); draw();
     };
 
-    //  화살표로 1px 씩 — 드래그로는 못 맞추는 자리가 있다
+    //  ★단축키★ 옛 웹앱에 있던 것들을 그대로 되살렸다. 보정은 「프레임을 옮겨
+    //  가며 같은 사각형을 확인하는」 일이라, 손이 마우스를 떠나지 않아야 한다.
     window.addEventListener('keydown', function (ev) {
+      //  ★칸에 커서가 있으면 아무것도 하지 않는다★ 안 그러면 좌표칸에 "1" 을
+      //  치는 순간 편집 대상이 바뀌고, 화살표는 칸의 숫자와 사각형을 동시에
+      //  움직인다(숫자 입력을 붙이면서 생긴 구멍이라 여기서 막는다).
+      var el = document.activeElement;
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) return;
+      if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+
+      // ── 프레임 옮기기 ──
+      var jump = { ' ': 'play', ',': -1, '.': 1, '[': -30, ']': 30 }[ev.key];
+      if (jump !== undefined) {
+        if (jump === 'play') togglePlay(); else stepFrame(jump);
+        ev.preventDefault();
+        return;
+      }
+
+      // ── 보기 토글 · 되돌리기 ──
+      if (ev.key === 'g' || ev.key === 'G') {
+        showGrid = !showGrid; draw(); ev.preventDefault(); return;
+      }
+      if (ev.key === 'u' || ev.key === 'U') {
+        useUndist = !useUndist; draw(); ev.preventDefault(); return;
+      }
+      if (ev.key === 'r' || ev.key === 'R') {
+        if (undo()) ev.preventDefault();
+        return;
+      }
+
+      // ── 1~9 로 편집 대상 고르기 (오른쪽 단추 차례와 같다) ──
+      if (ev.key >= '1' && ev.key <= '9') {
+        var t9 = T.targets[+ev.key - 1];
+        if (t9) {
+          mode = t9.id; meas = [];
+          renderPanel(); draw();
+          ev.preventDefault();
+        }
+        return;
+      }
+      if (ev.key === 'Escape') {
+        mode = ''; meas = []; renderPanel(); draw();
+        return;
+      }
+
+      // ── 화살표로 1px, Shift 면 10px ──
       var t = find(mode);
-      if (!t || ev.metaKey || ev.ctrlKey) return;
-      var d = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[ev.key];
+      if (!t) return;
+      var d = { ArrowLeft: [-1, 0], ArrowRight: [1, 0],
+                ArrowUp: [0, -1], ArrowDown: [0, 1] }[ev.key];
       if (!d) return;
       var step = ev.shiftKey ? 10 : 1;
+      snapshot();
       if (t.kind === 'bev_row' || t.kind === 'bev_dist') {
         setRowY(t, rowY(t) + d[1] * step);
       } else if (t.kind === 'quad') {
@@ -1119,7 +1229,10 @@
       } else if (t.kind === 'rect') {
         t.value[0] += d[0] * step; t.value[2] += d[0] * step;
         t.value[1] += d[1] * step; t.value[3] += d[1] * step;
-      } else { return; }
+      } else {
+        undoStack.pop();          // 안 움직였으면 되돌릴 것도 없다
+        return;
+      }
       ev.preventDefault();
       save(); draw();
     });
