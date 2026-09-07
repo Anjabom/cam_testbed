@@ -25,7 +25,7 @@ name: white_camera
 #   아래 package: 두 줄만 따라 바뀌었다. 계약 파일 이름은 시나리오·베이스라인이
 #   contracts/white_camera.yaml 을 가리키고 있어 그대로 둔다.
 #   경로는 ★3중 중첩★ 이다 — src/ build/ install/ 이 있는 진짜 colcon 루트다.
-workspace: /home/mad2/black_ws22/black_ws/black_ws
+workspace: /home/anjabom/black_ws
 # 추가로 source 할 오버레이가 있으면:
 # ros_setup:
 #   - /home/anjabom/other_ws/install/setup.bash
@@ -103,7 +103,7 @@ calibration:
     D:     [-0.276622, 0.050981, 0.000303, -0.001998, 0.0]
     alpha: 0.0
     param: enable_undistort        # 이 파라미터가 false 면 보정을 건너뛴다
-  bev: {w: 640, h: 480}
+  bev: {w: 640, h: 480, params: {w: bev_w, h: bev_h}}   # ★노드가 쓴 값이 있으면 그것을 따른다★
 
   # 보정 스튜디오의 «노드와 대조» 가 "내가 그리는 BEV == 노드가 만드는 BEV" 를
   # 대조할 때 쓴다. 디버그 이미지의 어느 부분이 BEV 인지만 알려 주면 된다.

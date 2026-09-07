@@ -72,7 +72,7 @@ calibration:
     D:     [-0.276622, 0.050981, 0.000303, -0.001998, 0.0]
     alpha: 0.0
     param: enable_undistort
-  bev: {w: 640, h: 1000}
+  bev: {w: 640, h: 1000, params: {w: bev_w, h: bev_h}}   # ★노드가 쓴 값이 있으면 그것을 따른다★
 
   verify:
     video: lane_debug.mp4

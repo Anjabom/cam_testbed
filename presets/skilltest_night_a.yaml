@@ -10,7 +10,7 @@
 
 name: skilltest_night_a
 contract: contracts/white_vote.yaml
-video: skilltest_vid
+video: /home/anjabom/video/cam-20260824_201445.mp4
 mode: lockstep
 start: 0
 limit: 0

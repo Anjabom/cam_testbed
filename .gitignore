@@ -16,6 +16,10 @@ web/__pycache__/
 
 # 손으로 뜬 백업 — 기계에 묶인 경로·캘리브 값이 들어 있다
 *.bak-*
+#  local.yaml 을 다른 이름으로 떠 둔 것도 같다(local.yaml.bev480 같은).
+#  ★example 만 예외★ — 그건 값이 아니라 서식이라 저장소에 있어야 한다.
+local.yaml.*
+!local.yaml.example
 
 # 스튜디오로 불러오는 ★내 캘리브 값★ — 이 차의 기하라서 올리지 않는다
 my_tuning.json

@@ -11,7 +11,7 @@
 
 name: vote_dump_b
 contract: contracts/white_vote.yaml
-video: /home/mad2/video/night_b.mp4
+video: /home/anjabom/video/cam-20260824_201707.mp4
 mode: lockstep
 start: 0
 limit: 0

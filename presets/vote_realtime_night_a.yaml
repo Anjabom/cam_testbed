@@ -20,7 +20,7 @@
 
 name: vote_realtime_night_a
 contract: contracts/white_vote.yaml
-video: /home/mad2/video/night_a.mp4
+video: /home/anjabom/video/cam-20260824_201445.mp4
 mode: realtime
 rate: 1.0
 start: 0
