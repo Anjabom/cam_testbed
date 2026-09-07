@@ -791,9 +791,8 @@ def t_studio_paths():
     경로를 아는 사람에게는 아무 방어도 아니다).
     """
     from . import studio                                # noqa: PLC0415
-    from . import config as _cfg                        # noqa: PLC0415
 
-    real = _cfg.browse_roots
+    real = studio.roots()
     root = Path(tempfile.mkdtemp(prefix="tbroot_"))
     (root / "안").mkdir()
     inside = root / "안" / "a.mp4"
@@ -801,7 +800,7 @@ def t_studio_paths():
     outside = Path(tempfile.mkdtemp(prefix="tbout_")) / "b.mp4"
     outside.write_bytes(b"x")
     try:
-        _cfg.browse_roots = lambda: [root]              # noqa: E731
+        studio.set_roots([root])
         eq("뿌리 안은 통과", studio.in_roots(inside), True)
         eq("뿌리 밖은 거절", studio.in_roots(outside), False)
         for bad in (outside, "/etc/passwd", root / ".." / "etc" / "passwd",
@@ -817,10 +816,45 @@ def t_studio_paths():
         eq("뿌리 위로는 못 간다", studio.browse(str(root))["up"], str(root))
         eq("화면 파일만 내보낸다", "local.yaml" in studio.STATIC, False)
     finally:
-        _cfg.browse_roots = real
+        studio.set_roots(real)
         import shutil as _sh
         _sh.rmtree(root, ignore_errors=True)
         _sh.rmtree(outside.parent, ignore_errors=True)
+
+
+def t_studio_standalone():
+    """★스튜디오는 `tb` 를 import 하지 않는다★ — 그래야 떼어 줄 수 있다.
+
+    `tools/pack_studio.py` 가 `tb/studio.py` 와 `web/` 만 묶어 남의 기계로 보낸다.
+    거기에는 이 저장소도 ROS 도 없다. 누군가 편의를 위해 `from .config import …`
+    한 줄을 넣는 순간 그 꾸러미는 ImportError 로 죽는데, ★이 기계에서는 멀쩡히
+    돌기 때문에 아무도 모른다★. 그래서 기계가 대신 본다.
+    """
+    import ast                                          # noqa: PLC0415
+    root = Path(__file__).resolve().parent.parent
+    src = (root / "tb" / "studio.py").read_text()
+    bad = []
+    for n in ast.walk(ast.parse(src)):
+        if isinstance(n, ast.ImportFrom) and (n.level or (n.module or "").startswith("tb")):
+            bad.append(f"line {n.lineno}: from {'.' * (n.level or 0)}{n.module or ''}")
+        elif isinstance(n, ast.Import):
+            for al in n.names:
+                if al.name == "tb" or al.name.startswith("tb."):
+                    bad.append(f"line {n.lineno}: import {al.name}")
+    eq("studio.py 가 tb 를 import 하지 않는다", bad, [])
+
+    #  꾸러미가 실어 나르는 화면 파일이 전부 있는가 — 하나만 빠져도 흰 화면이다
+    import importlib.util                               # noqa: PLC0415
+    spec = importlib.util.spec_from_file_location("pack", root / "tools" / "pack_studio.py")
+    pack = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pack)
+    missing = [f for f in pack.WEB_FILES if not (root / "web" / f).is_file()]
+    eq("꾸러미가 실을 화면 파일이 다 있다", missing, [])
+    #  서버가 내보내는 목록과 꾸러미가 싣는 목록이 같아야 한다 —
+    #  한쪽에만 있는 파일은 「이 기계에서만 되는 화면」이 된다
+    from . import studio                                # noqa: PLC0415
+    eq("서버 목록과 꾸러미 목록이 같다",
+       sorted(studio.STATIC), sorted(pack.WEB_FILES))
 
 
 def main():

@@ -27,7 +27,15 @@ cv2 와 같다」는 증명(`tb/selftest.py` 의 `t_geom_js`)도 그대로 유�
    ★다른 기기에서 열려고 host 를 바꾸는 순간 이 전제가 깨진다★ — 그때는
    인증을 먼저 만들어야 한다.
 
-    python3 -m tb.run studio            # http://127.0.0.1:8770
+    python3 -m tb.run studio            # 저장소 안에서 (local.yaml 의 browse_roots)
+    python3 studio.py                   # ★혼자서도 돈다★ — 남의 기계에 건네는 꾸러미
+
+★테스트베드가 없어도 돈다★ [2026-09-07]
+이 파일은 `tb/` 의 다른 모듈을 하나도 import 하지 않는다. 필요한 것은 cv2 와
+표준 라이브러리뿐이라, `web/` 폴더와 이 파일만 있으면(140KB) 남의 기계에서
+`pip install opencv-python` 한 번으로 돈다. 시험 도구(`tb.run`)는 `rclpy` 를
+import 하므로 ROS 가 없는 기계에서는 뜨지 않는다 — 그래서 스튜디오는 그 길을
+지나지 않는다.
 """
 from __future__ import annotations
 
@@ -39,10 +47,32 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import cv2
 
-from . import config as cfg
+#  ★화면 파일이 어디 있나★ 두 가지 배치를 모두 받는다:
+#    저장소 안 :  tb/studio.py  →  ../web/
+#    꾸러미     :  studio.py     →  ./web/
+_here = Path(__file__).resolve().parent
+WEB = _here / "web" if (_here / "web" / "index.html").is_file() else _here.parent / "web"
 
-ROOT = Path(__file__).resolve().parent.parent
-WEB = ROOT / "web"
+#  ★훑어도 되는 뿌리★ 부르는 쪽이 정한다 — 이 파일은 local.yaml 을 모른다.
+#  저장소 안에서는 tb.run 이 local.yaml 의 browse_roots 를 넘겨 주고,
+#  혼자 돌 때는 홈 하나(또는 --root)다. 없는 폴더는 조용히 버린다 — USB 를
+#  뽑아 두면 목록에서 사라질 뿐 스튜디오가 안 뜨면 곤란하다.
+_ROOTS = [Path.home()]
+
+
+def set_roots(paths):
+    global _ROOTS
+    out = []
+    for r in (paths or []):
+        try:
+            q = Path(str(r)).expanduser().resolve()
+        except OSError:
+            continue
+        if q.is_dir() and q not in out:
+            out.append(q)
+    _ROOTS = out or [Path.home()]
+    return _ROOTS
+
 
 #  화면이 쓰는 파일만 내보낸다. 폴더를 통째로 열어 주면 저장소의 다른 파일까지
 #  (local.yaml 을 포함해) 주소만 알면 읽히게 된다.
@@ -80,7 +110,7 @@ def media_kind(name) -> str:
 #  뿐이다(경로만 알면 프레임 요청으로 바로 열린다). 그래서 두 길이 이 함수를
 #  같이 지난다.
 def roots():
-    return [Path(r).expanduser().resolve() for r in cfg.browse_roots()]
+    return list(_ROOTS)
 
 
 def in_roots(p, rs=None) -> bool:
@@ -276,7 +306,12 @@ class Handler(BaseHTTPRequestHandler):
     #  파일로 내려받는다 — 서버에 쓰기 통로를 두지 않는 것이 제일 싼 방어다.
 
 
-def serve(host="127.0.0.1", port=8770):
+#  ★인자 이름을 roots 로 두지 않는다★ 그러면 아래 roots() 함수를 가려 버려
+#  "list object is not callable" 로 죽는다 — 저장소 안에서는 tb.run 이 값을
+#  넘겨 줘서 안 드러났고, 꾸러미를 남의 기계처럼 돌려 보고서야 나왔다.
+def serve(host="127.0.0.1", port=8770, root_dirs=None, open_browser=False):
+    if root_dirs:
+        set_roots(root_dirs)
     if host not in ("127.0.0.1", "localhost", "::1"):
         print("거부: 이 서버는 인증이 없다 — 127.0.0.1 밖으로 열지 않는다.\n"
               "  다른 기기에서 쓰려면 인증을 먼저 만들어야 한다(README §4).")
@@ -284,13 +319,30 @@ def serve(host="127.0.0.1", port=8770):
     if not (WEB / "index.html").is_file():
         print(f"⛔ 화면 파일이 없다: {WEB}/index.html")
         return 2
-    srv = ThreadingHTTPServer((host, port), Handler)
+    #  ★포트가 물려 있으면 다음 것으로★ 「이미 쓰는 중」이라고 죽으면 사람은
+    #  무엇을 어떻게 하라는 건지 모른다. 열 수 있는 자리를 찾아 알려 준다.
+    srv = None
+    for p in range(int(port), int(port) + 20):
+        try:
+            srv = ThreadingHTTPServer((host, p), Handler)
+            port = p
+            break
+        except OSError:
+            continue
+    if srv is None:
+        print(f"⛔ {port}~{port + 19} 사이에 빈 포트가 없다")
+        return 2
+    url = f"http://{host}:{port}"
     print("카메라 보정 스튜디오")
-    print(f"  → http://{host}:{port}")
+    print(f"  → {url}")
     print(f"  훑는 곳: {', '.join(str(r) for r in roots())}"
           "   (local.yaml 의 browse_roots: 로 넓힌다)")
     print("  ★이 기계의 영상을 코덱 상관없이 연다★ — 서버가 프레임만 넘긴다")
     print("  Ctrl-C 로 종료")
+    if open_browser:
+        #  ★열어 놓고 기다리지 않는다★ 브라우저가 없는 기계(서버·원격 셸)도 있다.
+        import webbrowser                                 # noqa: PLC0415
+        threading.Timer(0.4, lambda: webbrowser.open(url)).start()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
@@ -307,5 +359,20 @@ def serve(host="127.0.0.1", port=8770):
     return 0
 
 
+def main(argv=None):
+    """혼자 돌 때의 진입점 — 꾸러미의 `python3 studio.py` 가 여기로 온다."""
+    import argparse                                       # noqa: PLC0415
+    ap = argparse.ArgumentParser(
+        prog="studio.py", description="카메라 보정 스튜디오 (이 기계의 브라우저)")
+    ap.add_argument("--root", action="append", default=[],
+                    help="영상을 찾을 폴더 (여러 번 줄 수 있다. 기본: 홈)")
+    ap.add_argument("--port", type=int, default=8770)
+    ap.add_argument("--no-browser", action="store_true",
+                    help="브라우저를 자동으로 열지 않는다")
+    a = ap.parse_args(argv)
+    return serve(port=a.port, root_dirs=a.root or None,
+                 open_browser=not a.no_browser)
+
+
 if __name__ == "__main__":
-    raise SystemExit(serve())
+    raise SystemExit(main())

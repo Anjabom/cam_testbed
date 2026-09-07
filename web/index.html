@@ -9,9 +9,10 @@
 <header>
   <h1>카메라 보정 스튜디오</h1>
   <div class="io">
-    <label class="btn primary">영상·사진 열기
-      <input type="file" id="file" accept="video/*,image/*" hidden>
-    </label>
+    <!-- ★열기는 한 갈래다★ 서버가 있으면 이 기계의 폴더를 훑고(코덱 무관),
+         없으면 이 브라우저의 파일 선택으로 간다(브라우저가 읽는 형식만). -->
+    <button class="btn primary" id="open">영상·사진 열기</button>
+    <input type="file" id="file" accept="video/*,image/*" hidden>
     <label class="btn">불러오기
       <input type="file" id="loadf" accept=".json,application/json" hidden>
     </label>

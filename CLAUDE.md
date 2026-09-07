@@ -63,6 +63,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
    `browse_roots:` 가 정하고, **훑는 길과 여는 길이 같은 함수를 지난다**
    (`studio.check_allowed` · 자체검사 `t_studio_paths`).
    그림은 여전히 브라우저가 그린다 — 서버는 BEV 를 그리지 않는다(경계 3 이 그대로 유효).
+   ★`tb/studio.py` 는 `tb` 의 다른 모듈을 import 하지 않는다★ — `web/` 과 이 파일만
+   묶어 남의 기계로 보내기 때문이다(`tools/pack_studio.py`). 거기엔 이 저장소도 ROS 도
+   없다. 편의로 `from .config import …` 한 줄을 넣으면 꾸러미는 죽는데 이 기계에서는
+   멀쩡히 돌아 아무도 모른다 — 그래서 `t_studio_standalone` 이 대신 본다.
+   뿌리 목록은 ★부르는 쪽이 넘긴다★(`serve(root_dirs=…)`).
 6. **재는 쪽을 고쳐 숫자를 좋게 만들지 않는다.** 계약의 `path:`·게이트 상수를 고치는 것은
    「잰 자리가 틀렸을 때」뿐이고, 그때도 근거를 먼저 말한다.
 
@@ -89,6 +94,7 @@ python3 -m tb.run run --contract contracts/x.yaml --video /abs/a.mp4 \
 
 ```bash
 python3 -m tb.run studio          # → http://127.0.0.1:8770  (이 기계의 브라우저)
+python3 tools/pack_studio.py      # → dist/cam-studio-<날짜>.zip (남의 기계에 건넨다)
 ```
 
 ★왜 서버가 다시 있나★ [2026-09-07] 브라우저는 `mp4v`(cv2 기본 코덱)를 열지 못하는데

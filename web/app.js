@@ -35,6 +35,7 @@
   //  없으면(파일로 연 경우·정적 배포) 지금까지대로 파일 선택으로 동작한다.
   var server = null;
   var frameURL = null;
+  var lastDir = '';   // 마지막에 훑은 폴더 — 다시 열 때 거기서 시작한다
 
   // ══════════════════════════════════════════════════════════════════
   //  값 다루기 — 종류로만 찾는다(이름을 모른다)
@@ -684,6 +685,7 @@
 
   function showBrowser(dir) {
     api('api/browse?dir=' + encodeURIComponent(dir || '')).then(function (r) {
+      lastDir = r.dir;
       var ex = $('extra');
       ex.innerHTML = '';
       var box = div('box');
@@ -706,6 +708,16 @@
       close.style.marginLeft = '6px';
       close.onclick = function () { renderPanel(); };
       box.appendChild(close);
+
+      //  ★경로를 직접 칠 수 있게 둔다★ 목록만 있으면 깊은 폴더까지 여러 번
+      //  눌러야 한다. 서버는 여기 친 경로도 뿌리 안인지 그대로 검사한다.
+      var go = txtInput('gopath', '', function () { /* Enter 로 간다 */ });
+      go.placeholder = '폴더 경로를 직접 입력 (Enter)';
+      go.style.marginTop = '6px';
+      go.onkeydown = function (ev) {
+        if (ev.key === 'Enter' && go.value.trim()) showBrowser(go.value.trim());
+      };
+      box.appendChild(go);
 
       var list = div('');
       list.style.cssText = 'max-height:320px;overflow:auto;margin-top:6px';
@@ -993,15 +1005,18 @@
       .then(function (j) {
         if (!j || !j.studio) return;
         server = j;
-        var b = document.createElement('button');
-        b.className = 'btn primary';
-        b.textContent = '이 기계의 영상 열기';
-        b.onclick = function () { showBrowser(server.lastDir || ''); };
-        document.querySelector('.io').insertBefore(b, document.querySelector('.io').firstChild);
+        //  ★버튼을 하나 더 만들지 않는다★ 예전에는 «이 기계의 영상 열기» 를
+        //  따로 붙였는데, 같은 일을 두 갈래로 하니 "왜 이건 열리고 저건 안
+        //  열리지" 가 생겼다. 여는 길은 하나고, 서버가 있으면 그 길이 폴더
+        //  목록으로 바뀔 뿐이다.
         renderFoot();
       })
       .catch(function () { /* 정적으로 연 것이다 */ });
 
+    $('open').onclick = function () {
+      if (server) showBrowser(lastDir);
+      else $('file').click();
+    };
     $('file').onchange = function (e) { if (e.target.files[0]) openFile(e.target.files[0]); };
     $('loadf').onchange = function (e) {
       var f = e.target.files[0];

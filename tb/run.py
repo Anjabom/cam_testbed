@@ -1324,7 +1324,10 @@ def cmd_studio(args):
     서버는 cv2 로 디코드해 ★프레임만★ 넘긴다(그림은 여전히 브라우저가 그린다).
     """
     from . import studio                            # noqa: PLC0415
-    return studio.serve(port=args.port)
+    from .config import browse_roots                 # noqa: PLC0415
+    #  ★뿌리는 부르는 쪽이 정한다★ studio.py 는 local.yaml 을 모른다 —
+    #  그래야 그 파일만 떼어 남의 기계에서 돌릴 수 있다.
+    return studio.serve(port=args.port, root_dirs=browse_roots(), open_browser=True)
 
 
 def cmd_verify(args):

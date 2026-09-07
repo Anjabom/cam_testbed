@@ -234,6 +234,34 @@ GPU 에서 하므로 **드래그가 즉시** 반응한다.
 `web/index.html` 을 파일로 그냥 열어도 돌아간다 — 그때는 이 기계의 영상 목록이 안 뜨고,
 브라우저가 열 수 있는 파일(H.264 mp4 · 사진)만 파일 선택으로 연다.
 
+### 4.0.1 남의 기계에 건네기 — 꾸러미 하나 (44KB)
+
+```bash
+python3 tools/pack_studio.py           # → dist/cam-studio-<날짜>.zip
+```
+
+받은 사람은 압축을 풀고 `실행하기.bat`(윈도우) 또는 `bash 실행하기.sh` 를 실행한다.
+`pip install opencv-python` 한 번이 전부고, 브라우저가 저절로 열린다.
+
+꾸러미에는 `studio.py` 와 `web/` 만 들어간다 — **`tb/` 도 ROS 도 필요 없다.**
+그래서 `tb/studio.py` 는 `tb` 의 다른 모듈을 import 하지 않는다(자체검사
+`t_studio_standalone` 이 지킨다). 뿌리 폴더는 `--root` 로 준다.
+
+★저장소를 통째로 주지 않는 이유★ `tb/run.py` 가 `rclpy` 를 import 해서, ROS 가 없는
+기계에서는 `python3 -m tb.run studio` 자체가 뜨지 않는다.
+
+파이썬조차 없는 상대라면 **단일 실행파일**도 만들 수 있다(PyInstaller):
+
+```bash
+pip install pyinstaller
+cd dist/cam-studio && python3 -m PyInstaller --onefile --name cam-studio \
+    --add-data "$PWD/web:web" studio.py
+```
+
+실측(이 기계): **140MB · 차가운 기동 1.4초** — mp4v 영상도 그대로 열린다.
+★단, PyInstaller 는 교차 빌드가 안 된다★ — 리눅스에서 만들면 리눅스 실행파일이다
+(`file` 로 확인: `ELF 64-bit`). 윈도우 `.exe` 는 윈도우에서 빌드해야 한다.
+
 ### 4.1 ★기하가 두 벌이 됐다 — 그래서 대조한다★
 
 이 저장소의 오래된 규칙은 「기하를 JS 에 한 벌 더 쓰지 않는다」였다. 서버가 없어지면서
@@ -368,6 +396,7 @@ tools/                  저장소를 재는 도구 (배포물이 아니다)
   geom_check.js         JS ↔ cv2 대조 (자체 검사가 부른다)
   shader_check.html     GPU 셰이더 ↔ geom.js 대조 (브라우저로 연다)
   tuning_from_local.py  local.yaml → 스튜디오가 여는 my_tuning.json
+  pack_studio.py        남의 기계에 건넬 꾸러미 굽기 (studio.py + web/)
 
 contracts/*.yaml        워크스페이스 결합 (1 워크스페이스 = 1 파일)
 calib/*.yaml            워크스페이스 없는 보정 프로필
