@@ -1,4 +1,4 @@
-/* docs/geom.js 를 cv2 의 정답표(docs/reference.js)와 대조한다.
+/* web/geom.js 를 cv2 의 정답표(docs/reference.js)와 대조한다.
  *
  *     node tools/geom_check.js            → 사람이 읽는 표
  *     node tools/geom_check.js --json     → {"maxErr": …} (자체검사가 쓴다)
@@ -15,7 +15,7 @@ const vm = require('vm');
 const ROOT = path.resolve(__dirname, '..');
 const sandbox = { window: {}, console: console };
 vm.createContext(sandbox);
-for (const f of ['docs/geom.js', 'docs/reference.js']) {
+for (const f of ['web/geom.js', 'web/reference.js']) {
   vm.runInContext(fs.readFileSync(path.join(ROOT, f), 'utf8'), sandbox, { filename: f });
 }
 const G = sandbox.window.Geom;

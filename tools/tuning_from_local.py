@@ -1,7 +1,8 @@
 """이 기계의 실측 캘리브 값 → 스튜디오가 여는 JSON.
 
-스튜디오(docs/)의 기본값은 ★자리표시자★ 다 — 저장소가 공개라 실측값을 넣지
-않는다. 자기 값은 «불러오기» 로 여는데, 그 파일을 처음 만들어 주는 것이 이 도구다.
+스튜디오(web/)는 카메라 K·D 만 실측값을 들고 있고, 맞추는 값(사각형·ROI·척도·문턱)은
+자리표시자에서 시작한다. 지난번에 맞춘 값을 그대로 이어 쓰려면 «불러오기» 로 JSON 을
+여는데, 그 파일을 이 기계의 local.yaml 에서 처음 만들어 주는 것이 이 도구다.
 
     python3 tools/tuning_from_local.py                    # → my_tuning.json
     python3 tools/tuning_from_local.py --contract contracts/white_vote.yaml
@@ -11,7 +12,7 @@
     · 카메라 내부값 (size·K·D·alpha)  ← 계약의 calibration.undistort
       (계약이 파일을 가리키면 그 파일에서 읽는다 — tb.geometry 가 하는 것과 같다)
 
-★파라미터 이름은 여기 없다★ 이름은 docs/tuning.js 한 곳에만 있고, 이 도구는
+★파라미터 이름은 여기 없다★ 이름은 web/tuning.js 한 곳에만 있고, 이 도구는
 node 로 그 파일을 읽어 이름을 얻는다. 양쪽에 이름을 적어 두면 한쪽만 고쳐진다.
 
 my_tuning.json 은 git 에서 빠진다(맞춘 값이 곧 이 차의 기하라서 그렇다).
@@ -39,11 +40,11 @@ READ_TUNING = (
 
 
 def read_tuning():
-    """docs/tuning.js 를 node 로 읽어 그대로 받아 온다."""
-    p = subprocess.run(["node", "-e", READ_TUNING, str(ROOT / "docs" / "tuning.js")],
+    """web/tuning.js 를 node 로 읽어 그대로 받아 온다."""
+    p = subprocess.run(["node", "-e", READ_TUNING, str(ROOT / "web" / "tuning.js")],
                        capture_output=True, text=True)
     if p.returncode != 0:
-        raise SystemExit("docs/tuning.js 를 읽지 못했습니다 (node 가 필요합니다):\n"
+        raise SystemExit("web/tuning.js 를 읽지 못했습니다 (node 가 필요합니다):\n"
                          + p.stderr.strip())
     return json.loads(p.stdout)
 

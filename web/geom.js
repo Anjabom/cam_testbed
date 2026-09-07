@@ -6,7 +6,7 @@
  * 스튜디오가 정적 페이지(github.io)로 옮겨 오면서 서버가 없어졌으므로
  * 그 방어선은 성립하지 않는다. 대신 ★두 벌이 같음을 기계가 증명한다★:
  *
- *     tools/bake_reference.py  → cv2 로 대조점을 구워 docs/reference.js 로
+ *     tools/bake_reference.py  → cv2 로 대조점을 구워 web/reference.js 로
  *     tb/selftest.py  t_geom_js → node 로 이 파일을 불러 그 대조점과 맞춰 본다
  *
  * 그래서 이 파일을 고치면 ★반드시★ `python3 -m tb.selftest` 를 돌려야 한다.

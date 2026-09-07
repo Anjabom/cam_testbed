@@ -30,6 +30,11 @@
   var meas = [];                       // 척도 재기 — BEV 좌표 두 점
   var drag = null;                     // {kind, idx}
   var lastCal = null;
+  //  ★서버가 있으면 이 기계의 영상을 코덱 상관없이 연다★ (tb/studio.py)
+  //  브라우저는 mp4v 를 못 열지만, 서버는 cv2 로 디코드해 프레임만 넘긴다.
+  //  없으면(파일로 연 경우·정적 배포) 지금까지대로 파일 선택으로 동작한다.
+  var server = null;
+  var frameURL = null;
 
   // ══════════════════════════════════════════════════════════════════
   //  값 다루기 — 종류로만 찾는다(이름을 모른다)
@@ -524,6 +529,10 @@
     var f = [];
     if (media) {
       f.push(media.name + ' · ' + media.w + '×' + media.h);
+      if (media.kind === 'server' && media.frames > 1) {
+        f.push('프레임 ' + media.i + ' / ' + (media.frames - 1)
+               + (media.fps ? '  (' + (media.i / media.fps).toFixed(2) + 's)' : ''));
+      }
       if (media.w !== T.camera.size[0] || media.h !== T.camera.size[1]) {
         f.push('카메라 ' + T.camera.size.join('×') + ' 로 늘려 잽니다(노드와 같다)');
       }
@@ -626,6 +635,108 @@
     }
   }
 
+  // ══════════════════════════════════════════════════════════════════
+  //  서버 모드 — 이 기계의 파일을 ★프레임으로★ 받는다
+  // ══════════════════════════════════════════════════════════════════
+  function api(path) {
+    return fetch(path).then(function (r) {
+      return r.json().then(function (j) {
+        if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+        return j;
+      }, function () { throw new Error('HTTP ' + r.status); });
+    });
+  }
+
+  function openServerFile(path) {
+    api('api/info?path=' + encodeURIComponent(path)).then(function (inf) {
+      var img = new Image();
+      media = { el: img, kind: 'server', path: path, name: inf.name,
+                w: inf.w, h: inf.h, frames: inf.frames, fps: inf.fps, i: 0,
+                dur: inf.fps > 0 ? inf.frames / inf.fps : 0 };
+      img.onload = function () { upload(); draw(); };
+      $('timeline').hidden = (inf.kind !== 'video');
+      $('seek').value = 0;
+      clearBanner();
+      loadFrame(0);
+      renderPanel();
+    }).catch(function (e) { banner('열지 못했습니다 — ' + e.message); });
+  }
+
+  //  ★Image.src 에 주소를 바로 꽂지 않는다★ 그러면 서버가 돌려준 오류 메시지를
+  //  읽을 길이 없어 화면이 이유 없이 비어 버린다. blob 으로 받아 오류는 본문에서
+  //  읽고, 성공한 것만 그림으로 만든다.
+  function loadFrame(i) {
+    if (!media || media.kind !== 'server') return;
+    media.i = Math.max(0, Math.min(i, Math.max(0, media.frames - 1)));
+    fetch('api/frame?path=' + encodeURIComponent(media.path) + '&i=' + media.i)
+      .then(function (r) {
+        if (!r.ok) return r.json().then(function (j) { throw new Error(j.error); });
+        return r.blob();
+      })
+      .then(function (b) {
+        if (frameURL) URL.revokeObjectURL(frameURL);
+        frameURL = URL.createObjectURL(b);
+        media.el.src = frameURL;
+        renderFoot();
+      })
+      .catch(function (e) { banner('프레임을 읽지 못했습니다 — ' + e.message); });
+  }
+
+  function showBrowser(dir) {
+    api('api/browse?dir=' + encodeURIComponent(dir || '')).then(function (r) {
+      var ex = $('extra');
+      ex.innerHTML = '';
+      var box = div('box');
+      var head = div('');
+      head.className = 'mono';
+      head.style.cssText = 'margin-bottom:6px;word-break:break-all';
+      head.textContent = r.dir;
+      box.appendChild(head);
+      if (r.error) {
+        var er = document.createElement('p');
+        er.className = 'bad'; er.textContent = r.error;
+        box.appendChild(er);
+      }
+      var up = document.createElement('button');
+      up.className = 'btn sm'; up.textContent = '⬆ 위로';
+      up.onclick = function () { showBrowser(r.up); };
+      box.appendChild(up);
+      var close = document.createElement('button');
+      close.className = 'btn sm'; close.textContent = '닫기';
+      close.style.marginLeft = '6px';
+      close.onclick = function () { renderPanel(); };
+      box.appendChild(close);
+
+      var list = div('');
+      list.style.cssText = 'max-height:320px;overflow:auto;margin-top:6px';
+      r.dirs.forEach(function (d) {
+        var b = document.createElement('button');
+        b.className = 'btn sm';
+        b.style.cssText = 'display:block;width:100%;text-align:left;margin:2px 0';
+        b.textContent = '📁 ' + d.name;
+        b.onclick = function () { showBrowser(d.path); };
+        list.appendChild(b);
+      });
+      r.files.forEach(function (f) {
+        var b = document.createElement('button');
+        b.className = 'btn sm';
+        b.style.cssText = 'display:block;width:100%;text-align:left;margin:2px 0';
+        b.textContent = (f.kind === 'video' ? '🎞 ' : '🖼 ') + f.name
+                      + '   ' + f.mb + 'MB';
+        b.onclick = function () { openServerFile(f.path); };
+        list.appendChild(b);
+      });
+      if (!r.dirs.length && !r.files.length) {
+        var em = document.createElement('p');
+        em.className = 'mono';
+        em.textContent = '이 폴더에는 열 수 있는 영상·사진이 없습니다';
+        list.appendChild(em);
+      }
+      box.appendChild(list);
+      ex.appendChild(box);
+    }).catch(function (e) { banner('폴더를 읽지 못했습니다 — ' + e.message); });
+  }
+
   function openVideo(f, url) {
     var info = null;
     sniffCodec(f).then(function (i) {
@@ -669,20 +780,32 @@
   function bindTimeline() {
     var seek = $('seek');
     seek.addEventListener('input', function () {
-      if (!media || media.kind !== 'video') return;
-      media.el.currentTime = media.dur * (seek.value / 1000);
-      $('tpos').textContent = media.el.currentTime.toFixed(2) + 's / ' + media.dur.toFixed(2) + 's';
+      if (!media) return;
+      var f = seek.value / 1000;
+      if (media.kind === 'server') {
+        loadFrame(Math.round(f * Math.max(0, media.frames - 1)));
+      } else if (media.kind === 'video') {
+        media.el.currentTime = media.dur * f;
+      }
+      renderFoot();
     });
+    //  ★프레임 단위로 움직인다★ 보정은 「이 프레임에서 사각형이 맞나」를 보는
+    //  일이라, 0.1초씩 뛰면 맞출 수가 없다. 서버 모드에서는 정확히 한 프레임이고
+    //  (탐색 없이 1ms), 파일 모드에서는 30fps 를 가정한 근사다.
     function step(d) {
-      if (!media || media.kind !== 'video') return;
-      var t = Math.max(0, Math.min(media.dur, media.el.currentTime + d));
-      media.el.currentTime = t;
-      seek.value = Math.round(1000 * t / media.dur);
-      $('tpos').textContent = t.toFixed(2) + 's / ' + media.dur.toFixed(2) + 's';
+      if (!media) return;
+      if (media.kind === 'server') {
+        loadFrame(media.i + d);
+        seek.value = Math.round(1000 * media.i / Math.max(1, media.frames - 1));
+      } else if (media.kind === 'video') {
+        var t = Math.max(0, Math.min(media.dur, media.el.currentTime + d / 30));
+        media.el.currentTime = t;
+        seek.value = Math.round(1000 * t / (media.dur || 1));
+      }
+      renderFoot();
     }
-    //  1/30 초 — 실차 카메라가 30fps 라 한 프레임에 해당한다
-    $('back').onclick = function () { step(-1 / 30); };
-    $('fwd').onclick = function () { step(1 / 30); };
+    $('back').onclick = function () { step(-1); };
+    $('fwd').onclick = function () { step(1); };
   }
 
   // ══════════════════════════════════════════════════════════════════
@@ -862,6 +985,22 @@
       $('check').textContent = '기하 대조 ' + err.toFixed(3) + 'px (cv2 ' + window.GEOM_REF.cv2 + ')';
       $('check').className = 'mono ok';
     }
+
+    //  ★서버가 있나★ 있으면 이 기계의 영상을 코덱 상관없이 연다.
+    //  없으면(파일로 연 경우) 조용히 지금까지대로 동작한다 — fetch 가 실패하는
+    //  것이 정상적인 경우라 오류를 화면에 내지 않는다.
+    fetch('api/ping').then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) {
+        if (!j || !j.studio) return;
+        server = j;
+        var b = document.createElement('button');
+        b.className = 'btn primary';
+        b.textContent = '이 기계의 영상 열기';
+        b.onclick = function () { showBrowser(server.lastDir || ''); };
+        document.querySelector('.io').insertBefore(b, document.querySelector('.io').firstChild);
+        renderFoot();
+      })
+      .catch(function () { /* 정적으로 연 것이다 */ });
 
     $('file').onchange = function (e) { if (e.target.files[0]) openFile(e.target.files[0]); };
     $('loadf').onchange = function (e) {

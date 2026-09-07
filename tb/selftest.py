@@ -696,7 +696,7 @@ def t_portable():
     needles = ("/" + "home" + "/", "/" + "Users" + "/")
     bad = []
     for d, pats in (("tb", ("*.py",)), ("tools", ("*.py", "*.js")),
-                    ("docs", ("*.js", "*.css", "*.html"))):
+                    ("web", ("*.js", "*.css", "*.html"))):
         for pat in pats:
             for f in sorted((root / d).glob(pat)):
                 for i, ln in enumerate(f.read_text().splitlines(), 1):
@@ -721,7 +721,7 @@ def t_portable():
 
 
 def t_geom_js():
-    """★화면의 기하(docs/geom.js)가 cv2 와 같은 값을 내는가★
+    """★화면의 기하(web/geom.js)가 cv2 와 같은 값을 내는가★
 
     스튜디오가 정적 페이지가 되면서 기하가 브라우저에 한 벌 더 생겼다. 예전에는
     「한 벌만 둔다」가 방어선이었지만 서버가 없어져 그 방어선이 없다 — 대신
@@ -737,9 +737,9 @@ def t_geom_js():
     import subprocess as _sp
 
     root = Path(__file__).resolve().parent.parent
-    ref_js = root / "docs" / "reference.js"
+    ref_js = root / "web" / "reference.js"
     if not ref_js.exists():
-        FAILS.append("t_geom_js: docs/reference.js 가 없다 — "
+        FAILS.append("t_geom_js: web/reference.js 가 없다 — "
                      "python3 tools/bake_reference.py 로 구울 것")
         return
     ref = _json.loads(ref_js.read_text().split("=", 1)[1].rsplit(";", 1)[0])
@@ -780,6 +780,47 @@ def t_geom_js():
     #  값을 노드가 검은 띠로 받는다(실측: JS 에만 「화면 밖 거절」이 있어서
     #  제대로 맞춘 사각형을 틀렸다고 말할 뻔했다).
     eq("사각형 건전성이 파이썬과 같다", got.get("quadMismatch"), [])
+
+
+def t_studio_paths():
+    """★스튜디오 서버가 뿌리 밖 파일을 열어 주지 않는가★
+
+    이 서버는 파일을 읽어 그림으로 넘긴다 — 경로를 요청이 정하므로, 막지 못하면
+    브라우저 주소창만으로 이 기계의 아무 파일이나 읽힌다. 예전 웹앱에서 배운 것은
+    ★훑는 길과 여는 길이 같은 규칙 하나를 지나야 한다★ 는 것이다(훑기만 막으면
+    경로를 아는 사람에게는 아무 방어도 아니다).
+    """
+    from . import studio                                # noqa: PLC0415
+    from . import config as _cfg                        # noqa: PLC0415
+
+    real = _cfg.browse_roots
+    root = Path(tempfile.mkdtemp(prefix="tbroot_"))
+    (root / "안").mkdir()
+    inside = root / "안" / "a.mp4"
+    inside.write_bytes(b"x")
+    outside = Path(tempfile.mkdtemp(prefix="tbout_")) / "b.mp4"
+    outside.write_bytes(b"x")
+    try:
+        _cfg.browse_roots = lambda: [root]              # noqa: E731
+        eq("뿌리 안은 통과", studio.in_roots(inside), True)
+        eq("뿌리 밖은 거절", studio.in_roots(outside), False)
+        for bad in (outside, "/etc/passwd", root / ".." / "etc" / "passwd",
+                    str(root) + "/../" + outside.name):
+            try:
+                studio.check_allowed(bad)
+                FAILS.append(f"t_studio_paths: 뿌리 밖을 열어 줬다 — {bad}")
+            except ValueError:
+                pass
+        #  훑기도 같은 규칙을 지난다 — 밖을 가리키면 조용히 첫 뿌리로 되돌린다
+        eq("밖을 훑으면 뿌리로", studio.browse(str(outside.parent))["dir"], str(root))
+        #  뿌리에서 「위로」가 탈출구가 되면 안 된다
+        eq("뿌리 위로는 못 간다", studio.browse(str(root))["up"], str(root))
+        eq("화면 파일만 내보낸다", "local.yaml" in studio.STATIC, False)
+    finally:
+        _cfg.browse_roots = real
+        import shutil as _sh
+        _sh.rmtree(root, ignore_errors=True)
+        _sh.rmtree(outside.parent, ignore_errors=True)
 
 
 def main():

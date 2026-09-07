@@ -215,12 +215,13 @@ python3 -m tb.run diff runs/<이전런> runs/<이번런>
 
 IPM 사각형·ROI·픽셀↔미터·BEV 기준선은 **보면서 맞춰야** 하는 값이다.
 
-```
-https://anjabom.github.io/cam_testbed/     # 설치도 로그인도 없다
-~/cam_testbed/docs/index.html              # 파일로 열어도 같다 (네트워크 불필요)
+```bash
+python3 -m tb.run studio                   # → http://127.0.0.1:8770
 ```
 
-- 영상이든 **사진 한 장**이든 그 기기의 파일을 직접 연다 — 어디에도 올라가지 않는다
+- «이 기계의 영상 열기» 로 `browse_roots` 안의 영상을 고른다 — **코덱 상관없다**
+  (브라우저가 못 여는 `mp4v` 도 서버가 프레임으로 넘겨 준다)
+- 영상이든 **사진 한 장**이든 열린다. 어디에도 올라가지 않는다(전부 이 기계 안이다)
 - 화면의 BEV 는 대상 노드가 만드는 것과 **같은 변환**이다
   (`python3 -m tb.selftest` 의 `t_geom_js` 가 cv2 와 0.03px 안에서 같음을 증명한다)
 - 이 기계의 현재 값을 옮기려면 `python3 tools/tuning_from_local.py` → «불러오기»

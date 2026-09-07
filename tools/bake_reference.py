@@ -1,16 +1,17 @@
-"""대조점 굽기 — cv2 가 낸 값을 `docs/reference.js` 에 박는다.
+"""대조점 굽기 — cv2 가 낸 값을 `web/reference.js` 에 박는다.
 
 ★왜 필요한가★
-스튜디오가 정적 페이지로 옮겨 오면서 기하가 `docs/geom.js` 에 한 벌 더 생겼다.
+스튜디오가 정적 페이지로 옮겨 오면서 기하가 `web/geom.js` 에 한 벌 더 생겼다.
 두 벌이 갈라지면 화면이 보여 주는 BEV 와 노드가 만드는 BEV 가 달라지고,
 그러면 거기서 맞춘 값이 실차에서 틀린다. 그래서 ★cv2 를 정답으로 두고★
-JS 를 그것과 대조한다 — 그 정답표가 이 파일이 굽는 `docs/reference.js` 다.
+JS 를 그것과 대조한다 — 그 정답표가 이 파일이 굽는 `web/reference.js` 다.
 
     python3 tools/bake_reference.py        # 다시 굽는다
     python3 -m tb.selftest                 # t_geom_js 가 그것으로 JS 를 검사한다
 
-★실제 카메라 값을 쓰지 않는다★ 저장소가 공개라서 그렇다. 여기 있는 카메라는
-수학을 재려고 지어낸 것이고, 실측값은 사용자가 파일로 불러온다.
+★여기 카메라는 지어낸 것이다★ 재려는 것이 「이 차의 값이 맞나」가 아니라
+「같은 입력에 같은 답을 내나」라서 그렇다. 실측 K·D 로 재면 그 값이 바뀔 때마다
+정답표를 다시 구워야 하고, 그러면 대조가 캘리브 변경에 끌려다닌다.
 
 ★끝에서 끝까지 재는 요령★ — 좌표를 색으로 칠한 그림을 파이프라인에 통과시킨다.
 R 채널에 x, G 채널에 y 를 넣어 두면(둘 다 1차 램프라 이중선형 보간이 정확하다)
@@ -158,14 +159,14 @@ def bake():
              for n, q in QUADS]
     body = json.dumps({"cv2": cv2.__version__, "cases": cases, "quads": quads},
                       ensure_ascii=False, indent=1)
-    out = ROOT / "docs" / "reference.js"
+    out = ROOT / "web" / "reference.js"
     out.write_text(
         "/* cv2 가 낸 정답표 — ★손으로 고치지 않는다★\n"
         " * 다시 구우려면: python3 tools/bake_reference.py\n"
-        " * 무엇에 쓰나: docs/geom.js 가 cv2 와 같은 값을 내는지 대조한다\n"
+        " * 무엇에 쓰나: web/geom.js 가 cv2 와 같은 값을 내는지 대조한다\n"
         " *   · 페이지는 열 때 스스로 대조하고 어긋나면 띠를 띄운다\n"
         " *   · tb/selftest.py 의 t_geom_js 가 node 로 같은 대조를 한다\n"
-        " * 카메라 값은 ★지어낸 것★ 이다(공개 저장소라 실측을 넣지 않는다). */\n"
+        " * 카메라 값은 ★지어낸 것★ 이다 — 재는 것은 「같은 입력에 같은 답인가」다. */\n"
         "window.GEOM_REF = " + body + ";\n", encoding="utf-8")
     n = sum(len(c["map"]) + len(c["bevToSrc"]) for c in cases)
     print(f"구웠다: {out.relative_to(ROOT)}  판 {len(cases)}개 · 대조점 {n}개")

@@ -1316,6 +1316,17 @@ def cmd_build(args):
     return 0
 
 
+def cmd_studio(args):
+    """보정 스튜디오를 이 기계에 띄운다.
+
+    ★왜 서버가 필요한가★ 브라우저는 `mp4v`(cv2 기본 코덱)를 못 연다 — 이 기계의
+    녹화가 전부 그 코덱이라 정적 페이지만으로는 가진 영상을 하나도 못 연다.
+    서버는 cv2 로 디코드해 ★프레임만★ 넘긴다(그림은 여전히 브라우저가 그린다).
+    """
+    from . import studio                            # noqa: PLC0415
+    return studio.serve(port=args.port)
+
+
 def cmd_verify(args):
     """스튜디오가 그리는 BEV 와 ★노드가 실제로 만든 BEV★ 가 같은지 대조한다.
 
@@ -1476,6 +1487,10 @@ def main(argv=None):
     bd.add_argument("--contract", default="")
     bd.add_argument("--all", action="store_true", help="워크스페이스 전체를 빌드")
     bd.set_defaults(fn=cmd_build)
+
+    st = sub.add_parser("studio", help="카메라 보정 스튜디오 (이 기계의 브라우저)")
+    st.add_argument("--port", type=int, default=8770)
+    st.set_defaults(fn=cmd_studio)
 
     vf = sub.add_parser("verify", help="런의 디버그 영상과 BEV 기하를 대조한다")
     vf.add_argument("--run", required=True, help="런 폴더 (runs/ 안의 이름도 된다)")
