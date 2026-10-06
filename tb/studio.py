@@ -83,6 +83,8 @@ STATIC = {
     "render.js": "application/javascript; charset=utf-8",
     "tuning.js": "application/javascript; charset=utf-8",
     "reference.js": "application/javascript; charset=utf-8",
+    "mp4frames.js": "application/javascript; charset=utf-8",
+    "vendor/mpeg4dec.js": "application/javascript; charset=utf-8",
     "style.css": "text/css; charset=utf-8",
 }
 

@@ -10,7 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | 무엇 | 어디로 쓰나 | 무엇을 내놓나 |
 |---|---|---|
 | **시뮬레이터** (`tb/*.py`) | 클로드 스킬(`skills/cam-test`) · CLI | 계측 리포트 · CSV · **디버그 영상** |
-| **보정 스튜디오** (`web/*` + `tb/studio.py`) | 이 기계의 브라우저 한 화면 | 맞춘 카메라 파라미터 |
+| **보정 스튜디오** (`web/*` + `tb/studio.py`) | **github.io**(어디서나) · 이 기계의 브라우저 | 맞춘 카메라 파라미터 |
 
 설계 목표는 하나다: **대상 워크스페이스 코드가 바뀌어도 `tb/*.py` 는 바뀌지 않는다.**
 
@@ -49,6 +49,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
    node 로 JS 를 불러 맞춘다(허용치 0.1px · 실측 0.028px).
    **`web/geom.js` 나 `tb/geometry.py` 를 고치면 반드시 `python3 -m tb.selftest` 를 돌린다.**
    그림을 그리는 `web/render.js` 의 셰이더도 같은 식이어야 한다 — `tools/shader_check.html`.
+   [2026-10-06] **mp4v 해독도 두 벌**(서버의 cv2 · 페이지의 wasm)이라 같은 식으로 묶었다:
+   `tools/bake_mpeg4_reference.py` 가 cv2 로 클립·정답표를 굽고 `t_mpeg4_js`
+   (`tools/mpeg4_check.js`)가 「n 번째를 물으면 n 번째가 오는가」를 차례로·섞어서·거꾸로 잰다.
+   **`web/mp4frames.js` 나 `tools/mpeg4dec/` 를 고치면 이것을 돌린다.**
 4. **화면의 편집 대상은 `web/tuning.js` 가 정한다** — 무엇을 맞출지와 그것이 어느 노드의
    어떤 이름으로 나가는지가 전부 거기 있다. `app.js` 는 **종류**(`quad`/`rect`/`scale`/
    `number`/`size`/`bev_row`/`bev_dist`)만 알고 이름은 모른다. 이름을 박으면 다른 카메라에서
@@ -63,6 +67,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
    `browse_roots:` 가 정하고, **훑는 길과 여는 길이 같은 함수를 지난다**
    (`studio.check_allowed` · 자체검사 `t_studio_paths`).
    그림은 여전히 브라우저가 그린다 — 서버는 BEV 를 그리지 않는다(경계 3 이 그대로 유효).
+   [2026-10-06] 서버는 ★선택★ 이다 — github.io 는 서버 없이 같은 `web/` 를 낸다.
+   그래서 `app.js` 는 서버가 없어도 온전히 돌아야 한다(`api/ping` 실패가 정상인 경우다).
    ★`tb/studio.py` 는 `tb` 의 다른 모듈을 import 하지 않는다★ — `web/` 과 이 파일만
    묶어 남의 기계로 보내기 때문이다(`tools/pack_studio.py`). 거기엔 이 저장소도 ROS 도
    없다. 편의로 `from .config import …` 한 줄을 넣으면 꾸러미는 죽는데 이 기계에서는
@@ -90,12 +96,26 @@ python3 -m tb.run run --contract contracts/x.yaml --video /abs/a.mp4 \
 
 서브커맨드: `doctor · run · replay · reanalyze · diff · export · params · build · studio · verify · list`
 
-### ② 카메라 보정 — `python3 -m tb.run studio`
+### ② 카메라 보정 — github.io, 또는 `python3 -m tb.run studio`
 
+```
+https://anjabom.github.io/cam_testbed/   # 어디서나 — 터미널 없음 (main 의 web/ 가 나간다)
+```
 ```bash
 python3 -m tb.run studio          # → http://127.0.0.1:8770  (이 기계의 브라우저)
 python3 tools/pack_studio.py      # → dist/cam-studio-<날짜>.zip (남의 기계에 건넨다)
 ```
+
+★github.io 를 되살렸다★ [2026-10-06] 9/7 에 접은 이유(아래)는 「mp4v 를 못 연다」
+하나였다. 이번에는 해독을 페이지 안으로 들였다 — `web/mp4frames.js` 가 mp4 상자의 표만
+읽어 프레임 조각을 `File.slice` 로 꺼내고(2GB 를 메모리에 올리지 않는다),
+`web/vendor/mpeg4dec.js`(FFmpeg 의 mpeg4 디코더 하나만 wasm, 759KB, LGPL, SINGLE_FILE —
+`file://` 에서도 돈다)가 푼다. 서버의 프레임과 같은 「번호 → 그림」 모양(`media.kind ===
+'frames'`)이라 `app.js` 는 어디서 오는지 모른다. 굽는 법은 `tools/build_mpeg4dec.sh`.
+발행은 `.github/workflows/pages.yml` — `node tools/web_gate.js`(기하 + mp4v 대조, node 만)를
+지나야 나간다. ★tb.selftest 가 관문이 아닌 이유★ rclpy 와 정답표를 구운 cv2 판(4.5.4)이
+있어야 해서 GitHub 러너에서 돌지 않는다. 문턱은 두 곳이 같다 — 한쪽을 고치면 다른 쪽도.
+서버가 없을 때 열기는 Chrome·Edge 면 폴더 고르기(`showDirectoryPicker`), 아니면 파일 하나.
 
 ★왜 서버가 다시 있나★ [2026-09-07] 브라우저는 `mp4v`(cv2 기본 코덱)를 열지 못하는데
 이 기계의 녹화가 전부 그 코덱이라, 정적 페이지만으로는 **가진 영상을 하나도 못 여는**
@@ -103,13 +123,13 @@ python3 tools/pack_studio.py      # → dist/cam-studio-<날짜>.zip (남의 기
 파일을 어디서 주느냐가 아니라 브라우저 디코더의 한계다. 서버는 cv2 로 디코드해
 **프레임 한 장만** 넘긴다(2.2GB `mp4v` 에서 임의 프레임 21ms · 이어지는 프레임 1ms).
 
-`web/index.html` 을 파일로 그냥 열어도 돌아간다 — 그때는 서버가 없으니 이 기계의
-영상 목록이 안 뜨고, 브라우저가 열 수 있는 파일(H.264 mp4 · 사진)만 파일 선택으로 연다.
+`web/index.html` 을 파일로 그냥 열어도 돌아간다 — github.io 와 같다(mp4v 도 wasm 으로 연다).
 
 영상이나 **사진 한 장**을 열어 IPM 사각형·ROI·px2m·BEV 기준선·정지 문턱을 맞춘다.
 
-⚠️ **브라우저는 `mp4v`(cv2 기본 코덱)를 못 연다** — mp4 안에서 받아 주는 것은 H.264·AV1
-뿐이다. ★용량과 무관하다★(3.5MB 짜리도 안 열린다). 스튜디오가 열기 전에 코덱을 미리
+⚠️ **브라우저의 `<video>` 는 `mp4v`(cv2 기본 코덱)를 못 연다** — mp4 안에서 받아 주는 것은
+H.264·AV1 뿐이다. [2026-10-06] 스튜디오는 mp4v 를 wasm 으로 우회하므로 아래는 ★그 밖의
+코덱(HEVC·MJPG)★ 과, 브라우저에서 재생할 영상을 새로 구울 때의 이야기다. ★용량과 무관하다★(3.5MB 짜리도 안 열린다). 스튜디오가 열기 전에 코덱을 미리
 보고 사유와 고칠 명령을 띄운다. 고치는 길은 둘이다:
 `python3 -m tb.encode <파일|폴더>`(NVENC → 실시간의 14배) 또는 애초에 녹화가
 `__web.mp4` 를 같이 남기게 하는 것(`cam_record` 의 `web_copy`, 기본 켬).
@@ -128,9 +148,8 @@ python3 tools/pack_studio.py      # → dist/cam-studio-<날짜>.zip (남의 기
 | 노드와 대조 | `python3 -m tb.run verify --run <런>` |
 | 체스보드 K/D · 자동 미세조정 | 없앴다 |
 
-★GitHub Pages 는 껐다★ [2026-09-07] 정적 배포로는 이 기계의 영상을 못 열어 쓸모가
-없었다. 그래서 폴더 이름도 `docs/` 에서 `web/` 로 되돌렸다 — `docs/` 라는 이름이
-「발행된다」는 오해를 부른다.
+~~★GitHub Pages 는 껐다★ [2026-09-07]~~ → [2026-10-06] 다시 켰다(위). 폴더 이름은 `web/`
+그대로 둔다 — Actions 로 발행하므로 `docs/` 일 필요가 없다.
 
 ### 스튜디오 밖에서 직접 치는 것
 
@@ -138,6 +157,8 @@ python3 tools/pack_studio.py      # → dist/cam-studio-<날짜>.zip (남의 기
 python3 -m tb.selftest                    # 자체 검사 (ROS·영상 불필요) — 순수 함수를 건드리면 먼저 이것
 python3 -m flake8 tb tools                # 린트 (max-line-length 100, .flake8)
 python3 tools/bake_reference.py           # 기하를 고쳤으면 정답표를 다시 굽는다
+node tools/web_gate.js                    # github.io 발행 전 관문 (기하 + mp4v 대조)
+tools/build_mpeg4dec.sh                   # mp4v 디코더 wasm 을 다시 굽는다 (emsdk·FFmpeg 를 받는다)
 python3 -m tb.encode ~/cam_record_video   # mp4v 영상을 스튜디오가 여는 H.264 로
 ```
 
@@ -212,6 +233,8 @@ python3 -c "from tb import selftest as s; s.t_events(); print(s.FAILS or '통과
 - `runs/`, `local.yaml`, `*.log` 는 git 제외.
 - 스튜디오는 **외부 의존성 0**(CDN·웹폰트·JS 라이브러리 없음). 서버 쪽도 표준 라이브러리와
   이미 쓰는 cv2 뿐이다. 대회 현장에서 네트워크 없이 돌아야 한다 — 의존성을 추가하지 않는다.
+  유일한 예외는 `web/vendor/mpeg4dec.js` 인데 ★저장소에 구워 넣은 것★ 이라 네트워크가 필요 없다.
+  손으로 고치지 않는다 — `tools/mpeg4dec/mpeg4dec.c` 를 고치고 `tools/build_mpeg4dec.sh` 로 굽는다.
 - **WebGL 이 없으면 그림이 안 나온다.** 값은 다룰 수 있지만 사각형을 눈으로 못 맞춘다 —
   페이지가 그 사실을 띠로 말한다.
 - **자동 미세조정처럼 지표를 목적함수로 쓰는 코드는 반드시 방어선을 갖는다.** 실측한 실패:

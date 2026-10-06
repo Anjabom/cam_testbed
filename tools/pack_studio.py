@@ -8,7 +8,7 @@
 막힌다. 그리고 상대에게 필요한 것은 보정 화면뿐인데 시험 엔진·계약·런 기록까지
 같이 가면 「무엇을 봐야 하는지」가 흐려진다.
 
-그래서 꾸러미에는 ★스튜디오가 실제로 쓰는 것만★ 넣는다(140KB):
+그래서 꾸러미에는 ★스튜디오가 실제로 쓰는 것만★ 넣는다(약 900KB — 그중 760KB 가 mp4v 디코더 wasm):
 
     cam-studio/
       studio.py        tb/studio.py 그대로 — 이 파일은 tb 를 import 하지 않는다
@@ -34,7 +34,8 @@ ROOT = Path(__file__).resolve().parent.parent
 NAME = "cam-studio"
 
 WEB_FILES = ["index.html", "app.js", "geom.js", "render.js",
-             "tuning.js", "reference.js", "style.css"]
+             "tuning.js", "reference.js", "style.css",
+             "mp4frames.js", "vendor/mpeg4dec.js"]
 
 RUN_SH = """#!/usr/bin/env bash
 #  카메라 보정 스튜디오 — 이 파일을 두 번 눌러 실행하거나, 터미널에서 bash 실행하기.sh
@@ -213,6 +214,7 @@ def build(dest: Path) -> Path:
         src = ROOT / "web" / f
         if not src.is_file():
             raise SystemExit(f"⛔ 화면 파일이 없다: {src}")
+        (out / "web" / f).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, out / "web" / f)
 
     (out / "실행하기.sh").write_text(RUN_SH, encoding="utf-8")

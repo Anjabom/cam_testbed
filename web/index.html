@@ -1,5 +1,7 @@
-<!-- 카메라 보정 스튜디오 — 정적 페이지 하나로 돈다.
-     서버가 없다: 영상은 ★이 브라우저 안에서만★ 열리고 아무 데도 올라가지 않는다.
+<!-- 카메라 보정 스튜디오 — 같은 파일이 두 곳에서 돈다.
+     github.io (서버 없음): 영상은 ★이 브라우저 안에서만★ 열리고 아무 데도 올라가지
+       않는다. mp4v 는 페이지 안의 wasm 이 푼다(mp4frames.js · vendor/mpeg4dec.js).
+     tb.run studio (127.0.0.1): 이 기계의 폴더를 훑고 프레임을 cv2 로 받는다.
      계약도 프로필도 없다: 맞출 것은 tuning.js 한 곳이 정한다. -->
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -9,8 +11,8 @@
 <header>
   <h1>카메라 보정 스튜디오</h1>
   <div class="io">
-    <!-- ★열기는 한 갈래다★ 서버가 있으면 이 기계의 폴더를 훑고(코덱 무관),
-         없으면 이 브라우저의 파일 선택으로 간다(브라우저가 읽는 형식만). -->
+    <!-- ★열기는 한 갈래다★ 서버가 있으면 이 기계의 폴더를 훑고(cv2),
+         없으면 이 브라우저가 고른 폴더(Chrome·Edge)나 파일을 연다(mp4v 는 wasm). -->
     <button class="btn primary" id="open">영상·사진 열기</button>
     <input type="file" id="file" accept="video/*,image/*" hidden>
     <label class="btn">불러오기
@@ -65,5 +67,6 @@
 <script src="geom.js"></script>
 <script src="reference.js"></script>
 <script src="render.js"></script>
+<script src="mp4frames.js"></script>
 <script src="tuning.js"></script>
 <script src="app.js"></script>

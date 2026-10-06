@@ -782,6 +782,45 @@ def t_geom_js():
     eq("사각형 건전성이 파이썬과 같다", got.get("quadMismatch"), [])
 
 
+def t_mpeg4_js():
+    """★브라우저의 mp4v 해독이 cv2 와 같은 프레임을 내는가★ [2026-10-06]
+
+    github.io 스튜디오는 서버가 없어 mp4v 를 페이지 안의 wasm 으로 푼다
+    (web/mp4frames.js + web/vendor/mpeg4dec.js). 서버 모드는 cv2 로 읽으므로
+    두 길이 ★같은 번호에 같은 그림★ 을 내야 「프레임 300 에서 맞췄다」가 한 뜻이 된다.
+
+    재는 것은 둘이다:
+      · 틀린 프레임 0 — 차례로·섞어서·거꾸로 물어 전부 제 번호가 와야 한다.
+        B 프레임 클립(해독 순서 ≠ 표시 순서)도 같다.
+      · 색 차이 6 단계 미만 — wasm 은 BT.601 을 최근접 색차로, cv2 는 보간으로
+        만든다(실측 2.1). 프레임이 하나만 어긋나도 수십 단계로 벌어지므로 둘은 갈린다.
+    """
+    import json as _json
+    import shutil as _shutil
+    import subprocess as _sp
+
+    root = Path(__file__).resolve().parent.parent
+    for f in ("web/vendor/mpeg4dec.js", "tools/fixtures/mp4v_ref.json"):
+        if not (root / f).exists():
+            FAILS.append(f"t_mpeg4_js: {f} 가 없다 — tools/build_mpeg4dec.sh · "
+                         "tools/bake_mpeg4_reference.py 로 구울 것")
+            return
+    node = _shutil.which("node")
+    if not node:
+        print("  · t_mpeg4_js: node 가 없어 mp4v 해독 대조를 건너뛴다")
+        return
+    p = _sp.run([node, str(root / "tools" / "mpeg4_check.js"), "--json"],
+                capture_output=True, text=True, timeout=120)
+    if p.returncode != 0:
+        FAILS.append(f"t_mpeg4_js: mpeg4_check.js 실패 — {p.stderr.strip()[:300]}")
+        return
+    got = _json.loads(p.stdout)
+    eq("mp4v 대조 클립이 있다", len(got["clips"]) >= 1, True)
+    for c in got["clips"]:
+        eq(f"틀린 프레임이 없다({c['name']})", c["wrongFrame"], [])
+        eq(f"색 차이({c['name']}) {c['worst']:.2f}", c["worst"] < 6, True)
+
+
 def t_studio_paths():
     """★스튜디오 서버가 뿌리 밖 파일을 열어 주지 않는가★
 

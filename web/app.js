@@ -1,8 +1,13 @@
 /* 카메라 보정 스튜디오 — 화면과 조작.
  *
- * ★서버가 없다★ [2026-09-06] 예전에는 파이썬 서버가 그림을 그려 JPEG 로
- * 내려보냈다. 지금은 정적 페이지 하나다 — 영상은 이 브라우저 안에서만 열리고
- * 아무 데도 올라가지 않는다. 그래서 로그인도, 올리기도, 폴더 훑기도 없다.
+ * ★두 곳에서 돈다★ [2026-10-06] github.io(서버 없음)와 이 기계의 tb.run studio
+ * (서버 있음). 같은 파일들이다. 영상은 어느 쪽이든 아무 데도 올라가지 않는다.
+ *   · 서버가 있으면 이 기계의 폴더를 훑고 프레임을 cv2 로 받는다.
+ *   · 없으면 이 브라우저가 파일·폴더를 직접 읽는다. mp4v 는 페이지 안의 wasm 이
+ *     푼다(mp4frames.js) — 9/7 에 github.io 를 접게 만든 「녹화를 하나도 못 연다」를
+ *     그것으로 넘는다.
+ * 두 갈래 모두 「프레임 번호 → 그림」 한 모양(media.kind === 'frames')이라,
+ * 아래 코드는 프레임이 어디서 오는지 모른다.
  *
  * ★맞출 대상과 이름은 여기 없다★ 이 파일은 ★종류★(quad / rect / scale /
  * number / size / bev_row / bev_dist)만 안다. 무엇을 어떤 파라미터 이름으로
@@ -32,10 +37,12 @@
   var lastCal = null;
   //  ★서버가 있으면 이 기계의 영상을 코덱 상관없이 연다★ (tb/studio.py)
   //  브라우저는 mp4v 를 못 열지만, 서버는 cv2 로 디코드해 프레임만 넘긴다.
-  //  없으면(파일로 연 경우·정적 배포) 지금까지대로 파일 선택으로 동작한다.
+  //  없으면(github.io·파일로 연 경우) 이 브라우저가 폴더·파일을 직접 읽는다.
   var server = null;
-  var frameURL = null;
   var lastDir = '';   // 마지막에 훑은 폴더 — 다시 열 때 거기서 시작한다
+  //  서버가 없을 때 고른 폴더 — [{name, handle}] 경로 순서대로(맨 끝이 지금 폴더)
+  var localDirs = null;
+  var frameSeq = 0;   // 마지막으로 요청한 프레임 — 늦게 온 옛 그림을 버린다
   var liveInputs = [];  // 드래그하면 따라 움직이는 숫자칸들
   var showGrid = true;   // g — BEV 격자
   var useUndist = true;  // u — 왜곡보정 (★보기 전용 토글이다★ 값은 안 바뀐다)
@@ -640,7 +647,7 @@
     var f = [];
     if (media) {
       f.push(media.name + ' · ' + media.w + '×' + media.h);
-      if (media.kind === 'server' && media.frames > 1) {
+      if (media.kind === 'frames' && media.frames > 1) {
         f.push('프레임 ' + media.i + ' / ' + (media.frames - 1)
                + (media.fps ? '  (' + (media.i / media.fps).toFixed(2) + 's)' : ''));
       }
@@ -750,7 +757,7 @@
   }
 
   // ══════════════════════════════════════════════════════════════════
-  //  서버 모드 — 이 기계의 파일을 ★프레임으로★ 받는다
+  //  프레임 소스 — 서버(cv2)든 페이지 안 wasm(mp4v)이든 ★프레임 번호로★ 받는다
   // ══════════════════════════════════════════════════════════════════
   function api(path) {
     return fetch(path).then(function (r) {
@@ -761,44 +768,88 @@
     });
   }
 
+  //  ★프레임 소스★ — info() 와 frame(i) → Promise<그림> 두 개.
+  //  서버(cv2)와 페이지 안 wasm(mp4frames.js)이 같은 모양이라 화면은 하나다.
+  function serverSource(path) {
+    return api('api/info?path=' + encodeURIComponent(path)).then(function (inf) {
+      var url = null;
+      return {
+        kind: inf.kind,
+        info: function () { return inf; },
+        //  ★Image.src 에 주소를 바로 꽂지 않는다★ 그러면 서버가 돌려준 오류
+        //  메시지를 읽을 길이 없어 화면이 이유 없이 비어 버린다. blob 으로 받아
+        //  오류는 본문에서 읽고, 성공한 것만 그림으로 만든다.
+        frame: function (i) {
+          return fetch('api/frame?path=' + encodeURIComponent(path) + '&i=' + i)
+            .then(function (r) {
+              if (!r.ok) return r.json().then(function (j) { throw new Error(j.error); });
+              return r.blob();
+            })
+            .then(function (b) {
+              return new Promise(function (res, rej) {
+                var img = new Image();
+                if (url) URL.revokeObjectURL(url);
+                url = URL.createObjectURL(b);
+                img.onload = function () { res(img); };
+                img.onerror = function () { rej(new Error('그림을 읽지 못했습니다')); };
+                img.src = url;
+              });
+            });
+        }
+      };
+    });
+  }
+
   function openServerFile(path) {
-    api('api/info?path=' + encodeURIComponent(path)).then(function (inf) {
-      var img = new Image();
-      media = { el: img, kind: 'server', path: path, name: inf.name,
-                w: inf.w, h: inf.h, frames: inf.frames, fps: inf.fps, i: 0,
-                dur: inf.fps > 0 ? inf.frames / inf.fps : 0 };
-      img.onload = function () { upload(); draw(); };
-      $('timeline').hidden = (inf.kind !== 'video');
-      $('seek').value = 0;
-      clearBanner();
-      loadFrame(0);
-      renderPanel();
+    serverSource(path).then(function (src) {
+      openFrames(src, path.split(/[\\/]/).pop(), src.kind !== 'video');
     }).catch(function (e) { banner('열지 못했습니다 — ' + e.message); });
   }
 
-  //  ★Image.src 에 주소를 바로 꽂지 않는다★ 그러면 서버가 돌려준 오류 메시지를
-  //  읽을 길이 없어 화면이 이유 없이 비어 버린다. blob 으로 받아 오류는 본문에서
-  //  읽고, 성공한 것만 그림으로 만든다.
+  function openFrames(src, name, still) {
+    var inf = src.info();
+    media = { el: null, kind: 'frames', src: src, name: inf.name || name,
+              w: inf.w, h: inf.h, frames: inf.frames, fps: inf.fps, i: 0,
+              dur: inf.fps > 0 ? inf.frames / inf.fps : 0 };
+    $('timeline').hidden = !!still;
+    $('seek').value = 0;
+    clearBanner();
+    loadFrame(0);
+    renderPanel();
+  }
+
   function loadFrame(i) {
-    if (!media || media.kind !== 'server') return;
-    media.i = Math.max(0, Math.min(i, Math.max(0, media.frames - 1)));
-    fetch('api/frame?path=' + encodeURIComponent(media.path) + '&i=' + media.i)
-      .then(function (r) {
-        if (!r.ok) return r.json().then(function (j) { throw new Error(j.error); });
-        return r.blob();
+    if (!media || media.kind !== 'frames') return;
+    var m = media;
+    m.i = Math.max(0, Math.min(i, Math.max(0, m.frames - 1)));
+    var seq = ++frameSeq;
+    m.src.frame(m.i)
+      .then(function (pic) {
+        //  ★늦게 온 옛 그림은 버린다★ 끌기는 요청을 연달아 보내고 답은 순서대로
+        //  오지 않을 수 있다 — 그대로 그리면 손을 놓은 자리와 다른 그림이 남는다.
+        if (seq !== frameSeq || media !== m || !pic) return;
+        m.el = pic;
+        upload(); draw(); renderFoot();
       })
-      .then(function (b) {
-        if (frameURL) URL.revokeObjectURL(frameURL);
-        frameURL = URL.createObjectURL(b);
-        media.el.src = frameURL;
-        renderFoot();
-      })
-      .catch(function (e) { banner('프레임을 읽지 못했습니다 — ' + e.message); });
+      .catch(function (e) {
+        if (seq === frameSeq) banner('프레임을 읽지 못했습니다 — ' + e.message);
+      });
   }
 
   function showBrowser(dir) {
     api('api/browse?dir=' + encodeURIComponent(dir || '')).then(function (r) {
       lastDir = r.dir;
+      renderBrowser(r, { up: function () { showBrowser(r.up); },
+                         dir: function (d) { showBrowser(d.path); },
+                         file: function (f) { openServerFile(f.path); },
+                         typed: function (p) { showBrowser(p); } });
+    }).catch(function (e) { banner('폴더를 읽지 못했습니다 — ' + e.message); });
+  }
+
+  //  목록 그리기 — 서버의 폴더든 이 브라우저가 고른 폴더든 같은 모양이다.
+  //  r = {dir, error?, dirs:[{name,…}], files:[{name, kind, mb,…}]}
+  function renderBrowser(r, on) {
+    (function () {
       var ex = $('extra');
       ex.innerHTML = '';
       var box = div('box');
@@ -814,7 +865,8 @@
       }
       var up = document.createElement('button');
       up.className = 'btn sm'; up.textContent = '⬆ 위로';
-      up.onclick = function () { showBrowser(r.up); };
+      up.onclick = on.up;
+      up.disabled = !on.up;
       box.appendChild(up);
       var close = document.createElement('button');
       close.className = 'btn sm'; close.textContent = '닫기';
@@ -822,15 +874,25 @@
       close.onclick = function () { renderPanel(); };
       box.appendChild(close);
 
+      (on.extra || []).forEach(function (x) {
+        var e = document.createElement('button');
+        e.className = 'btn sm'; e.textContent = x[0]; e.onclick = x[1];
+        e.style.marginLeft = '6px';
+        box.appendChild(e);
+      });
+
       //  ★경로를 직접 칠 수 있게 둔다★ 목록만 있으면 깊은 폴더까지 여러 번
       //  눌러야 한다. 서버는 여기 친 경로도 뿌리 안인지 그대로 검사한다.
-      var go = txtInput('gopath', '', function () { /* Enter 로 간다 */ });
-      go.placeholder = '폴더 경로를 직접 입력 (Enter)';
-      go.style.marginTop = '6px';
-      go.onkeydown = function (ev) {
-        if (ev.key === 'Enter' && go.value.trim()) showBrowser(go.value.trim());
-      };
-      box.appendChild(go);
+      //  (브라우저가 고른 폴더는 경로가 없다 — 그때는 칸을 두지 않는다)
+      if (on.typed) {
+        var go = txtInput('gopath', '', function () { /* Enter 로 간다 */ });
+        go.placeholder = '폴더 경로를 직접 입력 (Enter)';
+        go.style.marginTop = '6px';
+        go.onkeydown = function (ev) {
+          if (ev.key === 'Enter' && go.value.trim()) on.typed(go.value.trim());
+        };
+        box.appendChild(go);
+      }
 
       var list = div('');
       list.style.cssText = 'max-height:320px;overflow:auto;margin-top:6px';
@@ -839,7 +901,7 @@
         b.className = 'btn sm';
         b.style.cssText = 'display:block;width:100%;text-align:left;margin:2px 0';
         b.textContent = '📁 ' + d.name;
-        b.onclick = function () { showBrowser(d.path); };
+        b.onclick = function () { on.dir(d); };
         list.appendChild(b);
       });
       r.files.forEach(function (f) {
@@ -848,7 +910,7 @@
         b.style.cssText = 'display:block;width:100%;text-align:left;margin:2px 0';
         b.textContent = (f.kind === 'video' ? '🎞 ' : '🖼 ') + f.name
                       + '   ' + f.mb + 'MB';
-        b.onclick = function () { openServerFile(f.path); };
+        b.onclick = function () { on.file(f); };
         list.appendChild(b);
       });
       if (!r.dirs.length && !r.files.length) {
@@ -859,19 +921,84 @@
       }
       box.appendChild(list);
       ex.appendChild(box);
+    })();
+  }
+
+  //  ── 서버가 없을 때: 이 브라우저가 폴더를 직접 읽는다 ──────────────
+  //  showDirectoryPicker 는 Chrome·Edge 에만 있다. 없으면 파일 하나씩 고른다.
+  //  ★폴더 내용은 이 브라우저 안에서만 읽힌다★ 아무 데도 보내지 않는다.
+  var MEDIA_RE = /\.(mp4|m4v|mov|webm|mkv|avi|png|jpe?g|bmp|webp)$/i;
+
+  function pickFolder() {
+    window.showDirectoryPicker({ id: 'cam-studio', mode: 'read' }).then(function (h) {
+      localDirs = [{ name: h.name, handle: h }];
+      showLocal();
+    }).catch(function (e) {
+      if (e && e.name !== 'AbortError') banner('폴더를 열지 못했습니다 — ' + e.message);
+    });
+  }
+
+  function showLocal() {
+    var cur = localDirs[localDirs.length - 1].handle;
+    var dirs = [], files = [];
+    var it = cur.values();
+    function next() {
+      return it.next().then(function (r) {
+        if (r.done) return null;
+        var h = r.value;
+        if (h.name.charAt(0) === '.') return next();
+        if (h.kind === 'directory') { dirs.push({ name: h.name, handle: h }); return next(); }
+        if (!MEDIA_RE.test(h.name)) return next();
+        return h.getFile().then(function (f) {
+          files.push({ name: h.name, file: f, mb: (f.size / 1048576).toFixed(1),
+                       kind: /\.(png|jpe?g|bmp|webp)$/i.test(h.name) ? 'image' : 'video' });
+          return next();
+        });
+      });
+    }
+    next().then(function () {
+      var by = function (a, b) { return a.name < b.name ? -1 : a.name > b.name ? 1 : 0; };
+      dirs.sort(by); files.sort(by);
+      renderBrowser({ dir: localDirs.map(function (d) { return d.name; }).join(' / '),
+                      dirs: dirs, files: files }, {
+        up: localDirs.length > 1 ? function () { localDirs.pop(); showLocal(); } : null,
+        dir: function (d) { localDirs.push(d); showLocal(); },
+        file: function (f) { openFile(f.file); },
+        extra: [['다른 폴더', pickFolder], ['파일 하나', function () { $('file').click(); }]]
+      });
     }).catch(function (e) { banner('폴더를 읽지 못했습니다 — ' + e.message); });
   }
 
+  function openLocal() {
+    if (!window.showDirectoryPicker) { $('file').click(); return; }
+    if (localDirs) showLocal(); else pickFolder();
+  }
+
   function openVideo(f, url) {
-    var info = null;
-    sniffCodec(f).then(function (i) {
-      info = i;
-      //  못 여는 코덱이면 ★열어 보기 전에★ 말해 준다. 그래도 시도는 한다 —
-      //  이 스니핑은 안내용이라 틀릴 수 있고, 틀렸으면 그냥 열리면 된다.
-      if (info && info.playable === false) {
-        banner(badCodecMessage(info, f.name), convertCommand(f.name));
+    sniffCodec(f).then(function (info) {
+      //  ★mp4v 는 페이지 안에서 푼다★ <video> 는 이 코덱을 못 연다.
+      if (info && info.tag === 'mp4v' && window.Mp4Frames) {
+        banner('mp4v 영상을 이 페이지 안에서 풀고 있습니다…');
+        window.Mp4Frames.openFile(f).then(function (src) {
+          if (!src) { openVideoTag(f, url, info); return; }
+          URL.revokeObjectURL(url);
+          openFrames(src, f.name);
+        }).catch(function (e) {
+          banner(badCodecMessage(info, f.name) + ' (페이지 안 해독도 실패: ' + e.message + ')',
+                 convertCommand(f.name));
+        });
+        return;
       }
+      openVideoTag(f, url, info);
     });
+  }
+
+  function openVideoTag(f, url, info) {
+    //  못 여는 코덱이면 ★열어 보기 전에★ 말해 준다. 그래도 시도는 한다 —
+    //  이 스니핑은 안내용이라 틀릴 수 있고, 틀렸으면 그냥 열리면 된다.
+    if (info && info.playable === false) {
+      banner(badCodecMessage(info, f.name), convertCommand(f.name));
+    }
 
     var v = document.createElement('video');
     v.src = url; v.muted = true; v.playsInline = true; v.preload = 'auto';
@@ -898,7 +1025,7 @@
   }
 
   function upload() {
-    if (!renderer || !media) return;
+    if (!renderer || !media || !media.el) return;
     try { renderer.setSource(media.el); } catch (e) { banner('그리기 실패: ' + e.message); }
   }
 
@@ -907,7 +1034,7 @@
     seek.addEventListener('input', function () {
       if (!media) return;
       var f = seek.value / 1000;
-      if (media.kind === 'server') {
+      if (media.kind === 'frames') {
         loadFrame(Math.round(f * Math.max(0, media.frames - 1)));
       } else if (media.kind === 'video') {
         media.el.currentTime = media.dur * f;
@@ -919,12 +1046,12 @@
   }
 
   //  ★프레임 단위로 움직인다★ 보정은 「이 프레임에서 사각형이 맞나」를 보는
-  //  일이라, 0.1초씩 뛰면 맞출 수가 없다. 서버 모드에서는 정확히 한 프레임이고
-  //  (탐색 없이 1ms), 파일 모드에서는 30fps 를 가정한 근사다.
+  //  일이라, 0.1초씩 뛰면 맞출 수가 없다. 프레임 소스(서버·mp4v)에서는 정확히
+  //  한 프레임이고, <video>(H.264) 에서는 30fps 를 가정한 근사다.
   function stepFrame(d) {
     if (!media) return;
     var seek = $('seek');
-    if (media.kind === 'server') {
+    if (media.kind === 'frames') {
       loadFrame(media.i + d);
       seek.value = Math.round(1000 * media.i / Math.max(1, media.frames - 1));
     } else if (media.kind === 'video') {
@@ -935,9 +1062,9 @@
     renderFoot();
   }
 
-  //  ★재생은 타이머로 한다★ <video> 의 play() 를 쓰면 서버 모드(그림 한 장씩
-  //  받는 쪽)와 길이 갈라진다. 10fps 면 「어느 프레임에서 맞출까」를 고르기에
-  //  충분하고, 서버 모드에서도 프레임 한 장이 1ms 라 따라온다.
+  //  ★재생은 타이머로 한다★ <video> 의 play() 를 쓰면 프레임 소스(그림 한 장씩
+  //  받는 쪽 — 서버·mp4v)와 길이 갈라진다. 10fps 면 「어느 프레임에서 맞출까」를 고르기에
+  //  충분하고, 서버는 한 장 1ms, 페이지 안 mp4v 는 1080p 한 장 20ms 남짓이라 따라온다.
   function togglePlay() {
     if (playing) {
       clearInterval(playing);
@@ -945,7 +1072,7 @@
     } else if (media && media.kind !== 'image') {
       playing = setInterval(function () {
         //  끝에 닿으면 스스로 멈춘다 — 안 그러면 마지막 프레임을 계속 다시 받는다
-        if (media.kind === 'server' && media.i >= media.frames - 1) { togglePlay(); return; }
+        if (media.kind === 'frames' && media.i >= media.frames - 1) { togglePlay(); return; }
         if (media.kind === 'video' && media.el.currentTime >= media.dur - 0.05) {
           togglePlay(); return;
         }
@@ -1134,7 +1261,7 @@
     }
 
     //  ★서버가 있나★ 있으면 이 기계의 영상을 코덱 상관없이 연다.
-    //  없으면(파일로 연 경우) 조용히 지금까지대로 동작한다 — fetch 가 실패하는
+    //  없으면(github.io·파일로 연 경우) 조용히 브라우저 쪽 열기로 간다 — fetch 가 실패하는
     //  것이 정상적인 경우라 오류를 화면에 내지 않는다.
     fetch('api/ping').then(function (r) { return r.ok ? r.json() : null; })
       .then(function (j) {
@@ -1150,7 +1277,7 @@
 
     $('open').onclick = function () {
       if (server) showBrowser(lastDir);
-      else $('file').click();
+      else openLocal();
     };
     $('file').onchange = function (e) { if (e.target.files[0]) openFile(e.target.files[0]); };
     $('loadf').onchange = function (e) {
