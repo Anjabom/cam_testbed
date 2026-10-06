@@ -201,9 +201,50 @@ H.264 로 바꾼다(§4.2.1).
 
 ---
 
-## 4. 보정 스튜디오 — ★정적 페이지 하나★
+## 4. 보정 스튜디오 — 같은 페이지가 두 곳에서 돈다
 
-### 4.0 이 기계의 브라우저로 연다 [2026-09-07]
+### 4.0 어디서나 — github.io [2026-10-06]
+
+**https://anjabom.github.io/cam_testbed/** — 터미널도 설치도 없다. 링크만 있으면
+어느 기계의 브라우저에서든 열린다. 영상은 ★그 브라우저 안에서만★ 읽히고 아무 데도
+올라가지 않는다(서버가 없으니 올라갈 곳도 없다).
+
+★9/7 에 접었던 것을 왜 다시 여나★ 그때 접은 이유는 하나였다 — 녹화가 전부 `mp4v` 라
+정적 페이지로는 한 장도 못 열었다. 이번에는 ★해독을 페이지 안으로 들였다★:
+
+| 무엇 | 어디 | 하는 일 |
+|---|---|---|
+| 상자 읽기 | `web/mp4frames.js` | `moov` 의 표만 읽어 「n 번째 프레임 = 파일의 어디 몇 바이트」. 프레임은 그 조각만 `File.slice` — 2GB 녹화를 메모리에 올리지 않는다 |
+| 해독 | `web/vendor/mpeg4dec.js` (759KB) | FFmpeg 의 **mpeg4 디코더 하나만** wasm 으로(LGPL). 처음 mp4v 를 열 때만 불러온다 |
+| 빌드 | `tools/build_mpeg4dec.sh` | emsdk 6.0.11 · FFmpeg n7.1. 결과물은 저장소에 같이 넣는다(CDN 금지 — 대회 현장) |
+
+서버 모드와 같은 「프레임 번호 → 그림」 모양이라 `,` `.` `[` `]` 가 정확히 한 프레임·
+30프레임씩 움직인다. B 프레임(해독 순서 ≠ 표시 순서)도 맞게 고른다.
+
+| 실측 (1080p `mp4v`, 헤드리스 크로미엄, 4코어 컨테이너) | |
+|---|---|
+| 아무 데로나 뛰기 | **약 100ms** (키프레임부터 GOP 12 안에서 해독) |
+| 한 프레임 넘기기 | 해독 + 색 변환 **약 18ms** + 그리기 |
+
+★열기★ Chrome·Edge 는 **폴더를 골라 훑는다**(`showDirectoryPicker` — 서버의 폴더 목록과
+같은 화면). Firefox·Safari 는 파일을 하나씩 고른다.
+
+★맞는지는 기계가 본다★ 해독이 cv2 와 같은 프레임을 내는지 대조한다 — 기하(§4.1)와
+같은 방식이다:
+
+```bash
+python3 tools/bake_mpeg4_reference.py   # cv2 로 대조 클립·정답표를 굽는다 (tools/fixtures/)
+node tools/mpeg4_check.js               # 차례로·섞어서·거꾸로 물어 전부 제 번호가 오는가
+```
+
+실측: 틀린 프레임 0 · 색 차이 최대 2.1 단계(색차 보간 방식 차이). 일부러 틀려 본 둘
+(표시 순서 정렬 제거 · 탐색 전 flush 생략)은 B 프레임 클립에서 전부 잡힌다.
+
+**발행** — `.github/workflows/pages.yml` 이 `main` 의 `web/` 를 그대로 낸다. 그 전에
+`node tools/web_gate.js`(기하 + mp4v 대조, node 만 필요)를 지나야 한다 — 어긋나면 발행하지
+않는다. ★처음 한 번만★ 저장소 Settings → Pages → Source 를 **GitHub Actions** 로 둔다.
+
+### 4.0.1 이 기계의 브라우저로 연다 [2026-09-07]
 
 ```bash
 python3 -m tb.run studio          # → http://127.0.0.1:8770
@@ -231,10 +272,15 @@ GPU 에서 하므로 **드래그가 즉시** 반응한다.
 `local.yaml` 의 `browse_roots:`(안 적으면 홈 하나)가 정하고, **훑는 길과 여는 길이 같은
 함수를 지난다**(`t_studio_paths` 가 지킨다).
 
-`web/index.html` 을 파일로 그냥 열어도 돌아간다 — 그때는 이 기계의 영상 목록이 안 뜨고,
-브라우저가 열 수 있는 파일(H.264 mp4 · 사진)만 파일 선택으로 연다.
+`web/index.html` 을 파일로 그냥 열어도 돌아간다 — github.io 와 같다(mp4v 도 wasm 으로 열린다).
 
-### 4.0.1 남의 기계에 건네기 — 꾸러미 하나 (44KB)
+여전히 쓸 이유가 있다: 이 기계의 폴더를 경로로 바로 훑고, cv2 라서 어떤 코덱이든 열리며
+(HEVC·MJPG 도), 한 프레임 넘기기가 1ms 다.
+
+### 4.0.2 남의 기계에 건네기 — 꾸러미 하나 (zip 약 300KB)
+
+★github.io 로 충분하면 이것은 필요 없다★ 네트워크가 없는 현장에서 쓸 때나, 브라우저가
+못 여는 코덱(HEVC 등)을 열어야 할 때 쓴다.
 
 ```bash
 python3 tools/pack_studio.py           # → dist/cam-studio-<날짜>.zip
@@ -316,8 +362,11 @@ BEV 에서 차선이 정확히 수직으로 선다. 수직이 아니면 사각�
 
 ### 4.2.1 ⚠️ 영상이 안 열리면 — ★코덱이지 용량이 아니다★
 
-`cv2.VideoWriter` 의 기본 코덱 `mp4v`(MPEG-4 Part 2)로 구운 mp4 는 브라우저가 **한 장도
-열지 못한다**. 실측(2026-09-06): 3.5MB 짜리도 2.2GB 짜리도 똑같이 안 열렸고, 같은 파일을
+[2026-10-06] `mp4v` 는 이제 페이지 안에서 열린다(§4.0). 아래는 그 밖의 코덱(HEVC·MJPG 등)과,
+`<video>` 가 왜 `mp4v` 를 못 여는지에 대한 기록이다.
+
+`cv2.VideoWriter` 의 기본 코덱 `mp4v`(MPEG-4 Part 2)로 구운 mp4 는 브라우저의 `<video>` 가
+**한 장도 열지 못한다**. 실측(2026-09-06): 3.5MB 짜리도 2.2GB 짜리도 똑같이 안 열렸고, 같은 파일을
 H.264 로 바꾸면 열렸다. 브라우저가 mp4 안에서 받아 주는 것은 H.264(`avc1`)·AV1 뿐이다.
 
 스튜디오는 파일을 열기 ★전에★ 앞뒤 조각에서 코덱 이름을 찾아보고, 못 여는 코덱이면
@@ -400,10 +449,17 @@ web/                    보정 스튜디오 화면 (외부 의존성 0)
   app.js                조작 — ★기하도 이름도 여기 없다★
   tuning.js             ★맞출 것과 파라미터 이름은 여기에만★
   reference.js          cv2 정답표 (생성물 — 손으로 고치지 않는다)
+  mp4frames.js          mp4 상자 읽기 · 프레임 번호로 열기 (mp4v 를 페이지 안에서)
+  vendor/mpeg4dec.js    FFmpeg mpeg4 디코더 wasm (생성물 — build_mpeg4dec.sh)
 
 tools/                  저장소를 재는 도구 (배포물이 아니다)
   bake_reference.py     cv2 정답표 굽기
   geom_check.js         JS ↔ cv2 대조 (자체 검사가 부른다)
+  build_mpeg4dec.sh     web/vendor/mpeg4dec.js 굽기 (emsdk · FFmpeg)
+  mpeg4dec/mpeg4dec.c   그 wasm 의 입구 (패킷 → RGBA)
+  bake_mpeg4_reference.py  mp4v 대조 클립·정답표 굽기 (tools/fixtures/)
+  mpeg4_check.js        wasm 해독 ↔ cv2 대조 (자체 검사가 부른다)
+  web_gate.js           github.io 발행 전 관문 (기하 + mp4v, node 만)
   shader_check.html     GPU 셰이더 ↔ geom.js 대조 (브라우저로 연다)
   tuning_from_local.py  local.yaml → 스튜디오가 여는 my_tuning.json
   pack_studio.py        남의 기계에 건넬 꾸러미 굽기 (studio.py + web/)
@@ -424,7 +480,7 @@ runs/                   실행 결과 (git 제외)
 | **행 0 인데 표는 멀쩡** | 노드가 죽어도 리포트는 나온다. 행부터 본다 |
 | **`.pt` 로 재기** | 지연·마스크가 실차와 달라지는데 표는 그대로다. `require_params` 가 막는다 |
 | **결과를 머신 넘어 비교** | GPU·가중치가 다르면 값이 다르다. `run_env.json` 이 근거다 |
-| **`mp4v` 코덱** | 브라우저가 오류 없이 검은 화면만 띄운다. `tb/encode.py` 를 거친다 |
+| **`mp4v` 코덱** | `<video>` 가 오류 없이 검은 화면만 띄운다(스튜디오는 wasm 으로 우회한다 — §4.0). 새로 굽는 영상은 `tb/encode.py` 를 거친다 |
 | **`lockstep` 으로 타이밍 판단** | 벽시계가 실제로 흐른다. `--mode realtime` |
 | **디버그 영상을 안 남김** | 사후에 만들 수 없다. `replay` 로 다시 잡는 수밖에 없다 |
 | **`--name` 을 폴더 이름으로 착각** | 표시용이다. 폴더는 `--tag` 나 프리셋 이름에서 나온다 |
@@ -450,5 +506,6 @@ python3 -m flake8 tb web     # 린트 (max-line-length 100)
 3. 기하는 두 벌(`tb.geometry` · `web/geom.js`)이지만 **대조로 묶여 있다** —
    한쪽을 고치면 `python3 -m tb.selftest` 가 갈라짐을 잡는다
 4. 편집 대상은 `web/tuning.js` 가 정한다 — 화면은 **종류**만 안다
-5. 스튜디오는 **아무것도 실행하지 않는다** (서버가 없다 — 정적 파일뿐이다)
+5. 스튜디오는 **아무것도 실행하지 않는다** — github.io 는 정적 파일뿐이고, 로컬 서버는
+   프레임을 읽기만 한다(쓰기·실행·업로드 없음, `127.0.0.1` 고정)
 6. **재는 쪽을 고쳐 숫자를 좋게 만들지 않는다**

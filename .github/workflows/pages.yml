@@ -1,0 +1,55 @@
+# 카메라 보정 스튜디오를 github.io 로 낸다 — web/ 를 그대로.
+#
+# ★한 번만 손으로★ 저장소 Settings → Pages → Source 를 「GitHub Actions」로.
+# 그 뒤로는 main 에 web/ 가 바뀌어 들어올 때마다 다시 나간다.
+#
+# ★관문을 먼저 지난다★ tools/web_gate.js — 기하가 cv2 와 갈라졌거나 mp4v 해독이
+# 다른 프레임을 내면 발행하지 않는다. 화면이 멀쩡해 보여도 거기서 맞춘 값이
+# 실차에서 틀리는 고장이라, 사람 눈으로는 못 잡는다.
+name: 스튜디오 발행
+
+on:
+  push:
+    branches: [main]
+    paths: ["web/**", "tools/web_gate.js", "tools/geom_check.js",
+             "tools/mpeg4_check.js", "tools/fixtures/**", ".github/workflows/pages.yml"]
+  pull_request:
+    paths: ["web/**", "tools/web_gate.js", "tools/geom_check.js",
+             "tools/mpeg4_check.js", "tools/fixtures/**", ".github/workflows/pages.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node tools/web_gate.js
+
+  deploy:
+    needs: gate
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+      - id: deploy
+        uses: actions/deploy-pages@v4
